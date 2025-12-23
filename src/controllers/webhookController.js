@@ -1,4 +1,6 @@
 const whatsappService = require('../services/whatsappService');
+const reganteService = require('../services/reganteService');
+const mensajeService = require('../services/mensajeService');
 
 // Memoria temporal para estados de usuarios
 const userStates = {};
@@ -81,6 +83,28 @@ const receiveMessage = async (req, res) => {
 
         console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${message.type})`);
 
+        // Guardar mensaje del cliente en la base de datos
+        try {
+          await mensajeService.guardarMensaje({
+            telefono: from,
+            padron: userStates[from]?.padron || null,
+            remitente: 'cliente',
+            contenido: messageBody
+          });
+          
+          // Emitir evento Socket.io para actualizar dashboard en tiempo real
+          if (global.io) {
+            global.io.emit('nuevo_mensaje', {
+              telefono: from,
+              mensaje: messageBody,
+              remitente: 'cliente',
+              timestamp: new Date()
+            });
+          }
+        } catch (error) {
+          console.error('❌ Error al guardar mensaje del cliente:', error);
+        }
+
         // Inicializar estado del usuario si no existe
         if (!userStates[from]) {
           userStates[from] = { step: 'START', padron: null };
@@ -145,6 +169,7 @@ Estás comunicado con la Jefatura de Zona de Riego de ríos Malargüe, Grande, B
 Soy tu asistente virtual, diseñado para ayudarte con tus gestiones hídricas de forma rápida y sencilla. 💧`;
   
   await whatsappService.sendMessage(from, welcomeMessage);
+  await saveBotMessage(from, welcomeMessage);
   console.log(`👋 Mensaje de bienvenida enviado a ${from}`);
 };
 
@@ -187,6 +212,9 @@ const sendMenuList = async (from) => {
     'Ver Opciones',
     sections
   );
+  
+  // Guardar representación textual del menú
+  await saveBotMessage(from, 'Menú interactivo: ¿Qué trámite desea realizar hoy? (Ubicación, Empadronamiento, Regante, Operador)');
   
   console.log(`📋 Lista de menú enviada a ${from}`);
 };
@@ -287,47 +315,70 @@ const handlePadronInput = async (from, messageBody) => {
     return;
   }
 
-  // Guardar el padrón en la memoria del usuario
-  userStates[from].padron = padron;
+  // Buscar el regante en la base de datos
+  try {
+    const reganteData = await reganteService.getReganteByPadron(padron);
 
-  const buttons = [
-    {
-      id: 'auth_deuda',
-      title: '💰 Consultar deuda'
-    },
-    {
-      id: 'auth_estado',
-      title: '🌾 Derechos de riego'
-    },
-    {
-      id: 'auth_turno',
-      title: '📅 Solicitar turno'
+    if (!reganteData) {
+      // Padrón no encontrado en la base de datos
+      await whatsappService.sendMessage(
+        from,
+        `❌ No encontramos el padrón ${padron} en nuestra base de datos. Por favor verifique el número.`
+      );
+      console.log(`❌ Padrón ${padron} no encontrado para ${from}`);
+      // No cambiar de estado, permitir reintentar
+      return;
     }
-  ];
 
-  const bodyText = `✅ Bienvenido al Sistema
+    // Guardar el padrón y los datos del regante
+    userStates[from].padron = padron;
+    userStates[from].data = reganteData;
 
-Padrón: *${padron}*
+    const buttons = [
+      {
+        id: 'auth_deuda',
+        title: '💰 Consultar deuda'
+      },
+      {
+        id: 'auth_estado',
+        title: '🌾 Derechos de riego'
+      },
+      {
+        id: 'auth_turno',
+        title: '📅 Solicitar turno'
+      }
+    ];
+
+    const bodyText = `✅ Bienvenido ${reganteData.nombre}
+
+Padrón: *${padron}* vinculado correctamente.
 
 Seleccioná una opción:`;
 
-  await whatsappService.sendInteractiveButtons(from, bodyText, buttons);
-  
-  // Enviar más opciones (contactar operador y salir)
-  setTimeout(async () => {
-    const moreButtons = [
-      { id: 'auth_contact', title: '👤 Contactar Operador' },
-      { id: 'auth_salir', title: '🚪 Salir' }
-    ];
-    await whatsappService.sendInteractiveButtons(
-      from,
-      'Otras opciones:',
-      moreButtons
-    );
-  }, 500);
+    await whatsappService.sendInteractiveButtons(from, bodyText, buttons);
+    
+    // Enviar más opciones (contactar operador y salir)
+    setTimeout(async () => {
+      const moreButtons = [
+        { id: 'auth_contact', title: '👤 Contactar Operador' },
+        { id: 'auth_salir', title: '🚪 Salir' }
+      ];
+      await whatsappService.sendInteractiveButtons(
+        from,
+        'Otras opciones:',
+        moreButtons
+      );
+    }, 500);
 
-  userStates[from].step = 'AUTH_MENU';
-  console.log(`✅ Usuario ${from} autenticado con padrón ${padron}`);
+    userStates[from].step = 'AUTH_MENU';
+    console.log(`✅ Usuario ${from} autenticado con padrón ${padron}`);
+  } catch (error) {
+    console.error('❌ Error consultando base de datos:', error);
+    await whatsappService.sendMessage(
+      from,
+      '❌ Ocurrió un error al consultar la base de datos. Por favor intente más tarde.'
+    );
+  }
 };
 
 /**
@@ -335,22 +386,19 @@ Seleccioná una opción:`;
  */
 const handleAuthMenu = async (from, option) => {
   const padron = userStates[from].padron;
+  const reganteData = userStates[from].data;
 
   switch (option) {
     case '1':
     case 'auth_deuda':
-      const deudaText = `💰 *Estado de Cuenta - Padrón ${padron}*
+      const deudaText = `💰 Estado de Cuenta
 
-*Deudas pendientes:*
-• Enero 2024: $15.000
-• Febrero 2024: $15.000
+Titular: *${reganteData.nombre}*
+Padrón: *${padron}*
 
-*Total adeudado: $30.000*
+Deuda actual: *$${reganteData.deuda.toLocaleString('es-AR')}*
 
-Vencimiento: 31/03/2024
-
-Para abonar, acercate a nuestras oficinas o transferí a:
-CBU: 0000000000000000000000`;
+${reganteData.deuda > 0 ? '⚠️ Tiene deuda pendiente.\n\nPara abonar, acercate a nuestras oficinas.' : '✅ Se encuentra al día.'}`;
       
       await whatsappService.sendMessage(from, deudaText);
       console.log(`💰 Consulta de deuda enviada a ${from}`);
@@ -358,15 +406,18 @@ CBU: 0000000000000000000000`;
 
     case '2':
     case 'auth_estado':
-      const estadoText = `🌊 *Estado Derecho de Riego - Padrón ${padron}*
+      const estadoText = `🌾 Estado Derecho de Riego
 
-*Estado:* ✅ HABILITADO
+Titular: *${reganteData.nombre}*
+Padrón: *${padron}*
 
-*Hectáreas registradas:* 10.5 ha
-*Tipo de cultivo:* Soja
-*Último turno:* 15/12/2024
+*Estado:* ${reganteData.estado === 'Activo' ? '✅ HABILITADO' : '❌ SUSPENDIDO'}
 
-Tu derecho de riego está al día.`;
+*Hectáreas registradas:* ${reganteData.hectareas} ha
+*Tipo de cultivo:* ${reganteData.cultivo}
+*Último turno:* ${reganteData.turno}
+
+${reganteData.estado === 'Activo' ? 'Tu derecho de riego está al día.' : 'Por favor regularice su situación.'}`;
       
       await whatsappService.sendMessage(from, estadoText);
       console.log(`🌾 Estado de riego enviado a ${from}`);
@@ -374,7 +425,10 @@ Tu derecho de riego está al día.`;
 
     case '3':
     case 'auth_turno':
-      const turnoText = `📅 *Solicitud de Turno - Padrón ${padron}*
+      const turnoText = `📅 Solicitud de Turno
+
+Titular: *${reganteData.nombre}*
+Padrón: *${padron}*
 
 Tu solicitud ha sido registrada.
 
@@ -408,6 +462,7 @@ Gracias por usar el sistema de Irrigación Malargüe.
 ¡Hasta pronto!`;
       
       await whatsappService.sendMessage(from, goodbyeText);
+      await saveBotMessage(from, goodbyeText);
       userStates[from] = { step: 'START', padron: null };
       console.log(`👋 Usuario ${from} salió del sistema`);
       break;
@@ -415,9 +470,36 @@ Gracias por usar el sistema de Irrigación Malargüe.
     default:
       // Opción no válida
       await whatsappService.sendMessage(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
+      await saveBotMessage(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
       await handlePadronInput(from, padron);
       console.log(`⚠️ Opción inválida en AUTH_MENU de ${from}`);
       break;
+  }
+};
+
+/**
+ * Guarda el mensaje del bot en la base de datos y emite evento Socket.io
+ */
+const saveBotMessage = async (telefono, contenido) => {
+  try {
+    await mensajeService.guardarMensaje({
+      telefono,
+      padron: userStates[telefono]?.padron || null,
+      remitente: 'bot',
+      contenido
+    });
+    
+    // Emitir evento Socket.io
+    if (global.io) {
+      global.io.emit('nuevo_mensaje', {
+        telefono,
+        mensaje: contenido,
+        remitente: 'bot',
+        timestamp: new Date()
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error al guardar mensaje del bot:', error);
   }
 };
 
