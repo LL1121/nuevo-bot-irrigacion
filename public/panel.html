@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Atención al Cliente - Irrigación Malargüe</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .container {
+            width: 95%;
+            height: 95vh;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            display: flex;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 30%;
+            background: #2c3e50;
+            color: white;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            padding: 20px;
+            background: #1a252f;
+            text-align: center;
+            border-bottom: 2px solid #34495e;
+        }
+
+        .header h1 {
+            font-size: 18px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            font-size: 12px;
+            color: #95a5a6;
+        }
+
+        .stats {
+            padding: 15px;
+            background: #34495e;
+            display: flex;
+            justify-content: space-around;
+            border-bottom: 2px solid #2c3e50;
+        }
+
+        .stat-box {
+            text-align: center;
+        }
+
+        .stat-box .number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        .stat-box .label {
+            font-size: 11px;
+            color: #95a5a6;
+            text-transform: uppercase;
+        }
+
+        .chat-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .chat-item {
+            padding: 15px;
+            margin-bottom: 10px;
+            background: #34495e;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        .chat-item:hover {
+            background: #3d566e;
+            transform: translateX(5px);
+        }
+
+        .chat-item.active {
+            background: #3498db;
+        }
+
+        .chat-item .name {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-item .last-message {
+            font-size: 13px;
+            color: #bdc3c7;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .chat-item .unread-badge {
+            background: #e74c3c;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .chat-item .time {
+            font-size: 11px;
+            color: #95a5a6;
+        }
+
+        .chat-window {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #ecf0f1;
+        }
+
+        .chat-header {
+            padding: 20px;
+            background: white;
+            border-bottom: 2px solid #bdc3c7;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-header h2 {
+            font-size: 18px;
+            color: #2c3e50;
+        }
+
+        .chat-header .info {
+            font-size: 12px;
+            color: #7f8c8d;
+        }
+
+        .messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            position: relative;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.cliente {
+            background: white;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.bot {
+            background: #3498db;
+            color: white;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.operador {
+            background: #27ae60;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message .meta {
+            font-size: 11px;
+            margin-top: 5px;
+            opacity: 0.7;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .message .sender {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .input-area {
+            padding: 20px;
+            background: white;
+            border-top: 2px solid #bdc3c7;
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #bdc3c7;
+            border-radius: 25px;
+            font-size: 14px;
+            outline: none;
+            transition: border 0.3s;
+        }
+
+        .input-area input:focus {
+            border-color: #3498db;
+        }
+
+        .input-area button {
+            padding: 12px 24px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+
+        .input-area button:hover {
+            background: #2980b9;
+        }
+
+        .input-area button:active {
+            transform: scale(0.95);
+        }
+
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #95a5a6;
+        }
+
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #2ecc71;
+            display: inline-block;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #7f8c8d;
+        }
+
+        /* Scrollbar personalizado */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #ecf0f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #95a5a6;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #7f8c8d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar con lista de conversaciones -->
+        <div class="sidebar">
+            <div class="header">
+                <h1>💧 Irrigación Malargüe</h1>
+                <p>Panel de Atención al Cliente</p>
+            </div>
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="number" id="totalChats">0</div>
+                    <div class="label">Conversaciones</div>
+                </div>
+                <div class="stat-box">
+                    <div class="number" id="unreadCount">0</div>
+                    <div class="label">No leídos</div>
+                </div>
+            </div>
+            <div class="chat-list" id="chatList">
+                <div class="loading">Cargando conversaciones...</div>
+            </div>
+        </div>
+
+        <!-- Ventana de chat -->
+        <div class="chat-window">
+            <div id="emptyState" class="empty-state">
+                <h2>👋 Bienvenido al Panel</h2>
+                <p>Selecciona una conversación para comenzar</p>
+            </div>
+            <div id="chatContainer" style="display: none; flex: 1; display: flex; flex-direction: column;">
+                <div class="chat-header">
+                    <div>
+                        <h2 id="chatName">
+                            <span class="status-indicator"></span>
+                            Nombre del Cliente
+                        </h2>
+                        <div class="info" id="chatInfo">Padrón: -</div>
+                    </div>
+                </div>
+                <div class="messages" id="messages">
+                    <!-- Mensajes se cargan aquí -->
+                </div>
+                <div class="input-area">
+                    <input type="text" id="messageInput" placeholder="Escribe un mensaje..." />
+                    <button onclick="sendMessage()">Enviar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Conexión Socket.io
+        const socket = io('http://localhost:3000');
+
+        let currentChat = null;
+
+        // Evento: conexión establecida
+        socket.on('connect', () => {
+            console.log('✅ Conectado al servidor Socket.io');
+            loadChats();
+            loadStats();
+        });
+
+        // Evento: nuevo mensaje en tiempo real
+        socket.on('nuevo_mensaje', (data) => {
+            console.log('📩 Nuevo mensaje recibido:', data);
+            
+            // Si el mensaje es del chat actual, agregarlo a la vista
+            if (currentChat && data.telefono === currentChat) {
+                addMessageToView(data);
+            }
+            
+            // Recargar la lista de chats y stats
+            loadChats();
+            loadStats();
+        });
+
+        // Cargar lista de conversaciones
+        async function loadChats() {
+            try {
+                const response = await fetch('http://localhost:3000/api/chats');
+                const result = await response.json();
+                
+                if (result.success) {
+                    renderChats(result.data);
+                }
+            } catch (error) {
+                console.error('Error al cargar conversaciones:', error);
+            }
+        }
+
+        // Renderizar lista de chats
+        function renderChats(chats) {
+            const chatList = document.getElementById('chatList');
+            
+            if (chats.length === 0) {
+                chatList.innerHTML = '<div class="loading">No hay conversaciones</div>';
+                return;
+            }
+
+            chatList.innerHTML = chats.map(chat => `
+                <div class="chat-item ${currentChat === chat.telefono ? 'active' : ''}" 
+                     onclick="selectChat('${chat.telefono}')">
+                    <div class="name">
+                        <span>${chat.nombre_cliente || chat.telefono}</span>
+                        ${chat.mensajes_no_leidos > 0 ? `<span class="unread-badge">${chat.mensajes_no_leidos}</span>` : ''}
+                    </div>
+                    <div class="last-message">${chat.ultimo_mensaje || 'Sin mensajes'}</div>
+                    <div class="time">${formatTime(chat.ultima_actividad)}</div>
+                </div>
+            `).join('');
+        }
+
+        // Seleccionar chat
+        async function selectChat(telefono) {
+            currentChat = telefono;
+            
+            // Ocultar estado vacío
+            document.getElementById('emptyState').style.display = 'none';
+            document.getElementById('chatContainer').style.display = 'flex';
+            
+            // Cargar mensajes del chat
+            try {
+                const response = await fetch(`http://localhost:3000/api/messages/${telefono}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    renderMessages(result.data);
+                    
+                    // Actualizar header
+                    const chat = result.data[0];
+                    if (chat) {
+                        document.getElementById('chatName').innerHTML = `
+                            <span class="status-indicator"></span>
+                            ${chat.nombre_cliente || telefono}
+                        `;
+                        document.getElementById('chatInfo').textContent = 
+                            `Padrón: ${chat.padron || 'No registrado'} | Teléfono: ${telefono}`;
+                    }
+                    
+                    // Marcar como leído
+                    await fetch(`http://localhost:3000/api/mark-read/${telefono}`, {
+                        method: 'POST'
+                    });
+                    
+                    // Recargar lista de chats
+                    loadChats();
+                }
+            } catch (error) {
+                console.error('Error al cargar mensajes:', error);
+            }
+        }
+
+        // Renderizar mensajes
+        function renderMessages(messages) {
+            const messagesDiv = document.getElementById('messages');
+            messagesDiv.innerHTML = messages.map(msg => `
+                <div class="message ${msg.remitente}">
+                    <div class="sender">${getRemitenteLabel(msg.remitente)}</div>
+                    <div>${msg.contenido}</div>
+                    <div class="meta">
+                        <span>${formatTime(msg.timestamp)}</span>
+                        ${msg.leido ? '<span>✓✓</span>' : '<span>✓</span>'}
+                    </div>
+                </div>
+            `).join('');
+            
+            // Scroll al final
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Agregar mensaje a la vista (en tiempo real)
+        function addMessageToView(data) {
+            const messagesDiv = document.getElementById('messages');
+            const messageHTML = `
+                <div class="message ${data.remitente}">
+                    <div class="sender">${getRemitenteLabel(data.remitente)}</div>
+                    <div>${data.mensaje}</div>
+                    <div class="meta">
+                        <span>${formatTime(data.timestamp)}</span>
+                    </div>
+                </div>
+            `;
+            messagesDiv.innerHTML += messageHTML;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Enviar mensaje
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const mensaje = input.value.trim();
+            
+            if (!mensaje || !currentChat) return;
+            
+            try {
+                const response = await fetch('http://localhost:3000/api/send', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        telefono: currentChat,
+                        mensaje: mensaje,
+                        operador: 'Operador Principal'
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    input.value = '';
+                    // El mensaje se agregará automáticamente vía Socket.io
+                }
+            } catch (error) {
+                console.error('Error al enviar mensaje:', error);
+                alert('Error al enviar el mensaje');
+            }
+        }
+
+        // Enter para enviar
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('messageInput').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    sendMessage();
+                }
+            });
+        });
+
+        // Cargar estadísticas
+        async function loadStats() {
+            try {
+                const response = await fetch('http://localhost:3000/api/stats');
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('totalChats').textContent = result.data.totalConversaciones;
+                    document.getElementById('unreadCount').textContent = result.data.mensajesNoLeidos;
+                }
+            } catch (error) {
+                console.error('Error al cargar estadísticas:', error);
+            }
+        }
+
+        // Formatear tiempo
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return 'Ahora';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)} min`;
+            if (diff < 86400000) return date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+            return date.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
+        }
+
+        // Obtener etiqueta del remitente
+        function getRemitenteLabel(remitente) {
+            switch (remitente) {
+                case 'cliente': return '👤 Cliente';
+                case 'bot': return '🤖 Bot';
+                case 'operador': return '👨‍💼 Operador';
+                default: return remitente;
+            }
+        }
+    </script>
+</body>
+</html>
