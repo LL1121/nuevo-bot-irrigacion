@@ -1,5 +1,6 @@
 const whatsappService = require('../services/whatsappService');
-const reganteService = require('../services/reganteService');
+const userService = require('../services/userService');
+const scraperService = require('../services/scraperService');
 const mensajeService = require('../services/mensajeService');
 
 // Memoria temporal para estados de usuarios
@@ -135,6 +136,26 @@ const handleUserMessage = async (from, messageBody) => {
 
   console.log(`🔄 Estado actual de ${from}: ${currentState}`);
 
+  // ============================================
+  // MANEJO DE BOTONES GLOBALES
+  // ============================================
+  
+  // Botón: Descargar Boleto
+  if (messageBody === 'btn_descargar_boleto') {
+    await handleDescargarBoleto(from);
+    return;
+  }
+  
+  // Botón: Cambiar DNI
+  if (messageBody === 'btn_cambiar_dni') {
+    const changeDniMsg = '📝 Entendido. Por favor escribí el nuevo DNI o CUIT a consultar (sin puntos ni guiones).';
+    await whatsappService.sendMessage(from, changeDniMsg);
+    await saveBotMessage(from, changeDniMsg);
+    userStates[from].step = 'AWAITING_DNI';
+    console.log(`🔄 Usuario ${from} solicita cambiar DNI`);
+    return;
+  }
+
   switch (currentState) {
     case 'START':
     default:
@@ -146,6 +167,10 @@ const handleUserMessage = async (from, messageBody) => {
 
     case 'MAIN_MENU':
       await handleMainMenu(from, messageBody);
+      break;
+
+    case 'AWAITING_DNI':
+      await handleDniInput(from, messageBody);
       break;
 
     case 'AWAITING_PADRON':
@@ -193,8 +218,8 @@ const sendMenuList = async (from) => {
         },
         {
           id: 'option_3',
-          title: '🔐 Soy Regante (Login)',
-          description: 'Acceso a consultas de cuenta'
+          title: '� Consultar Deuda',
+          description: 'Ver estado de cuenta y boleto'
         },
         {
           id: 'option_4',
@@ -255,6 +280,7 @@ Para darte de alta como usuario del sistema hídrico, acercate con:
 ℹ️ El trámite es personal y presencial.`;
       
       await whatsappService.sendMessage(from, infoText);
+      await saveBotMessage(from, infoText);
       // Reenviar solo la lista, sin bienvenida
       await sendMenuList(from);
       console.log(`📋 Info de empadronamiento enviada a ${from}`);
@@ -262,15 +288,8 @@ Para darte de alta como usuario del sistema hídrico, acercate con:
 
     case '3':
     case 'option_3':
-      const askPadronText = `🔐 Acceso a Cuenta de Regante
-
-Para consultar su deuda o estado, por favor ingrese su Número de Padrón (sin puntos ni guiones).
-
-_Ejemplo: 12345_`;
-      
-      await whatsappService.sendMessage(from, askPadronText);
-      userStates[from].step = 'AWAITING_PADRON';
-      console.log(`🔑 Solicitando padrón a ${from}`);
+      // Consultar Deuda: Verificar si tiene DNI vinculado
+      await handleConsultarDeuda(from);
       break;
 
     case '4':
@@ -474,6 +493,220 @@ Gracias por usar el sistema de Irrigación Malargüe.
       await handlePadronInput(from, padron);
       console.log(`⚠️ Opción inválida en AUTH_MENU de ${from}`);
       break;
+  }
+};
+
+/**
+ * Manejar consulta de deuda (option_3)
+ */
+const handleConsultarDeuda = async (from) => {
+  try {
+    // Verificar si ya tiene DNI vinculado
+    const dni = await userService.getDni(from);
+    
+    if (dni) {
+      // Tiene DNI: Ejecutar scraper directamente
+      const searchingMsg = `🔍 Buscando deuda para el DNI vinculado *${dni}*...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
+      await whatsappService.sendMessage(from, searchingMsg);
+      await saveBotMessage(from, searchingMsg);
+      
+      // Ejecutar scraper
+      await ejecutarScraper(from, dni);
+      
+    } else {
+      // No tiene DNI: Solicitar DNI
+      const askDniText = `📝 Para consultar tu deuda, por favor ingresa tu *DNI o CUIT* (sin puntos ni guiones).
+
+_Ejemplo: 12345678_
+
+Este número quedará vinculado a tu WhatsApp para futuras consultas.`;
+      
+      await whatsappService.sendMessage(from, askDniText);
+      await saveBotMessage(from, askDniText);
+      userStates[from].step = 'AWAITING_DNI';
+      console.log(`📝 Solicitando DNI a ${from}`);
+    }
+    
+  } catch (error) {
+    console.error('❌ Error en handleConsultarDeuda:', error);
+    const errorMsg = '❌ Ocurrió un error al procesar tu solicitud. Por favor intenta más tarde.';
+    await whatsappService.sendMessage(from, errorMsg);
+    await saveBotMessage(from, errorMsg);
+    await sendMenuList(from);
+  }
+};
+
+/**
+ * Manejar input de DNI (AWAITING_DNI)
+ */
+const handleDniInput = async (from, messageBody) => {
+  try {
+    // Validar que sea solo números
+    const dni = messageBody.replace(/\D/g, ''); // Eliminar todo lo que no sea número
+    
+    if (!dni || dni.length < 7 || dni.length > 11) {
+      const errorMsg = '⚠️ Por favor ingresa un DNI o CUIT válido (7 a 11 dígitos numéricos).\n\n_Ejemplo: 12345678_';
+      await whatsappService.sendMessage(from, errorMsg);
+      await saveBotMessage(from, errorMsg);
+      return;
+    }
+    
+    // Guardar DNI en BD
+    await userService.saveDni(from, dni);
+    
+    const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n🔍 Buscando tu deuda...`;
+    await whatsappService.sendMessage(from, confirmMsg);
+    await saveBotMessage(from, confirmMsg);
+    
+    // Ejecutar scraper
+    await ejecutarScraper(from, dni);
+    
+    // Volver al menú principal
+    userStates[from].step = 'MAIN_MENU';
+    
+  } catch (error) {
+    console.error('❌ Error en handleDniInput:', error);
+    const errorMsg = '❌ Ocurrió un error al vincular tu DNI. Por favor intenta más tarde.';
+    await whatsappService.sendMessage(from, errorMsg);
+    await saveBotMessage(from, errorMsg);
+    await sendMenuList(from);
+  }
+};
+
+/**
+ * Manejar descarga de boleto (a demanda)
+ */
+const handleDescargarBoleto = async (from) => {
+  try {
+    const fs = require('fs');
+    
+    // Recuperar pdfPath del estado
+    const pdfPath = userStates[from]?.tempPdf;
+    
+    if (!pdfPath) {
+      const noPdfMsg = '⚠️ No hay ningún boleto disponible.\n\nPor favor realiza una nueva consulta de deuda.';
+      await whatsappService.sendMessage(from, noPdfMsg);
+      await saveBotMessage(from, noPdfMsg);
+      await sendMenuList(from);
+      return;
+    }
+    
+    // Verificar si el archivo existe
+    if (!fs.existsSync(pdfPath)) {
+      const expiredMsg = '⚠️ El boleto ha expirado o ya fue descargado.\n\nPor favor realiza una nueva consulta.';
+      await whatsappService.sendMessage(from, expiredMsg);
+      await saveBotMessage(from, expiredMsg);
+      
+      // Limpiar estado
+      delete userStates[from].tempPdf;
+      
+      await sendMenuList(from);
+      return;
+    }
+    
+    // Enviar mensaje de procesamiento
+    const sendingMsg = '📤 Enviando boleto de pago...';
+    await whatsappService.sendMessage(from, sendingMsg);
+    await saveBotMessage(from, sendingMsg);
+    
+    // Subir PDF a WhatsApp
+    const mediaId = await whatsappService.uploadMedia(pdfPath, 'application/pdf');
+    
+    // Extraer DNI del nombre del archivo
+    const dniMatch = pdfPath.match(/boleto_(\d+)\.pdf/);
+    const dni = dniMatch ? dniMatch[1] : 'usuario';
+    
+    // Enviar documento
+    await whatsappService.sendDocument(
+      from,
+      mediaId,
+      `Boleto_${dni}.pdf`,
+      `Boleto de pago - DNI ${dni}`
+    );
+    
+    console.log(`📄 PDF enviado a ${from}`);
+    
+    // Eliminar archivo temporal
+    fs.unlinkSync(pdfPath);
+    delete userStates[from].tempPdf;
+    console.log(`🗑️ PDF eliminado: ${pdfPath}`);
+    
+    const successMsg = '✅ Boleto enviado correctamente.\n\n¿Necesitas algo más?';
+    await whatsappService.sendMessage(from, successMsg);
+    await saveBotMessage(from, successMsg);
+    await sendMenuList(from);
+    
+  } catch (error) {
+    console.error('❌ Error al enviar boleto:', error);
+    const errorMsg = '❌ Ocurrió un error al enviar el boleto. Por favor intenta más tarde.';
+    await whatsappService.sendMessage(from, errorMsg);
+    await saveBotMessage(from, errorMsg);
+    await sendMenuList(from);
+  }
+};
+
+/**
+ * Ejecutar scraper y enviar resultado (OPTIMIZADO)
+ */
+const ejecutarScraper = async (from, dni) => {
+  try {
+    // Ejecutar scraping (retorna datos extendidos)
+    const resultado = await scraperService.obtenerDatosDeuda(dni);
+    
+    if (!resultado.success) {
+      // Error en scraping
+      const errorMsg = `❌ ${resultado.error || 'No se pudo consultar la deuda'}.\n\nPor favor intenta más tarde o comunícate con nuestras oficinas.`;
+      await whatsappService.sendMessage(from, errorMsg);
+      await saveBotMessage(from, errorMsg);
+      await sendMenuList(from);
+      return;
+    }
+    
+    // ============================================
+    // RESPUESTA CON DATOS ENRIQUECIDOS
+    // ============================================
+    const { titular, cuit, hectareas, deuda, servicio } = resultado.data;
+    
+    const datosMsg = `✅ *Consulta Exitosa*
+
+👤 *Titular:* ${titular}
+🆔 *CUIT:* ${cuit}
+🌾 *Finca:* ${hectareas}
+📋 *Servicio:* ${servicio}
+
+💰 *DEUDA TOTAL:* ${deuda}`;
+    
+    await whatsappService.sendMessage(from, datosMsg);
+    await saveBotMessage(from, datosMsg);
+    
+    // Guardar PDF path en el estado para descarga a demanda
+    if (resultado.pdfPath) {
+      userStates[from].tempPdf = resultado.pdfPath;
+      console.log(`💾 PDF guardado en estado: ${resultado.pdfPath}`);
+    }
+    
+    // ============================================
+    // BOTONES DE ACCIÓN
+    // ============================================
+    const buttons = [
+      { id: 'btn_descargar_boleto', title: '📄 Descargar Boleto' },
+      { id: 'btn_cambiar_dni', title: '🔄 Consultar otro' }
+    ];
+    
+    await whatsappService.sendButtonReply(
+      from,
+      'Selecciona una opción:',
+      buttons
+    );
+    
+    console.log(`✅ Consulta de deuda completada para ${from}`);
+    
+  } catch (error) {
+    console.error('❌ Error en ejecutarScraper:', error);
+    const errorMsg = '❌ Ocurrió un error al consultar la deuda. Por favor intenta más tarde.';
+    await whatsappService.sendMessage(from, errorMsg);
+    await saveBotMessage(from, errorMsg);
+    await sendMenuList(from);
   }
 };
 

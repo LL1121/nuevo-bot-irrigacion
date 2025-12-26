@@ -51,7 +51,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Servir el frontend en producción (debe estar al final)
-app.get('*', (req, res) => {
+app.use((req, res) => {
   // Si es una ruta de API, no servir el frontend
   if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) {
     return res.status(404).json({ error: 'Ruta no encontrada' });
@@ -81,11 +81,18 @@ io.on('connection', (socket) => {
 });
 
 // Start server
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
   console.log(`📱 Webhook URL: http://localhost:${PORT}/webhook`);
   console.log(`🔌 Socket.io activo en puerto ${PORT}`);
   console.log(`🌐 API REST: http://localhost:${PORT}/api`);
+  
+  // Inicializar navegador Puppeteer (Singleton)
+  console.log('');
+  console.log('🌐 Inicializando navegador Puppeteer...');
+  const scraperService = require('./services/scraperService');
+  await scraperService.initBrowser();
+  console.log('✅ Navegador listo para scraping optimizado');
 });
 
 module.exports = { app, io };
