@@ -7,6 +7,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "setup-db": "node src/database/setup.js",
+    "setup-new-db": "node src/database/setupNew.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,9 +16,22 @@
   "dependencies": {
     "axios": "^1.13.2",
     "body-parser": "^2.2.1",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "form-data": "^4.0.0",
+    "lucide-react": "^0.562.0",
+    "mysql2": "^3.16.0",
+    "puppeteer": "^23.11.1",
+    "react-toastify": "^11.0.5",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.2",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18"
   }
 }
