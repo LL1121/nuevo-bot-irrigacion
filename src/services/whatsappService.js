@@ -232,10 +232,149 @@ const markAsRead = async (messageId) => {
   }
 };
 
+/**
+ * Subir un archivo local a WhatsApp Media API
+ * @param {string} filePath - Ruta local del archivo
+ * @param {string} mimeType - Tipo MIME (ej: 'application/pdf')
+ * @returns {Promise<string>} - Media ID
+ */
+const uploadMedia = async (filePath, mimeType) => {
+  const fs = require('fs');
+  const FormData = require('form-data');
+  
+  try {
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/media`;
+    
+    const formData = new FormData();
+    formData.append('messaging_product', 'whatsapp');
+    formData.append('file', fs.createReadStream(filePath), {
+      contentType: mimeType
+    });
+    
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        ...formData.getHeaders()
+      }
+    };
+    
+    const response = await axios.post(url, formData, config);
+    console.log('📤 Media subido, ID:', response.data.id);
+    return response.data.id;
+    
+  } catch (error) {
+    console.error('❌ Error subiendo media:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * Enviar documento PDF
+ * @param {string} to - Número del destinatario
+ * @param {string} mediaId - ID del media subido
+ * @param {string} fileName - Nombre del archivo
+ * @param {string} caption - Texto opcional
+ */
+const sendDocument = async (to, mediaId, fileName, caption = '') => {
+  // Parche Argentina
+  if (to.includes('549')) {
+    to = to.replace('549', '54');
+  }
+  
+  try {
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    
+    const data = {
+      messaging_product: 'whatsapp',
+      to: to,
+      type: 'document',
+      document: {
+        id: mediaId,
+        filename: fileName,
+        caption: caption
+      }
+    };
+    
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    await axios.post(url, data, config);
+    console.log(`📄 Documento enviado a ${to}`);
+    
+  } catch (error) {
+    console.error('❌ Error enviando documento:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * Enviar botones de respuesta rápida (máximo 3)
+ * @param {string} to - Número del destinatario
+ * @param {string} text - Texto del mensaje
+ * @param {Array} buttons - Array de botones [{id, title}, ...]
+ */
+const sendButtonReply = async (to, text, buttons) => {
+  // Parche Argentina
+  if (to.includes('549')) {
+    to = to.replace('549', '54');
+  }
+  
+  // Validar máximo 3 botones
+  if (buttons.length > 3) {
+    throw new Error('Máximo 3 botones permitidos');
+  }
+  
+  try {
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    
+    const data = {
+      messaging_product: 'whatsapp',
+      to: to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: {
+          text: text
+        },
+        action: {
+          buttons: buttons.map((btn, index) => ({
+            type: 'reply',
+            reply: {
+              id: btn.id || `btn_${index}`,
+              title: btn.title.substring(0, 20) // Máximo 20 caracteres
+            }
+          }))
+        }
+      }
+    };
+    
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    await axios.post(url, data, config);
+    console.log(`🔘 Botones enviados a ${to}`);
+    
+  } catch (error) {
+    console.error('❌ Error enviando botones:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   sendMessage,
   sendImage,
   sendInteractiveList,
   sendInteractiveButtons,
-  markAsRead
+  markAsRead,
+  uploadMedia,
+  sendDocument,
+  sendButtonReply
 };
