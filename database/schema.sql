@@ -4,6 +4,7 @@ DROP TABLE IF EXISTS usuarios;
 CREATE TABLE usuarios (
   telefono VARCHAR(20) PRIMARY KEY,
   dni VARCHAR(20) NOT NULL,
+  bot_mode ENUM('active', 'paused') DEFAULT 'active' NOT NULL,
   last_update DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_dni (dni)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
