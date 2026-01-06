@@ -215,8 +215,7 @@ const handleUserMessage = async (from, messageBody) => {
   // Botón: Cambiar DNI
   if (messageBody === 'btn_cambiar_dni') {
     const changeDniMsg = '📝 Entendido. Por favor escribí el nuevo DNI o CUIT a consultar (sin puntos ni guiones).';
-    await whatsappService.sendMessage(from, changeDniMsg);
-    await saveBotMessage(from, changeDniMsg);
+    await sendMessageAndSave(from, changeDniMsg);
     userStates[from].step = 'AWAITING_DNI';
     console.log(`🔄 Usuario ${from} solicita cambiar DNI`);
     return;
@@ -271,8 +270,7 @@ Soy tu asistente virtual, diseñado para ayudarte con tus gestiones hídricas de
     welcomeMessage = `👋 ¡Hola ${nombre}! ¿Qué necesitas el día de hoy?`;
   }
   
-  await whatsappService.sendMessage(from, welcomeMessage);
-  await saveBotMessage(from, welcomeMessage);
+  await sendMessageAndSave(from, welcomeMessage);
   console.log(`👋 Mensaje de bienvenida enviado a ${from}`);
 };
 
@@ -296,7 +294,7 @@ const sendMenuList = async (from) => {
         },
         {
           id: 'option_3',
-          title: '� Consultar Deuda',
+          title: '💳 Consultar Deuda',
           description: 'Ver estado de cuenta y boleto'
         },
         {
@@ -316,8 +314,8 @@ const sendMenuList = async (from) => {
     sections
   );
   
-  // Guardar representación textual del menú
-  await saveBotMessage(from, 'Menú interactivo: ¿Qué trámite desea realizar hoy? (Ubicación, Empadronamiento, Regante, Operador)');
+  // Guardar representación textual del menú (interactivo)
+  await sendMessageAndSave(from, 'Menú interactivo: ¿Qué trámite desea realizar hoy? (Ubicación, Empadronamiento, Consultar Deuda, Hablar con Operador)', 'interactive');
   
   console.log(`📋 Lista de menú enviada a ${from}`);
 };
@@ -339,7 +337,7 @@ const handleMainMenu = async (from, option) => {
 
 🗺️ Te esperamos para resolver tus consultas presenciales.`;
       
-      await whatsappService.sendMessage(from, locationText);
+      await sendMessageAndSave(from, locationText);
       // Reenviar solo la lista, sin bienvenida
       await sendMenuList(from);
       console.log(`📍 Info de ubicación enviada a ${from}`);
@@ -357,8 +355,7 @@ Para darte de alta como usuario del sistema hídrico, acercate con:
 
 ℹ️ El trámite es personal y presencial.`;
       
-      await whatsappService.sendMessage(from, infoText);
-      await saveBotMessage(from, infoText);
+      await sendMessageAndSave(from, infoText);
       // Reenviar solo la lista, sin bienvenida
       await sendMenuList(from);
       console.log(`📋 Info de empadronamiento enviada a ${from}`);
@@ -378,7 +375,7 @@ Su consulta ha sido registrada. Un operador humano se pondrá en contacto a la b
 
 ⏳ Tiempo de espera estimado: 5 minutos.`;
       
-      await whatsappService.sendMessage(from, operatorText);
+      await sendMessageAndSave(from, operatorText);
       // Reenviar solo la lista, sin bienvenida
       await sendMenuList(from);
       console.log(`👤 Mensaje de operador enviado a ${from}`);
@@ -386,7 +383,7 @@ Su consulta ha sido registrada. Un operador humano se pondrá en contacto a la b
 
     default:
       // Opción no válida, reenviar solo la lista
-      await whatsappService.sendMessage(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
+      await sendMessageAndSave(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
       await sendMenuList(from);
       console.log(`⚠️ Opción inválida de ${from}, reenviando menú`);
       break;
@@ -558,16 +555,14 @@ Gracias por usar el sistema de Irrigación Malargüe.
 
 ¡Hasta pronto!`;
       
-      await whatsappService.sendMessage(from, goodbyeText);
-      await saveBotMessage(from, goodbyeText);
+      await sendMessageAndSave(from, goodbyeText);
       userStates[from] = { step: 'START', padron: null };
       console.log(`👋 Usuario ${from} salió del sistema`);
       break;
 
     default:
       // Opción no válida
-      await whatsappService.sendMessage(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
-      await saveBotMessage(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
+      await sendMessageAndSave(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
       await handlePadronInput(from, padron);
       console.log(`⚠️ Opción inválida en AUTH_MENU de ${from}`);
       break;
@@ -585,8 +580,7 @@ const handleConsultarDeuda = async (from) => {
     if (dni) {
       // Tiene DNI: Ejecutar scraper directamente
       const searchingMsg = `🔍 Buscando deuda para el DNI vinculado *${dni}*...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
-      await whatsappService.sendMessage(from, searchingMsg);
-      await saveBotMessage(from, searchingMsg);
+      await sendMessageAndSave(from, searchingMsg);
       
       // Ejecutar scraper
       await ejecutarScraper(from, dni);
@@ -599,8 +593,7 @@ _Ejemplo: 12345678_
 
 Este número quedará vinculado a tu WhatsApp para futuras consultas.`;
       
-      await whatsappService.sendMessage(from, askDniText);
-      await saveBotMessage(from, askDniText);
+      await sendMessageAndSave(from, askDniText);
       userStates[from].step = 'AWAITING_DNI';
       console.log(`📝 Solicitando DNI a ${from}`);
     }
@@ -608,8 +601,7 @@ Este número quedará vinculado a tu WhatsApp para futuras consultas.`;
   } catch (error) {
     console.error('❌ Error en handleConsultarDeuda:', error);
     const errorMsg = '❌ Ocurrió un error al procesar tu solicitud. Por favor intenta más tarde.';
-    await whatsappService.sendMessage(from, errorMsg);
-    await saveBotMessage(from, errorMsg);
+    await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from);
   }
 };
@@ -624,8 +616,7 @@ const handleDniInput = async (from, messageBody) => {
     
     if (!dni || dni.length < 7 || dni.length > 11) {
       const errorMsg = '⚠️ Por favor ingresa un DNI o CUIT válido (7 a 11 dígitos numéricos).\n\n_Ejemplo: 12345678_';
-      await whatsappService.sendMessage(from, errorMsg);
-      await saveBotMessage(from, errorMsg);
+      await sendMessageAndSave(from, errorMsg);
       return;
     }
     
@@ -633,8 +624,7 @@ const handleDniInput = async (from, messageBody) => {
     await clienteService.actualizarDni(from, dni);
     
     const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n🔍 Buscando tu deuda...`;
-    await whatsappService.sendMessage(from, confirmMsg);
-    await saveBotMessage(from, confirmMsg);
+    await sendMessageAndSave(from, confirmMsg);
     
     // Ejecutar scraper
     await ejecutarScraper(from, dni);
@@ -645,8 +635,7 @@ const handleDniInput = async (from, messageBody) => {
   } catch (error) {
     console.error('❌ Error en handleDniInput:', error);
     const errorMsg = '❌ Ocurrió un error al vincular tu DNI. Por favor intenta más tarde.';
-    await whatsappService.sendMessage(from, errorMsg);
-    await saveBotMessage(from, errorMsg);
+    await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from);
   }
 };
@@ -663,8 +652,7 @@ const handleDescargarBoleto = async (from) => {
     
     if (!pdfPath) {
       const noPdfMsg = '⚠️ No hay ningún boleto disponible.\n\nPor favor realiza una nueva consulta de deuda.';
-      await whatsappService.sendMessage(from, noPdfMsg);
-      await saveBotMessage(from, noPdfMsg);
+      await sendMessageAndSave(from, noPdfMsg);
       await sendMenuList(from);
       return;
     }
@@ -672,8 +660,7 @@ const handleDescargarBoleto = async (from) => {
     // Verificar si el archivo existe
     if (!fs.existsSync(pdfPath)) {
       const expiredMsg = '⚠️ El boleto ha expirado o ya fue descargado.\n\nPor favor realiza una nueva consulta.';
-      await whatsappService.sendMessage(from, expiredMsg);
-      await saveBotMessage(from, expiredMsg);
+      await sendMessageAndSave(from, expiredMsg);
       
       // Limpiar estado
       delete userStates[from].tempPdf;
@@ -684,8 +671,7 @@ const handleDescargarBoleto = async (from) => {
     
     // Enviar mensaje de procesamiento
     const sendingMsg = '📤 Enviando boleto de pago...';
-    await whatsappService.sendMessage(from, sendingMsg);
-    await saveBotMessage(from, sendingMsg);
+    await sendMessageAndSave(from, sendingMsg);
     
     // Subir PDF a WhatsApp
     const mediaId = await whatsappService.uploadMedia(pdfPath, 'application/pdf');
@@ -710,15 +696,13 @@ const handleDescargarBoleto = async (from) => {
     console.log(`🗑️ PDF eliminado: ${pdfPath}`);
     
     const successMsg = '✅ Boleto enviado correctamente.\n\n¿Necesitas algo más?';
-    await whatsappService.sendMessage(from, successMsg);
-    await saveBotMessage(from, successMsg);
+    await sendMessageAndSave(from, successMsg);
     await sendMenuList(from);
     
   } catch (error) {
     console.error('❌ Error al enviar boleto:', error);
     const errorMsg = '❌ Ocurrió un error al enviar el boleto. Por favor intenta más tarde.';
-    await whatsappService.sendMessage(from, errorMsg);
-    await saveBotMessage(from, errorMsg);
+    await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from);
   }
 };
@@ -795,8 +779,9 @@ const saveBotMessage = async (telefono, contenido) => {
   try {
     await mensajeService.guardarMensaje({
       telefono,
-      tipo: 'bot',
-      cuerpo: contenido
+      tipo: 'text',
+      cuerpo: contenido,
+      emisor: 'bot'
     });
     
     // Emitir evento Socket.io
@@ -810,6 +795,45 @@ const saveBotMessage = async (telefono, contenido) => {
     }
   } catch (error) {
     console.error('❌ Error al guardar mensaje del bot:', error);
+  }
+};
+
+/**
+ * Envía un mensaje a WhatsApp Y lo guarda en la BD automáticamente
+ * @param {string} telefono - Número destino
+ * @param {string} mensaje - Contenido del mensaje
+ * @param {string} tipo - Tipo de mensaje ('text', 'interactivo', etc.)
+ */
+const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
+  try {
+    // 1. Enviar a WhatsApp
+    await whatsappService.sendMessage(telefono, mensaje);
+    
+    // 2. Guardar en BD
+    await mensajeService.guardarMensaje({
+      telefono,
+      tipo,
+      cuerpo: mensaje,
+      emisor: 'bot',
+      url_archivo: null
+    });
+    
+    // 3. Emitir evento Socket.io
+    if (global.io) {
+      global.io.emit('nuevo_mensaje', {
+        telefono,
+        mensaje,
+        emisor: 'bot',
+        tipo,
+        timestamp: new Date()
+      });
+    }
+    
+    console.log(`✅ Mensaje enviado y guardado: ${telefono}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error en sendMessageAndSave:', error);
+    throw error;
   }
 };
 
