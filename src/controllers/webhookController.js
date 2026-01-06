@@ -2,6 +2,7 @@ const whatsappService = require('../services/whatsappService');
 const userService = require('../services/userService');
 const scraperService = require('../services/scraperService');
 const mensajeService = require('../services/mensajeService');
+const clienteService = require('../services/clienteService');
 
 // Memoria temporal para estados de usuarios
 const userStates = {};
@@ -68,8 +69,30 @@ const receiveMessage = async (req, res) => {
         
         const from = message.from;
         
+        // ============================================
+        // AUTO-REGISTRO DEL CLIENTE
+        // ============================================
+        const pushName = body.entry[0].changes[0].value.contacts?.[0]?.profile?.name || 'Sin Nombre';
+        
+        let cliente = null;
+        let esClienteNuevo = false;
+        try {
+          cliente = await clienteService.obtenerOCrearCliente(from, pushName);
+          // Detectar si es cliente nuevo: ultima_interaccion ≈ fecha_registro
+          if (cliente) {
+            const ultimaInteraccion = new Date(cliente.ultima_interaccion).getTime();
+            const fechaRegistro = new Date(cliente.fecha_registro).getTime();
+            const diferencia = ultimaInteraccion - fechaRegistro;
+            esClienteNuevo = diferencia < 2000; // Menos de 2 segundos = es nuevo
+          }
+        } catch (error) {
+          console.error('❌ Error en auto-registro de cliente:', error);
+        }
+        
         // Extraer el mensaje: puede ser texto o respuesta interactiva
         let messageBody = '';
+        let tipoMensaje = message.type || 'text';
+        let mediaUrl = null;
         
         if (message.type === 'text') {
           messageBody = message.text?.body?.trim() || '';
@@ -80,39 +103,82 @@ const receiveMessage = async (req, res) => {
           } else if (message.interactive.type === 'button_reply') {
             messageBody = message.interactive.button_reply.id;
           }
+        } else if (message.type === 'image') {
+          messageBody = message.image?.caption || '[Imagen]';
+          mediaUrl = message.image?.id;
+          tipoMensaje = 'image';
+        } else if (message.type === 'audio') {
+          messageBody = '[Audio]';
+          mediaUrl = message.audio?.id;
+          tipoMensaje = 'audio';
+        } else if (message.type === 'document') {
+          messageBody = message.document?.filename || '[Documento]';
+          mediaUrl = message.document?.id;
+          tipoMensaje = 'document';
         }
 
-        console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${message.type})`);
+        console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${tipoMensaje})`);
 
-        // Guardar mensaje del cliente en la base de datos
-        try {
-          await mensajeService.guardarMensaje({
-            telefono: from,
-            padron: userStates[from]?.padron || null,
-            remitente: 'cliente',
-            contenido: messageBody
-          });
+        // Helper para guardar/emitir el mensaje del cliente DESPUÉS de responder
+        const persistIncoming = async () => {
+          try {
+            await mensajeService.guardarMensaje({
+              telefono: from,
+              tipo: tipoMensaje,
+              cuerpo: messageBody,
+              url_archivo: mediaUrl
+            });
+
+            if (global.io) {
+              global.io.emit('nuevo_mensaje', {
+                telefono: from,
+                mensaje: messageBody,
+                remitente: 'cliente',
+                timestamp: new Date()
+              });
+            }
+          } catch (error) {
+            console.error('❌ Error al guardar mensaje del cliente:', error);
+          }
+        };
+
+        // ============================================
+        // VERIFICAR ESTADO DEL BOT ANTES DE RESPONDER
+        // ============================================
+        const botActivo = await clienteService.esBotActivo(from);
+        
+        if (!botActivo) {
+          console.log(`⏸️ Bot pausado para ${from} - Mensaje guardado sin respuesta automática`);
           
-          // Emitir evento Socket.io para actualizar dashboard en tiempo real
+          // Emitir solo para que el operador vea el mensaje
           if (global.io) {
-            global.io.emit('nuevo_mensaje', {
+            global.io.emit('bot_pausado', {
               telefono: from,
               mensaje: messageBody,
-              remitente: 'cliente',
               timestamp: new Date()
             });
           }
-        } catch (error) {
-          console.error('❌ Error al guardar mensaje del cliente:', error);
+          
+          // Guardar mensaje (aunque el bot esté pausado)
+          await persistIncoming();
+          
+          // No enviar respuesta automática
+          return res.sendStatus(200);
         }
 
         // Inicializar estado del usuario si no existe
         if (!userStates[from]) {
-          userStates[from] = { step: 'START', padron: null };
+          userStates[from] = { step: 'START', padron: null, nombreCliente: cliente?.nombre_whatsapp || pushName, esClienteNuevo };
         }
 
         // Procesar mensaje según el estado actual
         await handleUserMessage(from, messageBody);
+
+        // Guardar mensaje del cliente EN BACKGROUND (sin bloquear respuesta)
+        // Se ejecuta async pero no esperamos su resultado
+        persistIncoming().catch(error => {
+          console.error('❌ Error en persistIncoming background:', error);
+        });
       }
 
       // Siempre responder con 200 OK
@@ -159,8 +225,8 @@ const handleUserMessage = async (from, messageBody) => {
   switch (currentState) {
     case 'START':
     default:
-      // Enviar bienvenida + menú
-      await sendWelcomeMessage(from);
+      // Enviar bienvenida + menú (personalizado si es cliente conocido)
+      await sendWelcomeMessage(from, userStates[from].nombreCliente, userStates[from].esClienteNuevo);
       await sendMenuList(from);
       userStates[from].step = 'MAIN_MENU';
       break;
@@ -184,14 +250,26 @@ const handleUserMessage = async (from, messageBody) => {
 };
 
 /**
- * Envía el mensaje de bienvenida institucional
+ * Envía el mensaje de bienvenida personalizado o institucional
+ * @param {string} from - Número de teléfono
+ * @param {string} nombreCliente - Nombre del cliente (si existe)
+ * @param {boolean} esClienteNuevo - Si es cliente nuevo o existente
  */
-const sendWelcomeMessage = async (from) => {
-  const welcomeMessage = `👋 ¡Hola! Te damos la bienvenida.
+const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = true) => {
+  let welcomeMessage = '';
+  
+  if (esClienteNuevo) {
+    // Saludo genérico para clientes nuevos
+    welcomeMessage = `👋 ¡Hola! Te damos la bienvenida.
 
 Estás comunicado con la Jefatura de Zona de Riego de ríos Malargüe, Grande, Barranca y Colorado.
 
 Soy tu asistente virtual, diseñado para ayudarte con tus gestiones hídricas de forma rápida y sencilla. 💧`;
+  } else {
+    // Saludo personalizado para clientes conocidos
+    const nombre = nombreCliente ? nombreCliente.split(' ')[0] : 'amigo'; // Usar solo el primer nombre
+    welcomeMessage = `👋 ¡Hola ${nombre}! ¿Qué necesitas el día de hoy?`;
+  }
   
   await whatsappService.sendMessage(from, welcomeMessage);
   await saveBotMessage(from, welcomeMessage);
@@ -502,7 +580,7 @@ Gracias por usar el sistema de Irrigación Malargüe.
 const handleConsultarDeuda = async (from) => {
   try {
     // Verificar si ya tiene DNI vinculado
-    const dni = await userService.getDni(from);
+    const dni = await clienteService.obtenerDni(from);
     
     if (dni) {
       // Tiene DNI: Ejecutar scraper directamente
@@ -552,7 +630,7 @@ const handleDniInput = async (from, messageBody) => {
     }
     
     // Guardar DNI en BD
-    await userService.saveDni(from, dni);
+    await clienteService.actualizarDni(from, dni);
     
     const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n🔍 Buscando tu deuda...`;
     await whatsappService.sendMessage(from, confirmMsg);
@@ -717,9 +795,8 @@ const saveBotMessage = async (telefono, contenido) => {
   try {
     await mensajeService.guardarMensaje({
       telefono,
-      padron: userStates[telefono]?.padron || null,
-      remitente: 'bot',
-      contenido
+      tipo: 'bot',
+      cuerpo: contenido
     });
     
     // Emitir evento Socket.io
