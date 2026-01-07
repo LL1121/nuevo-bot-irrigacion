@@ -38,7 +38,9 @@
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.2",
     "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.23",
