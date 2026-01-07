@@ -93,6 +93,7 @@ const bootstrap = async () => {
   const apiRoutes = require('./routes/apiRoutes');
   const backupRoutes = require('./routes/backupRoutes');
   const auditRoutes = require('./routes/auditRoutes');
+  const healthRoutes = require('./routes/healthRoutes');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -103,17 +104,11 @@ const bootstrap = async () => {
   app.use('/webhook', webhookRoutes);
   app.use('/api', apiRoutes);
   app.use('/api', backupRoutes);
-  app.use('/api', auditRoutes);
+  app.use('/api', healthRoutes);
 
-  // Health check endpoint
-  app.get('/api/health', (req, res) => {
-    res.json({ 
-      status: 'ok',
-      message: 'Bot de WhatsApp - Irrigación funcionando correctamente',
-      timestamp: new Date()
-    });
-  });
-
+  // Health check endpoint (deprecated - moved to healthRoutes, kept for backwards compatibility)
+  // GET /api/health - Ahora manejado por healthRoutes (más completo)
+  
   // Servir el frontend en producción (debe estar al final)
   app.use((req, res) => {
     // Si es una ruta de API, no servir el frontend
