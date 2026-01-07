@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp } from 'lucide-react';
+import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
+import Login from './components/Login';
 
 // Configurar conexión con backend
 const socket: Socket = io('http://localhost:3000', {
@@ -26,6 +27,11 @@ socket.on('connect_error', (error) => {
 });
 
 export default function App() {
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return !!localStorage.getItem('authToken');
+  });
+
   // Theme color mapping
   const themeColors: Record<string, { primary: string; gradient: string; light: string; hex: string }> = {
     emerald: { primary: 'emerald-600', gradient: 'from-emerald-500 to-teal-500', light: 'emerald-50', hex: '#10b981' },
@@ -87,6 +93,8 @@ export default function App() {
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
   const [videoVolume, setVideoVolume] = useState(1);
   const [videoMuted, setVideoMuted] = useState(false);
+  const [audioVolume, setAudioVolume] = useState<Record<number, number>>({});
+  const [showVolumeControl, setShowVolumeControl] = useState<number | null>(null);
   const [messagesOffset, setMessagesOffset] = useState<Record<string, number>>({});
   const [messagesLimit] = useState(50);
   const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
@@ -173,12 +181,43 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   return `http://localhost:3000/api/media/${mediaId}`;
 };
 
+  // Auth handlers
+  const handleLoginSuccess = () => {
+    setIsAuthenticated(true);
+    // Reconectar socket después del login
+    if (!socket.connected) {
+      socket.connect();
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('user');
+    
+    // Limpiar estado de conversaciones
+    setConversationsState([]);
+    setSelectedChat(null);
+    setMessage('');
+    
+    // Desconectar y reconectar socket sin autenticación
+    socket.disconnect();
+    
+    // Actualizar estado de autenticación
+    setIsAuthenticated(false);
+  };
+
   // ⚡ useEffect para cargar chats desde el backend
   useEffect(() => {
+    // Solo cargar chats si está autenticado
+    if (!isAuthenticated) return;
+
     const loadChats = async () => {
       try {
+        const token = localStorage.getItem('authToken');
         console.log('🔄 Cargando chats desde la API...');
-        const response = await axios.get('http://localhost:3000/api/chats');
+        const response = await axios.get('http://localhost:3000/api/chats', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
         console.log('📦 Respuesta completa del backend:', response.data);
         console.log('📦 Tipo de response.data:', typeof response.data);
         console.log('📦 Es array?', Array.isArray(response.data));
@@ -358,7 +397,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
       socket.off('nuevo_mensaje');
       socket.off('bot_mode_changed');
     };
-  }, []);
+  }, [isAuthenticated]);
 
   // Cerrar menús al hacer click fuera
   useEffect(() => {
@@ -446,7 +485,10 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           
           console.log('📨 Cargando mensajes para:', currentChat.phone);
           const currentOffset = messagesOffset[currentChat.phone] || 0;
-          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=${messagesLimit}&offset=${currentOffset}`);
+          const token = localStorage.getItem('authToken');
+          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=${messagesLimit}&offset=${currentOffset}`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {}
+          });
           console.log('📦 Respuesta de mensajes:', response.data);
           
           // El backend devuelve { success, messages, telefono, limit, offset, total }
@@ -625,7 +667,10 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   // Funciones para control del bot
   const pauseBot = async (phone: string) => {
     try {
-      await axios.post(`http://localhost:3000/api/chats/${phone}/pause`);
+      const token = localStorage.getItem('authToken');
+      await axios.post(`http://localhost:3000/api/chats/${phone}/pause`, {}, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       console.log('✅ Bot pausado para:', phone);
     } catch (error) {
       console.error('❌ Error pausando bot:', error);
@@ -634,7 +679,10 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   
   const activateBot = async (phone: string) => {
     try {
-      await axios.post(`http://localhost:3000/api/chats/${phone}/activate`);
+      const token = localStorage.getItem('authToken');
+      await axios.post(`http://localhost:3000/api/chats/${phone}/activate`, {}, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       console.log('✅ Bot activado para:', phone);
     } catch (error) {
       console.error('❌ Error activando bot:', error);
@@ -702,11 +750,14 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         
         // Enviar al backend
         try {
+          const token = localStorage.getItem('authToken');
           const response = await axios.post('http://localhost:3000/api/send', {
             telefono: currentChat.phone,
             mensaje: messageText,
             operador: 'Panel Frontend',
             emisor: 'operador' // Explícitamente marcar como operador
+          }, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           
           console.log('✅ Mensaje enviado:', response.data);
@@ -1141,6 +1192,11 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
     setShowInfo(false);
   };
 
+  // Si no está autenticado, mostrar pantalla de login
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={handleLoginSuccess} theme={theme} darkMode={darkMode} />;
+  }
+
   return (
     <div className="flex h-screen bg-gray-100 dark:bg-gray-900 dark:text-gray-100 flex-col">
       {!isOnline && (
@@ -1153,9 +1209,9 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
       <div className={`${selectedChat === null ? 'block' : 'hidden'} md:flex w-full md:w-96 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex-col`}>
         {/* Header */}
         <div className="p-4 text-white" style={{ background: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)` }}>
-          <div className="flex items-center justify-between mb-4">
-            <img src="/Marca-IRRIGACIÓN-blanco.png" alt="Irrigación" className="h-20 -ml-2" />
-            <div className="flex items-center gap-2 relative" ref={sidebarMenuRef}>
+          <div className="flex items-center justify-center mb-4">
+            <img src="/Marca-IRRIGACIÓN-blanco.png" alt="Irrigación" className="h-24 w-auto" />
+            <div className="flex items-center gap-2 relative absolute left-6" ref={sidebarMenuRef}>
               <button 
                 className="text-white hover:bg-white/20 p-2 rounded-lg transition-colors"
                 onClick={() => setShowSidebarMenu((v) => !v)}
@@ -1188,6 +1244,13 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                     onClick={() => { setShowPreferences(true); setShowSidebarMenu(false); }}
                   >
                     Configuración
+                  </button>
+                  <div className="border-t border-gray-200 dark:border-gray-700 my-1"></div>
+                  <button 
+                    className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-red-600 dark:text-red-400"
+                    onClick={handleLogout}
+                  >
+                    Cerrar Sesión
                   </button>
                 </div>
               )}
@@ -1440,7 +1503,10 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                   
                   try {
                     const currentOffset = messagesOffset[phone] || 0;
-                    const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=${messagesLimit}&offset=${currentOffset}`);
+                    const token = localStorage.getItem('authToken');
+                    const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=${messagesLimit}&offset=${currentOffset}`, {
+                      headers: token ? { Authorization: `Bearer ${token}` } : {}
+                    });
                     const newMessages = response.data.messages || [];
                     
                     if (newMessages.length > 0) {
@@ -1663,77 +1729,182 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                       </div>
                     </div>
                   ) : (msg as any).type === 'audio' ? (
-                    <div
-                      className={`relative group max-w-[260px] sm:max-w-sm px-4 py-3 rounded-2xl shadow-sm ${
-                        msg.sent ? 'text-white rounded-br-sm' : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-bl-sm'
-                      }`}
-                      style={msg.sent ? {
-                        backgroundImage: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)`,
-                        ...( selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})
-                      } : (selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})}
-                      onContextMenu={(e) => { openContextMenu(e, 'message', msg.id); e.stopPropagation(); }}
-                    >
-                      <button
-                        className={`absolute top-2 right-2 p-1 rounded-full transition opacity-0 group-hover:opacity-100 ${msg.sent ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}
-                        onClick={(e) => { e.stopPropagation(); handleCopyMessage(msg); }}
-                        title="Copiar"
+                    <>
+                      <audio
+                        id={`audio-${msg.id}`}
+                        src={getMediaUrl((msg as any).fileUrl)}
+                        onLoadedData={(e) => {
+                          const audio = e.currentTarget;
+                          audio.volume = audioVolume[msg.id] ?? 1;
+                        }}
+                        onTimeUpdate={(e) => {
+                          const audio = e.currentTarget;
+                          const progress = (audio.currentTime / audio.duration) * 100;
+                          setAudioProgress(prev => ({ ...prev, [msg.id]: progress }));
+                        }}
+                        onEnded={() => {
+                          setAudioPlaying(null);
+                          setAudioProgress(prev => ({ ...prev, [msg.id]: 0 }));
+                        }}
+                        className="hidden"
+                      />
+                      <div
+                        className={`relative group max-w-[280px] sm:max-w-sm px-4 py-3 rounded-2xl shadow-sm ${
+                          msg.sent ? 'text-white rounded-br-sm' : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-bl-sm'
+                        }`}
+                        style={msg.sent ? {
+                          backgroundImage: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)`,
+                          ...( selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})
+                        } : (selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})}
+                        onContextMenu={(e) => { openContextMenu(e, 'message', msg.id); e.stopPropagation(); }}
                       >
-                        {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
-                      </button>
-                      <div className="flex items-center gap-3">
                         <button
-                          onClick={() => setAudioPlaying(audioPlaying === msg.id ? null : msg.id)}
-                          className={`p-2 rounded-full flex-shrink-0 transition-all ${
-                            msg.sent
-                              ? 'bg-white/20 hover:bg-white/30 text-white'
-                              : `hover:bg-gray-100 dark:hover:bg-gray-700`
-                          }`}
-                          style={!msg.sent ? { color: themeColors[theme].hex } : undefined}
+                          className={`absolute top-2 right-2 p-1 rounded-full transition opacity-0 group-hover:opacity-100 ${msg.sent ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}
+                          onClick={(e) => { e.stopPropagation(); handleCopyMessage(msg); }}
+                          title="Copiar"
                         >
-                          {audioPlaying === msg.id ? (
-                            <Pause size={20} />
-                          ) : (
-                            <Play size={20} />
-                          )}
+                          {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                         </button>
-                        <div className="flex-1">
-                          {(() => {
-                            const duration = (msg as any).duration || '0:32';
-                            const [mins, secs] = duration.split(':').map(Number);
-                            const totalSeconds = mins * 60 + secs;
-                            const currentSeconds = Math.floor((audioProgress[msg.id] || 0) / 100 * totalSeconds);
-                            const currentMins = Math.floor(currentSeconds / 60);
-                            const currentSecs = currentSeconds % 60;
-                            const isPlaying = audioPlaying === msg.id;
-                            
-                            return (
-                              <>
-                                <div className="w-full bg-white/30 rounded-full h-1 mb-1" style={{width: `${Math.max(60, totalSeconds * 4)}px`}}>
-                                  <div
-                                    className="h-full rounded-full transition-all"
-                                    style={{
-                                      width: `${audioProgress[msg.id] || 0}%`,
-                                      backgroundColor: msg.sent ? 'white' : themeColors[theme].hex
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => {
+                              const audioElement = document.getElementById(`audio-${msg.id}`) as HTMLAudioElement;
+                              if (audioElement) {
+                                if (audioPlaying === msg.id) {
+                                  audioElement.pause();
+                                  setAudioPlaying(null);
+                                } else {
+                                  if (audioPlaying !== null) {
+                                    const otherAudio = document.getElementById(`audio-${audioPlaying}`) as HTMLAudioElement;
+                                    if (otherAudio) otherAudio.pause();
+                                  }
+                                  audioElement.play();
+                                  setAudioPlaying(msg.id);
+                                }
+                              }
+                            }}
+                            className={`p-2 rounded-full flex-shrink-0 transition-all ${
+                              msg.sent
+                                ? 'bg-white/20 hover:bg-white/30 text-white'
+                                : `hover:bg-gray-100 dark:hover:bg-gray-700`
+                            }`}
+                            style={!msg.sent ? { color: themeColors[theme].hex } : undefined}
+                          >
+                            {audioPlaying === msg.id ? (
+                              <Pause size={20} />
+                            ) : (
+                              <Play size={20} />
+                            )}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            {(() => {
+                              const audioElement = typeof document !== 'undefined' ? document.getElementById(`audio-${msg.id}`) as HTMLAudioElement | null : null;
+                              const duration = audioElement?.duration || 0;
+                              const currentTime = audioElement?.currentTime || 0;
+                              const durationMins = Math.floor(duration / 60);
+                              const durationSecs = Math.floor(duration % 60);
+                              const currentMins = Math.floor(currentTime / 60);
+                              const currentSecs = Math.floor(currentTime % 60);
+                              const isPlaying = audioPlaying === msg.id;
+                              
+                              return (
+                                <>
+                                  <div 
+                                    className="w-full bg-white/30 rounded-full h-1 mb-1 cursor-pointer"
+                                    onClick={(e) => {
+                                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                      const percent = (e.clientX - rect.left) / rect.width;
+                                      const audioElement = document.getElementById(`audio-${msg.id}`) as HTMLAudioElement;
+                                      if (audioElement) {
+                                        audioElement.currentTime = percent * audioElement.duration;
+                                      }
                                     }}
-                                  />
-                                </div>
-                                <div className={`text-xs ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
-                                  {isPlaying ? (
-                                    <span>{String(currentMins).padStart(2, '0')}:{String(currentSecs).padStart(2, '0')} / {duration}</span>
-                                  ) : (
-                                    <span>{duration}</span>
-                                  )}
-                                </div>
-                              </>
-                            );
-                          })()}
+                                  >
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${(currentTime / duration) * 100 || 0}%`,
+                                        backgroundColor: msg.sent ? 'white' : themeColors[theme].hex
+                                      }}
+                                    />
+                                  </div>
+                                  <div className={`text-xs ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+                                    {isPlaying ? (
+                                      <span>{String(currentMins).padStart(2, '0')}:{String(currentSecs).padStart(2, '0')} / {String(durationMins).padStart(2, '0')}:{String(durationSecs).padStart(2, '0')}</span>
+                                    ) : (
+                                      <span>{String(durationMins).padStart(2, '0')}:{String(durationSecs).padStart(2, '0')}</span>
+                                    )}
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                          
+                          {/* Volume control */}
+                          <div 
+                            className="relative flex items-center"
+                            onMouseEnter={() => setShowVolumeControl(msg.id)}
+                            onMouseLeave={() => setShowVolumeControl(null)}
+                          >
+                            <button onClick={() => {
+                              const audioElement = document.getElementById(`audio-${msg.id}`) as HTMLAudioElement;
+                              if (audioElement) {
+                                const currentVol = audioVolume[msg.id] ?? 1;
+                                if (currentVol > 0) {
+                                  audioElement.volume = 0;
+                                  setAudioVolume(prev => ({ ...prev, [msg.id]: 0 }));
+                                } else {
+                                  audioElement.volume = 1;
+                                  setAudioVolume(prev => ({ ...prev, [msg.id]: 1 }));
+                                }
+                              }
+                            }}
+                            className={`p-1 flex-shrink-0 transition-all ${
+                              msg.sent
+                                ? 'hover:bg-white/20 text-white'
+                                : `hover:bg-gray-100 dark:hover:bg-gray-700`
+                            }`}
+                            style={!msg.sent ? { color: themeColors[theme].hex } : undefined}
+                            >
+                              {(() => {
+                                const vol = audioVolume[msg.id] ?? 1;
+                                if (vol === 0) return <VolumeX size={18} />;
+                                if (vol < 0.5) return <Volume1 size={18} />;
+                                return <Volume2 size={18} />;
+                              })()}
+                            </button>
+                            
+                            <div className={`absolute right-full mr-2 transition-all duration-300 ease-out ${
+                              showVolumeControl === msg.id ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
+                            }`}>
+                              <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                value={(audioVolume[msg.id] ?? 1) * 100}
+                                onChange={(e) => {
+                                  const audioElement = document.getElementById(`audio-${msg.id}`) as HTMLAudioElement;
+                                  const volume = parseFloat(e.target.value) / 100;
+                                  if (audioElement) audioElement.volume = volume;
+                                  setAudioVolume(prev => ({ ...prev, [msg.id]: volume }));
+                                }}
+                                className="w-24 accent-emerald-500"
+                                style={{
+                                  background: `linear-gradient(to right, ${msg.sent ? 'white' : themeColors[theme].hex} 0%, ${msg.sent ? 'white' : themeColors[theme].hex} ${(audioVolume[msg.id] ?? 1) * 100}%, ${msg.sent ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.1)'} ${(audioVolume[msg.id] ?? 1) * 100}%, ${msg.sent ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.1)'} 100%)`
+                                }}
+                              />
+                              <div className={`text-xs mt-1 text-center ${msg.sent ? 'text-white/80' : 'text-gray-600 dark:text-gray-400'}`}>
+                                {Math.round((audioVolume[msg.id] ?? 1) * 100)}%
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className={`flex items-center gap-1 justify-end mt-2 ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+                          <span className="text-xs">{msg.time}</span>
+                          {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
                         </div>
                       </div>
-                      <div className={`flex items-center gap-1 justify-end mt-2 ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
-                        <span className="text-xs">{msg.time}</span>
-                        {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
-                      </div>
-                    </div>
+                    </>
                   ) : (msg as any).type === 'interactive' ? (
                     <div
                       className={`relative group max-w-[320px] rounded-2xl shadow-lg overflow-hidden ${
