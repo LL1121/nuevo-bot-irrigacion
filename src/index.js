@@ -27,6 +27,9 @@ global.io = io;
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
+// Importar backup scheduler
+const { startBackupScheduler, stopBackupScheduler } = require('./services/backupScheduler');
+
 // Security Middlewares
 // 1) Helmet for secure HTTP headers
 app.use(helmet());
@@ -86,6 +89,7 @@ const bootstrap = async () => {
   // Cargar rutas después de que DB exista
   const webhookRoutes = require('./routes/webhookRoutes');
   const apiRoutes = require('./routes/apiRoutes');
+  const backupRoutes = require('./routes/backupRoutes');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -95,6 +99,7 @@ const bootstrap = async () => {
 
   app.use('/webhook', webhookRoutes);
   app.use('/api', apiRoutes);
+  app.use('/api', backupRoutes);
 
   // Health check endpoint
   app.get('/api/health', (req, res) => {
@@ -142,6 +147,29 @@ const bootstrap = async () => {
     console.log(`🔌 Socket.io activo en puerto ${PORT}`);
     console.log(`🌐 API REST: http://localhost:${PORT}/api`);
     console.log('✅ Sistema de scraping listo');
+    
+    // Iniciar scheduler de backups automáticos
+    console.log('');
+    startBackupScheduler();
+  });
+  
+  // Graceful shutdown: detener backups y cerrar conexiones
+  process.on('SIGINT', () => {
+    console.log('\n\n🛑 Recibida señal SIGINT - Iniciando shutdown graceful...');
+    stopBackupScheduler();
+    server.close(() => {
+      console.log('✅ Servidor cerrado correctamente');
+      process.exit(0);
+    });
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('\n\n🛑 Recibida señal SIGTERM - Iniciando shutdown graceful...');
+    stopBackupScheduler();
+    server.close(() => {
+      console.log('✅ Servidor cerrado correctamente');
+      process.exit(0);
+    });
   });
 };
 

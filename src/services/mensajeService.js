@@ -1,41 +1,55 @@
 const { getPool } = require('../config/db');
+const { withTransaction } = require('./transactionService');
+const clienteService = require('./clienteService');
 
 /**
- * Guarda un mensaje en la base de datos
+ * Guarda un mensaje en la base de datos + actualiza cliente
+ * TRANSACCIÓN ATÓMICA: Ambas operaciones se completan juntas o se revierten juntas
+ * 
  * @param {Object} data - Datos del mensaje
  * @returns {Object} Mensaje guardado con ID
  */
 const guardarMensaje = async (data) => {
-  try {
-    const { 
-      telefono, 
-      tipo = 'text',
-      cuerpo = '',
-      url_archivo = null,
-      emisor = 'usuario'
-    } = data;
-    
-    const pool = getPool();
-    const [result] = await pool.execute(
-      'INSERT INTO mensajes (cliente_telefono, tipo, cuerpo, url_archivo, emisor) VALUES (?, ?, ?, ?, ?)',
-      [telefono, tipo, cuerpo, url_archivo, emisor]
-    );
+  return withTransaction(async (connection) => {
+    try {
+      const { 
+        telefono, 
+        tipo = 'text',
+        cuerpo = '',
+        url_archivo = null,
+        emisor = 'usuario'
+      } = data;
 
-    console.log(`💾 Mensaje guardado - ID: ${result.insertId} (${tipo}) emisor: ${emisor}`);
-    
-    return {
-      id: result.insertId,
-      telefono,
-      tipo,
-      cuerpo,
-      url_archivo,
-      emisor,
-      fecha: new Date()
-    };
-  } catch (error) {
-    console.error('❌ Error guardando mensaje:', error);
-    throw error;
-  }
+      console.log(`📨 Guardando mensaje + actualizando cliente en TRANSACCIÓN...`);
+      
+      // OPERACIÓN 1: Guardar mensaje
+      const [result] = await connection.execute(
+        'INSERT INTO mensajes (cliente_telefono, tipo, cuerpo, url_archivo, emisor) VALUES (?, ?, ?, ?, ?)',
+        [telefono, tipo, cuerpo, url_archivo, emisor]
+      );
+      console.log(`   ✅ Mensaje insertado - ID: ${result.insertId}`);
+
+      // OPERACIÓN 2: Actualizar última interacción del cliente
+      const [updateResult] = await connection.execute(
+        'UPDATE clientes SET ultima_interaccion = NOW() WHERE telefono = ?',
+        [telefono]
+      );
+      console.log(`   ✅ Cliente actualizado - Filas afectadas: ${updateResult.affectedRows}`);
+
+      return {
+        id: result.insertId,
+        telefono,
+        tipo,
+        cuerpo,
+        url_archivo,
+        emisor,
+        fecha: new Date()
+      };
+    } catch (error) {
+      console.error('❌ Error en transacción de mensaje:', error.message);
+      throw error; // Trigger rollback
+    }
+  });
 };
 
 /**
@@ -80,16 +94,35 @@ const listarConversaciones = async () => {
 };
 
 /**
- * Marca mensajes como leídos
+ * Marca mensajes como leídos + actualiza cliente
+ * TRANSACCIÓN: Ambas operaciones atómicas
  * @param {string} telefono - Número de teléfono
  */
 const marcarComoLeido = async (telefono) => {
-  try {
-    const pool = getPool();
-    await pool.execute(
-      'UPDATE mensajes SET leido = TRUE WHERE cliente_telefono = ? AND leido = FALSE',
-      [telefono]
-    );
+  return withTransaction(async (connection) => {
+    try {
+      console.log(`👀 Marcando mensajes como leídos en TRANSACCIÓN...`);
+      
+      // OPERACIÓN 1: Marcar mensajes como leídos
+      const [result] = await connection.execute(
+        'UPDATE mensajes SET leido = TRUE WHERE cliente_telefono = ? AND leido = FALSE',
+        [telefono]
+      );
+      console.log(`   ✅ ${result.affectedRows} mensajes marcados como leídos`);
+
+      // OPERACIÓN 2: Actualizar metadata del cliente
+      const [updateResult] = await connection.execute(
+        'UPDATE clientes SET ultima_interaccion = NOW() WHERE telefono = ?',
+        [telefono]
+      );
+      console.log(`   ✅ Cliente actualizado`);
+
+      return { affectedRows: result.affectedRows };
+    } catch (error) {
+      console.error('❌ Error en transacción de lectura:', error.message);
+      throw error;
+    }
+  });
 
     console.log(`✅ Mensajes marcados como leídos: ${telefono}`);
   } catch (error) {
