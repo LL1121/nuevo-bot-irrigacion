@@ -5,6 +5,17 @@ import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import Login from './components/Login';
 
+// Configurar Axios base y Bearer token interceptor
+axios.defaults.baseURL = 'http://localhost:3000';
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('authToken');
+  if (token) {
+    config.headers = config.headers ?? {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // Configurar conexión con backend
 const socket: Socket = io('http://localhost:3000', {
   transports: ['websocket', 'polling'],
