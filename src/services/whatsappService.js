@@ -43,6 +43,47 @@ const sendMessage = async (to, text) => {
 };
 
 /**
+ * Obtiene metadata de un media (url temporal, mime, etc.)
+ * @param {string} mediaId
+ */
+const getMediaInfo = async (mediaId) => {
+  const url = `${WHATSAPP_API_URL}/${mediaId}`;
+  const config = {
+    headers: {
+      'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`
+    }
+  };
+  try {
+    const response = await axios.get(url, config);
+    return response.data; // { url, mime_type, ... }
+  } catch (error) {
+    console.error('❌ Error obteniendo media info:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * Descarga un media desde una URL firmada como stream
+ * @param {string} mediaUrl
+ * @returns {Promise<{stream: any, contentType: string}>}
+ */
+const fetchMediaStream = async (mediaUrl) => {
+  const config = {
+    responseType: 'stream',
+    headers: {
+      'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`
+    }
+  };
+  try {
+    const response = await axios.get(mediaUrl, config);
+    return { stream: response.data, contentType: response.headers['content-type'] || 'application/octet-stream' };
+  } catch (error) {
+    console.error('❌ Error descargando media:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
  * Envía un mensaje interactivo tipo Lista
  * @param {string} to - Número de teléfono del destinatario
  * @param {string} headerText - Texto del encabezado
@@ -376,5 +417,7 @@ module.exports = {
   markAsRead,
   uploadMedia,
   sendDocument,
-  sendButtonReply
+  sendButtonReply,
+  getMediaInfo,
+  fetchMediaStream
 };
