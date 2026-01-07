@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { withTransaction } = require('./transactionService');
 
 /**
  * Servicio para gestión de clientes (auto-registro)
@@ -91,22 +92,28 @@ const obtenerTodosLosClientes = async () => {
 
 /**
  * Actualizar DNI del cliente
+ * TRANSACCIÓN: Actualiza DNI + timestamp en una sola operación atómica
  * @param {string} telefono - Número de teléfono
  * @param {string} dni - DNI del cliente
  */
 const actualizarDni = async (telefono, dni) => {
-  try {
-    const pool = getPool();
-    await pool.execute(
-      'UPDATE clientes SET padron = ? WHERE telefono = ?',
-      [dni, telefono]
-    );
-    console.log(`✅ DNI actualizado para ${telefono}: ${dni}`);
-    return true;
-  } catch (error) {
-    console.error('❌ Error actualizando DNI:', error);
-    throw error;
-  }
+  return withTransaction(async (connection) => {
+    try {
+      console.log(`📝 Actualizando DNI en TRANSACCIÓN...`);
+      
+      // OPERACIÓN 1: Actualizar DNI
+      const [result] = await connection.execute(
+        'UPDATE clientes SET padron = ?, ultima_interaccion = NOW() WHERE telefono = ?',
+        [dni, telefono]
+      );
+      console.log(`   ✅ DNI ${dni} actualizado para ${telefono}`);
+
+      return result.affectedRows > 0;
+    } catch (error) {
+      console.error('❌ Error en transacción de DNI:', error.message);
+      throw error;
+    }
+  });
 };
 
 /**
