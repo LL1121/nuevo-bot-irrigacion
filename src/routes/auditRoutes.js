@@ -9,10 +9,66 @@ const {
 } = require('../services/auditService');
 
 /**
- * GET /api/audit-log
- * Obtiene el log de auditoría con filtros opcionales
- * Queryparams: usuario?, tabla?, accion?, fechaDesde?, fechaHasta?, limite?
- * Ejemplo: /api/audit-log?tabla=clientes&usuario=admin@bot.com&limite=50
+ * @swagger
+ * /api/audit-log:
+ *   get:
+ *     summary: "Obtener log de auditoría con filtros avanzados"
+ *     tags: [Auditoría]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: usuario
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: "Filtrar por usuario que hizo el cambio"
+ *       - name: tabla
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: "Filtrar por tabla (clientes, mensajes, etc)"
+ *       - name: accion
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [INSERT, UPDATE, DELETE]
+ *       - name: fechaDesde
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - name: fechaHasta
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - name: limite
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *     responses:
+ *       200:
+ *         description: "Lista de registros de auditoría"
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 cantidad:
+ *                   type: integer
+ *                 logs:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/AuditLog'
  */
 router.get('/audit-log', verifyToken, async (req, res) => {
   try {
@@ -43,9 +99,46 @@ router.get('/audit-log', verifyToken, async (req, res) => {
 });
 
 /**
- * GET /api/audit-log/historial/:tabla/:idRegistro
- * Obtiene el historial de cambios de un registro específico
- * Ejemplo: /api/audit-log/historial/clientes/541234567890
+ * @swagger
+ * /api/audit-log/historial/{tabla}/{idRegistro}:
+ *   get:
+ *     summary: "Obtener historial completo de cambios de un registro"
+ *     tags: [Auditoría]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: tabla
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: "Nombre de la tabla (ej: clientes)"
+ *       - name: idRegistro
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: "ID del registro (clave primaria)"
+ *     responses:
+ *       200:
+ *         description: "Historial de cambios del registro"
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 tabla:
+ *                   type: string
+ *                 idRegistro:
+ *                   type: string
+ *                 cambios:
+ *                   type: integer
+ *                 historial:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/AuditLog'
  */
 router.get('/audit-log/historial/:tabla/:idRegistro', verifyToken, async (req, res) => {
   try {
