@@ -1,0 +1,63 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ChatHeader = ChatHeader;
+var lucide_react_1 = require("lucide-react");
+function ChatHeader(_a) {
+    var contact = _a.contact;
+    var getStatusColor = function (status) {
+        switch (status) {
+            case 'active':
+                return 'text-green-600';
+            case 'pending':
+                return 'text-yellow-600';
+            case 'resolved':
+                return 'text-gray-600';
+            default:
+                return 'text-gray-600';
+        }
+    };
+    var getStatusLabel = function (status) {
+        switch (status) {
+            case 'active':
+                return 'Activo ahora';
+            case 'pending':
+                return 'Pendiente';
+            case 'resolved':
+                return 'Resuelto';
+            default:
+                return status;
+        }
+    };
+    return (<div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        {/* Avatar */}
+        <div className="relative">
+          <div className="w-12 h-12 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center text-white font-semibold">
+            {contact.avatar}
+          </div>
+          {contact.status === 'active' && (<div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 border-2 border-white rounded-full"></div>)}
+        </div>
+
+        {/* Contact Info */}
+        <div>
+          <h2 className="font-semibold text-gray-900">{contact.name}</h2>
+          <p className={"text-sm ".concat(getStatusColor(contact.status))}>
+            {getStatusLabel(contact.status)}
+          </p>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-3">
+        <button className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-150">
+          <lucide_react_1.Phone className="w-5 h-5 text-gray-600"/>
+        </button>
+        <button className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-150">
+          <lucide_react_1.Video className="w-5 h-5 text-gray-600"/>
+        </button>
+        <button className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-150">
+          <lucide_react_1.MoreVertical className="w-5 h-5 text-gray-600"/>
+        </button>
+      </div>
+    </div>);
+}

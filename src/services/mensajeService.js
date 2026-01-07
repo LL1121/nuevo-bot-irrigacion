@@ -1,4 +1,4 @@
-const pool = require('../config/db');
+const { getPool } = require('../config/db');
 
 /**
  * Guarda un mensaje en la base de datos
@@ -7,24 +7,30 @@ const pool = require('../config/db');
  */
 const guardarMensaje = async (data) => {
   try {
-    const { telefono, padron, remitente, contenido, tipo_mensaje = 'text' } = data;
+    const { 
+      telefono, 
+      tipo = 'text',
+      cuerpo = '',
+      url_archivo = null,
+      emisor = 'usuario'
+    } = data;
     
+    const pool = getPool();
     const [result] = await pool.execute(
-      'INSERT INTO mensajes (telefono, padron, remitente, contenido, tipo_mensaje) VALUES (?, ?, ?, ?, ?)',
-      [telefono, padron, remitente, contenido, tipo_mensaje]
+      'INSERT INTO mensajes (cliente_telefono, tipo, cuerpo, url_archivo, emisor) VALUES (?, ?, ?, ?, ?)',
+      [telefono, tipo, cuerpo, url_archivo, emisor]
     );
 
-    console.log(`💾 Mensaje guardado - ID: ${result.insertId} (${remitente})`);
-    
-    // Actualizar conversación
-    await actualizarConversacion(telefono, contenido, padron);
+    console.log(`💾 Mensaje guardado - ID: ${result.insertId} (${tipo}) emisor: ${emisor}`);
     
     return {
       id: result.insertId,
       telefono,
-      remitente,
-      contenido,
-      timestamp: new Date()
+      tipo,
+      cuerpo,
+      url_archivo,
+      emisor,
+      fecha: new Date()
     };
   } catch (error) {
     console.error('❌ Error guardando mensaje:', error);
@@ -38,11 +44,16 @@ const guardarMensaje = async (data) => {
  * @param {number} limit - Cantidad de mensajes a traer
  * @returns {Array} Lista de mensajes
  */
-const obtenerMensajes = async (telefono, limit = 100) => {
+const obtenerMensajes = async (telefono, limit = 100, offset = 0) => {
   try {
+    const pool = getPool();
+    // Convertir limit a número entero para evitar inyección SQL
+    const limitNum = Math.min(Math.max(parseInt(limit) || 100, 1), 1000);
+    const offsetNum = Math.max(parseInt(offset) || 0, 0);
+    
     const [rows] = await pool.execute(
-      'SELECT * FROM mensajes WHERE telefono = ? ORDER BY timestamp ASC LIMIT ?',
-      [telefono, limit]
+      `SELECT * FROM mensajes WHERE cliente_telefono = ? ORDER BY fecha ASC LIMIT ${limitNum} OFFSET ${offsetNum}`,
+      [telefono]
     );
 
     console.log(`📜 ${rows.length} mensajes obtenidos para ${telefono}`);
@@ -59,37 +70,12 @@ const obtenerMensajes = async (telefono, limit = 100) => {
  */
 const listarConversaciones = async () => {
   try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM conversaciones ORDER BY ultima_actividad DESC'
-    );
-
-    console.log(`💬 ${rows.length} conversaciones activas`);
-    return rows;
+    // Usar la nueva tabla clientes
+    const clienteService = require('./clienteService');
+    return await clienteService.obtenerTodosLosClientes();
   } catch (error) {
     console.error('❌ Error listando conversaciones:', error);
     throw error;
-  }
-};
-
-/**
- * Actualiza o crea una conversación
- * @param {string} telefono - Número de teléfono
- * @param {string} ultimoMensaje - Último mensaje enviado
- * @param {string} padron - Padrón del usuario (opcional)
- */
-const actualizarConversacion = async (telefono, ultimoMensaje, padron = null) => {
-  try {
-    await pool.execute(
-      `INSERT INTO conversaciones (telefono, padron, ultimo_mensaje, ultima_actividad) 
-       VALUES (?, ?, ?, NOW()) 
-       ON DUPLICATE KEY UPDATE 
-       ultimo_mensaje = ?, 
-       ultima_actividad = NOW(),
-       mensajes_no_leidos = mensajes_no_leidos + 1`,
-      [telefono, padron, ultimoMensaje, ultimoMensaje]
-    );
-  } catch (error) {
-    console.error('❌ Error actualizando conversación:', error);
   }
 };
 
@@ -99,13 +85,9 @@ const actualizarConversacion = async (telefono, ultimoMensaje, padron = null) =>
  */
 const marcarComoLeido = async (telefono) => {
   try {
+    const pool = getPool();
     await pool.execute(
-      'UPDATE mensajes SET leido = TRUE WHERE telefono = ? AND remitente = "cliente" AND leido = FALSE',
-      [telefono]
-    );
-
-    await pool.execute(
-      'UPDATE conversaciones SET mensajes_no_leidos = 0 WHERE telefono = ?',
+      'UPDATE mensajes SET leido = TRUE WHERE cliente_telefono = ? AND leido = FALSE',
       [telefono]
     );
 
@@ -119,6 +101,5 @@ module.exports = {
   guardarMensaje,
   obtenerMensajes,
   listarConversaciones,
-  actualizarConversacion,
   marcarComoLeido
 };

@@ -17,4 +17,11 @@ router.post('/mark-read/:telefono', apiController.marcarLeido);
 // Estadísticas del panel
 router.get('/stats', apiController.obtenerEstadisticas);
 
+// Control del bot (pausar/activar)
+router.post('/chats/:phone/pause', apiController.pausarBot);
+router.post('/chats/:phone/activate', apiController.activarBot);
+
+// Proxy de media (descarga/visualización)
+router.get('/media/:mediaId', apiController.descargarMedia);
+
 module.exports = router;
