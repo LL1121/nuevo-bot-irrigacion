@@ -87,6 +87,10 @@ export default function App() {
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
   const [videoVolume, setVideoVolume] = useState(1);
   const [videoMuted, setVideoMuted] = useState(false);
+  const [messagesOffset, setMessagesOffset] = useState<Record<string, number>>({});
+  const [messagesLimit] = useState(50);
+  const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
+  const [messagesEndReached, setMessagesEndReached] = useState<Record<string, boolean>>({});
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatMenuRef = useRef<HTMLDivElement>(null);
@@ -135,11 +139,45 @@ export default function App() {
     return name.substring(0, 2).toUpperCase();
   };
 
-  // Cargar conversaciones desde la API al montar el componente
+const getContactStatus = (lastMessageDate: string | Date) => {
+  const now = new Date();
+  const lastMsg = new Date(lastMessageDate);
+  const diffMinutes = Math.floor((now.getTime() - lastMsg.getTime()) / (1000 * 60));
+  
+  if (diffMinutes < 5) {
+    return { color: 'bg-green-500', label: 'En línea', code: 'online' };
+  } else if (diffMinutes < 1440) { // 24 horas = 1440 minutos
+    return { color: 'bg-amber-400', label: 'Ausente', code: 'away' };
+  } else {
+    return { color: 'bg-gray-400', label: 'Sesión Vencida', code: 'expired' };
+  }
+};
+
+const getRelativeTime = (lastMessageDate: string | Date) => {
+  const now = new Date();
+  const lastMsg = new Date(lastMessageDate);
+  const diffMinutes = Math.floor((now.getTime() - lastMsg.getTime()) / (1000 * 60));
+  
+  if (diffMinutes < 1) return 'hace un momento';
+  if (diffMinutes < 60) return `hace ${diffMinutes} min`;
+  
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `hace ${diffHours} hora${diffHours > 1 ? 's' : ''}`;
+  
+  const diffDays = Math.floor(diffHours / 24);
+  return `hace ${diffDays} día${diffDays > 1 ? 's' : ''}`;
+};
+
+const getMediaUrl = (mediaId: string | null | undefined): string => {
+  if (!mediaId) return '';
+  return `http://localhost:3000/api/media/${mediaId}`;
+};
+
+  // ⚡ useEffect para cargar chats desde el backend
   useEffect(() => {
     const loadChats = async () => {
       try {
-        console.log('🔄 Cargando chats desde API...');
+        console.log('🔄 Cargando chats desde la API...');
         const response = await axios.get('http://localhost:3000/api/chats');
         console.log('📦 Respuesta completa del backend:', response.data);
         console.log('📦 Tipo de response.data:', typeof response.data);
@@ -158,9 +196,7 @@ export default function App() {
           time: chat.ultimo_mensaje_fecha ? formatTime(new Date(chat.ultimo_mensaje_fecha)) : '',
           unread: chat.mensajes_no_leidos || 0,
           avatar: getInitials(chat.nombre || chat.telefono),
-          status: 'online',
           operator: chat.operador || null,
-          isTyping: false,
           conversationStatus: chat.estado || 'unattended',
           archived: chat.archivado || false,
           padron: {
@@ -182,7 +218,7 @@ export default function App() {
     loadChats();
     
     // Escuchar mensajes en tiempo real
-    socket.on('receive_message', (newMsg: any) => {
+    socket.on('nuevo_mensaje', (newMsg: any) => {
       console.log('📨 Nuevo mensaje recibido del socket:', newMsg);
       console.log('📱 Teléfono del mensaje:', newMsg.telefono);
       console.log('💬 Contenido:', newMsg.mensaje);
@@ -193,32 +229,77 @@ export default function App() {
         console.log('🔍 Índice de chat encontrado:', existingChatIndex);
         
         if (existingChatIndex !== -1) {
+          // Invalidar caché para este chat
+          const cacheKey = `messages_${newMsg.telefono}`;
+          localStorage.removeItem(cacheKey);
+          console.log('🗑️ Caché invalidado para:', newMsg.telefono);
+          
           // Actualizar conversación existente
           const updated = [...prev];
           const chat = updated[existingChatIndex];
           
-          // Agregar mensaje al array de mensajes si ya están cargados
+          // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
-            const mappedMessage = {
-              id: newMsg.id,
-              text: newMsg.mensaje,
-              time: formatTime(new Date(newMsg.fecha)),
-              date: newMsg.fecha,
-              sent: newMsg.enviado_por_operador,
-              read: newMsg.leido,
-              type: newMsg.tipo || 'text',
-              fileUrl: newMsg.archivo_url,
-              filename: newMsg.archivo_nombre,
-              size: newMsg.archivo_tamanio,
-              duration: newMsg.duracion
-            };
-            chat.messages.push(mappedMessage);
+            // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
+            // Comprobamos por ID O por texto+timestamp reciente (5 segundos)
+            const now = new Date();
+            const msgTimestamp = new Date(newMsg.timestamp || now);
+            const messageExists = chat.messages.some((m: any) => {
+              // Verificar por ID si ambos lo tienen
+              if (newMsg.id && m.id === newMsg.id) return true;
+              
+              // Verificar por texto y timestamp cercano (mismo mensaje en los últimos 5 seg)
+              const mTimestamp = new Date(m.date);
+              const diffSeconds = Math.abs((msgTimestamp.getTime() - mTimestamp.getTime()) / 1000);
+              return m.text === (newMsg.mensaje || '') && diffSeconds < 5;
+            });
+            
+            if (!messageExists) {
+              const emisorLimpio = (newMsg.emisor || '').trim().toLowerCase();
+              
+              // Si es un mensaje del operador, buscar si ya existe como optimistic update
+              // y NO reemplazarlo, para mantener el timestamp original
+              const isOperatorMessage = emisorLimpio === 'operador';
+              const existingOptimisticMsg = isOperatorMessage 
+                ? chat.messages.find((m: any) => m.text === (newMsg.mensaje || '') && m.sent === true)
+                : null;
+              
+              if (existingOptimisticMsg) {
+                // Actualizar solo el ID, mantener el timestamp original
+                console.log('🔄 Actualizando ID del mensaje optimista:', existingOptimisticMsg.id, '→', newMsg.id);
+                existingOptimisticMsg.id = newMsg.id;
+                existingOptimisticMsg.read = true;
+              } else {
+                // Agregar nuevo mensaje
+                const mappedMessage = {
+                  id: newMsg.id || Date.now(),
+                  text: newMsg.mensaje || '',
+                  time: formatTime(msgTimestamp),
+                  date: newMsg.timestamp || msgTimestamp.toISOString(),
+                  sent: emisorLimpio === 'bot' || emisorLimpio === 'operador', // true = derecha/verde, false = izquierda/blanco
+                  read: true,
+                  type: newMsg.tipo || 'text',
+                  fileUrl: newMsg.url_archivo,
+                  filename: newMsg.archivo_nombre,
+                  size: newMsg.archivo_tamanio,
+                  duration: newMsg.duracion
+                };
+                console.log('➕ Agregando mensaje:', { id: mappedMessage.id, sent: mappedMessage.sent, emisor: newMsg.emisor, texto: mappedMessage.text.substring(0, 30) });
+                chat.messages.push(mappedMessage);
+                
+                // IMPORTANTE: Ordenar por fecha para mantener el orden correcto aunque los sockets lleguen desordenados
+                chat.messages.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+                console.log('📅 Mensajes ordenados por fecha');
+              }
+            } else {
+              console.log('⏭️ Mensaje ya existe, no se duplica:', newMsg.mensaje?.substring(0, 30));
+            }
           }
           
           // Actualizar último mensaje y traer al frente
-          chat.lastMessage = newMsg.mensaje;
-          chat.time = formatTime(new Date(newMsg.fecha));
-          if (!newMsg.enviado_por_operador) {
+          chat.lastMessage = newMsg.mensaje || '';
+          chat.time = formatTime(new Date(newMsg.timestamp || new Date()));
+          if ((newMsg.emisor || '').trim() === 'usuario') {
             chat.unread = (chat.unread || 0) + 1;
           }
           
@@ -233,24 +314,24 @@ export default function App() {
             id: Date.now(),
             name: newMsg.nombre || newMsg.telefono,
             phone: newMsg.telefono,
-            lastMessage: newMsg.mensaje,
-            time: formatTime(new Date(newMsg.fecha)),
-            unread: 1,
+            lastMessage: newMsg.mensaje || '',
+            time: formatTime(new Date(newMsg.timestamp || new Date())),
+            unread: (newMsg.emisor || '').trim() === 'usuario' ? 1 : 0,
             avatar: getInitials(newMsg.nombre || newMsg.telefono),
-            status: 'online',
             operator: null,
-            isTyping: false,
             conversationStatus: 'unattended',
             archived: false,
             padron: { number: '', location: '', debtStatus: '' },
             notes: [],
             messages: [{
-              id: newMsg.id,
-              text: newMsg.mensaje,
-              time: formatTime(new Date(newMsg.fecha)),
-              date: newMsg.fecha,
-              sent: false,
-              read: false
+              id: newMsg.id || Date.now(),
+              text: newMsg.mensaje || '',
+              time: formatTime(new Date(newMsg.timestamp || new Date())),
+              date: newMsg.timestamp || new Date().toISOString(),
+              sent: (newMsg.emisor || '').trim() !== 'usuario',
+              read: true,
+              type: newMsg.tipo || 'text',
+              fileUrl: newMsg.url_archivo
             }]
           };
           return [newChat, ...prev];
@@ -258,9 +339,24 @@ export default function App() {
       });
     });
     
+    // Escuchar cambios en el modo del bot
+    socket.on('bot_mode_changed', (data: { telefono: string; bot_activo: boolean }) => {
+      console.log('🤖 Cambio en modo del bot:', data);
+      setConversationsState(prev => {
+        const chatIndex = prev.findIndex(c => c.phone === data.telefono);
+        if (chatIndex !== -1) {
+          const updated = [...prev];
+          updated[chatIndex].botActive = data.bot_activo;
+          return updated;
+        }
+        return prev;
+      });
+    });
+    
     // Cleanup al desmontar
     return () => {
-      socket.off('receive_message');
+      socket.off('nuevo_mensaje');
+      socket.off('bot_mode_changed');
     };
   }, []);
 
@@ -322,30 +418,101 @@ export default function App() {
     if (!currentChat.messages || currentChat.messages.length === 0) {
       const loadMessages = async () => {
         try {
+          // Intentar cargar desde caché primero
+          const cacheKey = `messages_${currentChat.phone}`;
+          const cachedData = localStorage.getItem(cacheKey);
+          
+          if (cachedData) {
+            try {
+              const { messages: cachedMessages, timestamp } = JSON.parse(cachedData);
+              // Usar caché si tiene menos de 5 minutos
+              const cacheAge = Date.now() - timestamp;
+              if (cacheAge < 5 * 60 * 1000) {
+                console.log('💾 Usando mensajes desde caché:', currentChat.phone);
+                setConversationsState(prev => {
+                  const updated = [...prev];
+                  updated[selectedChat] = {
+                    ...updated[selectedChat],
+                    messages: cachedMessages
+                  };
+                  return updated;
+                });
+                return; // Salir, ya tenemos los mensajes en caché
+              }
+            } catch (e) {
+              console.log('⚠️ Error parseando caché, cargando desde API');
+            }
+          }
+          
           console.log('📨 Cargando mensajes para:', currentChat.phone);
-          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}`);
+          const currentOffset = messagesOffset[currentChat.phone] || 0;
+          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=${messagesLimit}&offset=${currentOffset}`);
           console.log('📦 Respuesta de mensajes:', response.data);
           
-          // El backend devuelve { success: true, data: [...] }
-          const messages = Array.isArray(response.data) ? response.data : (response.data.data || response.data.messages || []);
-          console.log('✅ Mensajes extraídos:', messages.length, messages);
+          // El backend devuelve { success, messages, telefono, limit, offset, total }
+          const messages = response.data.messages || [];
+          console.log('✅ Mensajes extraídos:', messages.length, 'de', response.data.total, 'total');
+          console.log('📋 Primer mensaje completo:', messages[0]);
+          console.log('📋 Campos del primer mensaje:', Object.keys(messages[0] || {}));
           
           // Mapear mensajes al formato esperado por la UI
-          const mappedMessages = messages.map((msg: any) => ({
-            id: msg.id,
-            text: msg.mensaje || '',
-            time: formatTime(new Date(msg.fecha)),
-            date: msg.fecha,
-            sent: true, // Todos los mensajes se muestran como enviados por el operador
-            read: msg.leido,
-            type: msg.tipo || 'text',
-            fileUrl: msg.archivo_url,
-            filename: msg.archivo_nombre,
-            size: msg.archivo_tamanio,
-            duration: msg.duracion
-          }));
+          const mappedMessages = messages.map((msg: any) => {
+            const emisor = (msg.emisor || '').trim(); // Limpiar espacios en blanco
+            console.log('🔍 Mensaje:', { id: msg.id, emisor: emisor, cuerpo: msg.cuerpo?.substring(0, 30) });
+            const sent = emisor !== 'usuario';
+            console.log('📍 sent =', sent, '(emisor limpio:', emisor, ')');
+            
+            return {
+              id: msg.id,
+              text: msg.cuerpo || '',
+              time: formatTime(new Date(msg.fecha)),
+              date: msg.fecha,
+              sent: sent,
+              read: true,
+              type: msg.tipo || 'text',
+              fileUrl: msg.url_archivo,
+              filename: msg.archivo_nombre,
+              size: msg.archivo_tamanio,
+              duration: msg.duracion
+            };
+          });
           
           console.log('✅ Mensajes mapeados:', mappedMessages);
+          
+          // Actualizar offset y detectar si llegamos al final
+          setMessagesOffset(prev => ({ ...prev, [currentChat.phone]: currentOffset + messages.length }));
+          if (messages.length < messagesLimit) {
+            setMessagesEndReached(prev => ({ ...prev, [currentChat.phone]: true }));
+          }
+          
+          // Guardar en caché (solo si no hay errores)
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify({
+              messages: mappedMessages,
+              timestamp: Date.now()
+            }));
+            console.log('💾 Mensajes guardados en caché');
+          } catch (e) {
+            console.warn('⚠️ No se pudo guardar en caché (posiblemente lleno):', e);
+            // Si falla, intentar limpiar caché antiguo
+            try {
+              for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('messages_')) {
+                  const data = localStorage.getItem(key);
+                  if (data) {
+                    const { timestamp } = JSON.parse(data);
+                    // Eliminar cachés de más de 1 hora
+                    if (Date.now() - timestamp > 60 * 60 * 1000) {
+                      localStorage.removeItem(key);
+                    }
+                  }
+                }
+              }
+            } catch (cleanupError) {
+              console.warn('Error limpiando caché:', cleanupError);
+            }
+          }
           
           // Actualizar el chat con los mensajes cargados
           setConversationsState(prev => {
@@ -421,10 +588,10 @@ export default function App() {
 
   // En desktop, selecciona la primera conversación por defecto si no está cerrado
   useEffect(() => {
-    if (!chatClosed && selectedChat === null && window.matchMedia('(min-width: 768px)').matches) {
+    if (!chatClosed && selectedChat === null && conversationsState.length > 0 && window.matchMedia('(min-width: 768px)').matches) {
       setSelectedChat(0);
     }
-  }, [selectedChat, chatClosed]);
+  }, [selectedChat, chatClosed, conversationsState]);
 
   // Close preferences on click outside
   useEffect(() => {
@@ -454,6 +621,25 @@ export default function App() {
       setInfoPanelClosing(false);
     }, 300); // Duración de la animación slideOutRight
   };
+  
+  // Funciones para control del bot
+  const pauseBot = async (phone: string) => {
+    try {
+      await axios.post(`http://localhost:3000/api/chats/${phone}/pause`);
+      console.log('✅ Bot pausado para:', phone);
+    } catch (error) {
+      console.error('❌ Error pausando bot:', error);
+    }
+  };
+  
+  const activateBot = async (phone: string) => {
+    try {
+      await axios.post(`http://localhost:3000/api/chats/${phone}/activate`);
+      console.log('✅ Bot activado para:', phone);
+    } catch (error) {
+      console.error('❌ Error activando bot:', error);
+    }
+  };
 
   // Cierra la barra de búsqueda al hacer click fuera
   useEffect(() => {
@@ -468,15 +654,86 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, [chatSearchMode]);
 
-  const handleSendMessage = () => {
-    if (message.trim()) {
+  const handleSendMessage = async () => {
+    if (message.trim() && selectedChat !== null) {
       if (editingMessage) {
         saveEditMessage();
       } else {
-        // Aquí iría la lógica de enviar mensaje
-        // Por ahora solo limpiamos
+        const currentChat = conversationsState[selectedChat];
+        if (!currentChat || !currentChat.phone) return;
+        
+        const messageText = message.trim();
+        const tempId = Date.now();
+        
+        // Crear mensaje temporal para mostrar inmediatamente
+        const tempMessage = {
+          id: tempId,
+          text: messageText,
+          time: formatTime(new Date()),
+          date: new Date().toISOString(),
+          sent: true,
+          read: false,
+          type: 'text',
+          fileUrl: null,
+          filename: null,
+          size: null,
+          duration: null
+        };
+        
+        // Actualizar UI inmediatamente (optimistic update)
+        setConversationsState(prev => {
+          const updated = [...prev];
+          if (!updated[selectedChat].messages) {
+            updated[selectedChat].messages = [];
+          }
+          updated[selectedChat].messages.push(tempMessage);
+          updated[selectedChat].lastMessage = messageText;
+          updated[selectedChat].time = formatTime(new Date());
+          return updated;
+        });
+        
+        // Limpiar input
         setMessage('');
         setReplyingTo(null);
+        
+        // Invalidar caché
+        const cacheKey = `messages_${currentChat.phone}`;
+        localStorage.removeItem(cacheKey);
+        
+        // Enviar al backend
+        try {
+          const response = await axios.post('http://localhost:3000/api/send', {
+            telefono: currentChat.phone,
+            mensaje: messageText,
+            operador: 'Panel Frontend',
+            emisor: 'operador' // Explícitamente marcar como operador
+          });
+          
+          console.log('✅ Mensaje enviado:', response.data);
+          
+          // Actualizar con el ID real del backend si viene
+          if (response.data && response.data.id) {
+            setConversationsState(prev => {
+              const updated = [...prev];
+              const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
+              if (msgIndex !== -1) {
+                updated[selectedChat].messages[msgIndex].id = response.data.id;
+              }
+              return updated;
+            });
+          }
+        } catch (error) {
+          console.error('❌ Error enviando mensaje:', error);
+          // Marcar el mensaje como error
+          setConversationsState(prev => {
+            const updated = [...prev];
+            const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
+            if (msgIndex !== -1) {
+              updated[selectedChat].messages[msgIndex].error = true;
+            }
+            return updated;
+          });
+        }
       }
     }
   };
@@ -535,7 +792,6 @@ export default function App() {
       lastMessage: newConvMessage.trim() || 'Nueva conversación',
       time: 'Ahora',
       unread: 0,
-      status: 'online' as const,
       conversationStatus: 'unattended' as const,
       archived: false,
       messages: newConvMessage.trim() ? [{
@@ -544,8 +800,7 @@ export default function App() {
         sent: false,
         time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
         read: false
-      }] : [],
-      isTyping: false
+      }] : []
     };
     
     setConversationsState(prev => [newConv, ...prev]);
@@ -977,9 +1232,15 @@ export default function App() {
                   }}>
                     {conv.avatar}
                   </div>
-                  {conv.status === 'online' && (
-                    <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
-                  )}
+                  {(() => {
+                    const lastMsgDate = conv.messages && conv.messages.length > 0 
+                      ? conv.messages[conv.messages.length - 1].date 
+                      : new Date();
+                    const status = getContactStatus(lastMsgDate);
+                    return (
+                      <div className={`absolute bottom-0 right-0 w-3 h-3 ${status.color} rounded-full border-2 border-white dark:border-gray-800`}></div>
+                    );
+                  })()}
                 </div>
                 
                 <div className="flex-1 min-w-0">
@@ -990,14 +1251,10 @@ export default function App() {
                         {conv.unread}
                       </span>
                     ) : (
-                      !conv.isTyping && <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">{conv.time}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">{conv.time}</span>
                     )}
                   </div>
-                  {conv.isTyping ? (
-                    <p className="text-sm animate-pulse" style={{ color: themeColors[theme].hex }}>Escribiendo...</p>
-                  ) : (
-                    <p className="text-sm text-gray-600 dark:text-gray-300 truncate mb-1">{conv.lastMessage}</p>
-                  )}
+                  <p className="text-sm text-gray-600 dark:text-gray-300 truncate mb-1">{conv.lastMessage}</p>
                   <div className="flex items-center justify-end">
                   </div>
                 </div>
@@ -1031,9 +1288,15 @@ export default function App() {
                 }}>
                   {currentChat.avatar}
                 </div>
-                {currentChat.status === 'online' && (
-                  <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
-                )}
+                {(() => {
+                  const lastMsgDate = currentChat.messages && currentChat.messages.length > 0 
+                    ? currentChat.messages[currentChat.messages.length - 1].date 
+                    : new Date();
+                  const status = getContactStatus(lastMsgDate);
+                  return (
+                    <div className={`absolute bottom-0 right-0 w-3 h-3 ${status.color} rounded-full border-2 border-white dark:border-gray-800`}></div>
+                  );
+                })()}
               </div>
               <div>
                 <div 
@@ -1042,9 +1305,21 @@ export default function App() {
                 >
                   {currentChat.name}
                 </div>
-                <p className="text-xs text-gray-500">
-                  {currentChat.status === 'online' ? 'En línea' : 'Desconectado'}
-                </p>
+                {(() => {
+                  const lastMsgDate = currentChat.messages && currentChat.messages.length > 0 
+                    ? currentChat.messages[currentChat.messages.length - 1].date 
+                    : new Date();
+                  const status = getContactStatus(lastMsgDate);
+                  const relativeTime = getRelativeTime(lastMsgDate);
+                  return (
+                    <div className="flex items-center gap-1.5">
+                      <div className={`w-2 h-2 ${status.color} rounded-full`}></div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {status.code === 'online' ? 'En línea ahora' : `Último mnj: ${relativeTime}`}
+                      </p>
+                    </div>
+                  );
+                })()}
               </div>
             </button>
           </div>
@@ -1151,6 +1426,76 @@ export default function App() {
             opacity: darkMode ? 1 : 0.98
           }}
         >
+          {/* Botón Cargar Más Mensajes */}
+          {currentChat && currentChat.messages && currentChat.messages.length > 0 && !messagesEndReached[currentChat.phone] && (
+            <div className="flex justify-center mb-4">
+              <button
+                onClick={async () => {
+                  if (!currentChat || !currentChat.phone) return;
+                  const phone = currentChat.phone;
+                  
+                  if (messagesLoading[phone]) return;
+                  
+                  setMessagesLoading(prev => ({ ...prev, [phone]: true }));
+                  
+                  try {
+                    const currentOffset = messagesOffset[phone] || 0;
+                    const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=${messagesLimit}&offset=${currentOffset}`);
+                    const newMessages = response.data.messages || [];
+                    
+                    if (newMessages.length > 0) {
+                      const mappedMessages = newMessages.map((msg: any) => {
+                        const emisor = (msg.emisor || '').trim();
+                        return {
+                          id: msg.id,
+                          text: msg.cuerpo || '',
+                          time: formatTime(new Date(msg.fecha)),
+                          date: msg.fecha,
+                          sent: emisor !== 'usuario',
+                          read: true,
+                          type: msg.tipo || 'text',
+                          fileUrl: msg.url_archivo,
+                          filename: msg.archivo_nombre,
+                          size: msg.archivo_tamanio,
+                          duration: msg.duracion
+                        };
+                      });
+                      
+                      setConversationsState(prev => {
+                        const updated = [...prev];
+                        const chatIndex = updated.findIndex(c => c.phone === phone);
+                        if (chatIndex !== -1) {
+                          // Concatenar al FINAL (orden ASC)
+                          updated[chatIndex].messages = [...updated[chatIndex].messages, ...mappedMessages];
+                        }
+                        return updated;
+                      });
+                      
+                      setMessagesOffset(prev => ({ ...prev, [phone]: currentOffset + newMessages.length }));
+                      
+                      if (newMessages.length < messagesLimit) {
+                        setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                      }
+                    } else {
+                      setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                    }
+                  } catch (error) {
+                    console.error('❌ Error cargando más mensajes:', error);
+                  } finally {
+                    setMessagesLoading(prev => ({ ...prev, [phone]: false }));
+                  }
+                }}
+                disabled={messagesLoading[currentChat.phone]}
+                className="px-4 py-2 rounded-full shadow-md transition-all hover:shadow-lg disabled:opacity-50"
+                style={{
+                  backgroundColor: themeColors[theme].hex,
+                  color: 'white'
+                }}
+              >
+                {messagesLoading[currentChat.phone] ? 'Cargando...' : 'Cargar más mensajes'}
+              </button>
+            </div>
+          )}
           {dragOverChat && (
             <div className="absolute inset-0 bg-black/30 rounded-lg border-2 border-dashed border-white flex items-center justify-center z-40">
               <div className="text-white text-center">
@@ -1212,8 +1557,20 @@ export default function App() {
             const currLabel = labelFor(msg);
             const prevLabel = labelFor(prev);
             const isImage = (msg as any).type === 'image' || (typeof msg.text === 'string' && (msg.text.startsWith('http') || msg.text.startsWith('data:image')));
+            
+            // Delay escalonado: 50ms por mensaje (máximo 20 mensajes = 1 segundo)
+            const animationDelay = Math.min(idx * 50, 1000);
+            
             return (
-              <div key={msg.id} className="space-y-2">
+              <div 
+                key={msg.id} 
+                className="space-y-2"
+                style={{
+                  animation: 'messageSlideIn 0.4s ease-out forwards',
+                  animationDelay: `${animationDelay}ms`,
+                  opacity: 0
+                }}
+              >
                 {currLabel && currLabel !== prevLabel && (
                   <div className="flex justify-center my-2 animate-fadeIn">
                     <span className="px-3 py-1 rounded-full bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200 text-xs">
@@ -1222,7 +1579,7 @@ export default function App() {
                   </div>
                 )}
                 <div
-                  className={`flex ${msg.sent ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
+                  className={`flex ${msg.sent ? 'justify-end' : 'justify-start'}`}
                 >
                   <div 
                     className="relative" 
@@ -1255,7 +1612,7 @@ export default function App() {
                       style={selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {}}
                       onContextMenu={(e) => { openContextMenu(e, 'message', msg.id); e.stopPropagation(); }}
                       onClick={() => { 
-                        setLightboxImage((msg as any).fileUrl || msg.text); 
+                        setLightboxImage(getMediaUrl((msg as any).fileUrl) || msg.text); 
                         setLightboxMessageId(msg.id); 
                       }}
                     >
@@ -1266,7 +1623,7 @@ export default function App() {
                       >
                         {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                       </button>
-                      <img src={(msg as any).fileUrl || msg.text} alt="imagen" className="w-full h-auto object-cover" />
+                      <img src={getMediaUrl((msg as any).fileUrl) || msg.text} alt="imagen" className="w-full h-auto object-cover" />
                       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent px-2 py-1 flex items-center justify-end gap-1 text-white/90">
                         <span className="text-[10px] leading-none">{msg.time}</span>
                         {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
@@ -1286,15 +1643,15 @@ export default function App() {
                         {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                       </button>
                       <video 
-                        src={(msg as any).fileUrl} 
+                        src={getMediaUrl((msg as any).fileUrl)} 
                         className="w-full h-auto object-cover cursor-pointer"
                         preload="metadata"
-                        onClick={() => { setLightboxVideo((msg as any).fileUrl); setLightboxMessageId(msg.id); }}
+                        onClick={() => { setLightboxVideo(getMediaUrl((msg as any).fileUrl)); setLightboxMessageId(msg.id); }}
                       />
                       {/* Botón Play centrado */}
                       <div 
                         className="absolute inset-0 flex items-center justify-center cursor-pointer"
-                        onClick={() => { setLightboxVideo((msg as any).fileUrl); setLightboxMessageId(msg.id); }}
+                        onClick={() => { setLightboxVideo(getMediaUrl((msg as any).fileUrl)); setLightboxMessageId(msg.id); }}
                       >
                         <div className="w-16 h-16 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-110">
                           <Play size={32} className="text-white ml-1" />
@@ -1377,9 +1734,130 @@ export default function App() {
                         {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
                       </div>
                     </div>
+                  ) : (msg as any).type === 'interactive' ? (
+                    <div
+                      className={`relative group max-w-[320px] rounded-2xl shadow-lg overflow-hidden ${
+                        msg.sent ? 'text-white rounded-br-sm' : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-bl-sm'
+                      }`}
+                      style={msg.sent ? {
+                        backgroundImage: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)`,
+                        ...( selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})
+                      } : (selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})}
+                      onContextMenu={(e) => { openContextMenu(e, 'message', msg.id); e.stopPropagation(); }}
+                    >
+                      <button
+                        className={`absolute top-2 right-2 p-1 rounded-full transition opacity-0 group-hover:opacity-100 z-10 ${msg.sent ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}
+                        onClick={(e) => { e.stopPropagation(); handleCopyMessage(msg); }}
+                        title="Copiar"
+                      >
+                        {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
+                      </button>
+                      
+                      {(() => {
+                        try {
+                          const menuData = typeof msg.text === 'string' ? JSON.parse(msg.text) : msg.text;
+                          
+                          return (
+                            <>
+                              {/* Header */}
+                              {menuData.header && (
+                                <div className="px-4 pt-4 pb-2">
+                                  <div className="flex items-center gap-2">
+                                    <svg className={msg.sent ? 'text-white' : ''} style={!msg.sent ? { color: themeColors[theme].hex } : undefined} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <path d="M3 12h18M3 6h18M3 18h18"/>
+                                    </svg>
+                                    <h3 className="font-semibold text-base">{menuData.header}</h3>
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Body */}
+                              {menuData.body && (
+                                <div className="px-4 pb-3">
+                                  <p className="text-sm opacity-90">{menuData.body}</p>
+                                </div>
+                              )}
+                              
+                              {/* Botón principal */}
+                              {menuData.buttonText && (
+                                <div className="px-4 pb-2">
+                                  <div 
+                                    className="w-full px-3 py-2 rounded-lg border text-center text-sm font-medium cursor-pointer transition"
+                                    style={{
+                                      borderColor: msg.sent ? 'rgba(255,255,255,0.4)' : themeColors[theme].hex,
+                                      color: msg.sent ? 'white' : themeColors[theme].hex,
+                                      backgroundColor: msg.sent ? 'rgba(255,255,255,0.1)' : 'transparent'
+                                    }}
+                                  >
+                                    {menuData.buttonText}
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Secciones con opciones */}
+                              {menuData.sections && menuData.sections.length > 0 && (
+                                <div className="border-t" style={{ borderColor: msg.sent ? 'rgba(255,255,255,0.2)' : (darkMode ? '#374151' : '#e5e7eb') }}>
+                                  {menuData.sections.map((section: any, sIdx: number) => (
+                                    <div key={sIdx}>
+                                      {section.title && (
+                                        <div className="px-4 pt-3 pb-1">
+                                          <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                                            {section.title}
+                                          </h4>
+                                        </div>
+                                      )}
+                                      <div className="px-2 pb-2">
+                                        {(section.rows || []).map((option: any, oIdx: number) => (
+                                          <div 
+                                            key={option.id || oIdx}
+                                            className="mx-2 my-1 px-3 py-2.5 rounded-lg cursor-pointer transition-all border"
+                                            style={{
+                                              backgroundColor: msg.sent ? 'rgba(255,255,255,0.05)' : (darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)'),
+                                              borderColor: msg.sent ? 'rgba(255,255,255,0.15)' : (darkMode ? '#374151' : '#e5e7eb')
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              e.currentTarget.style.backgroundColor = msg.sent ? 'rgba(255,255,255,0.15)' : (darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)');
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              e.currentTarget.style.backgroundColor = msg.sent ? 'rgba(255,255,255,0.05)' : (darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)');
+                                            }}
+                                          >
+                                            <div className="font-medium text-sm leading-tight">{option.title}</div>
+                                            {option.description && (
+                                              <div className="text-xs opacity-75 mt-1 leading-snug">{option.description}</div>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              
+                              {/* Timestamp */}
+                              <div className={`px-4 py-2 flex items-center gap-1 justify-end ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+                                <span className="text-xs">{msg.time}</span>
+                                {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
+                              </div>
+                            </>
+                          );
+                        } catch (e) {
+                          // Si no se puede parsear JSON, mostrar como texto plano
+                          return (
+                            <div className="px-4 py-3">
+                              <p className="text-sm">{msg.text}</p>
+                              <div className={`flex items-center gap-1 justify-end mt-2 ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+                                <span className="text-xs">{msg.time}</span>
+                                {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
+                              </div>
+                            </div>
+                          );
+                        }
+                      })()}
+                    </div>
                   ) : (msg as any).type === 'file' ? (
                     <a
-                      href={(msg as any).fileUrl || '#'}
+                      href={getMediaUrl((msg as any).fileUrl) || '#'}
                       target="_blank"
                       rel="noopener noreferrer"
                       className={`relative group max-w-[260px] sm:max-w-sm px-4 py-3 rounded-2xl shadow-sm block hover:opacity-90 transition-opacity ${
@@ -1408,7 +1886,7 @@ export default function App() {
                             return (
                               <div className="flex-shrink-0 w-16 h-16 rounded overflow-hidden border border-white/20">
                                 <iframe 
-                                  src={`${(msg as any).fileUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0`}
+                                  src={`${getMediaUrl((msg as any).fileUrl)}#page=1&toolbar=0&navpanes=0&scrollbar=0`}
                                   className="w-full h-full pointer-events-none scale-150 origin-top-left"
                                 />
                               </div>
@@ -1416,7 +1894,7 @@ export default function App() {
                           } else if (isImage && (msg as any).fileUrl) {
                             return (
                               <img 
-                                src={(msg as any).fileUrl} 
+                                src={getMediaUrl((msg as any).fileUrl)} 
                                 alt={(msg as any).filename}
                                 className="flex-shrink-0 w-16 h-16 rounded object-cover"
                               />
