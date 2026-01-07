@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
 const { initializeDB } = require('./config/db');
+const { ipMiddleware } = require('./middlewares/ipMiddleware');
 
 const app = express();
 const server = http.createServer(app);
@@ -67,6 +68,7 @@ const authLimiter = rateLimit({
 });
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(ipMiddleware);
 
 // Servir archivos estáticos
 const publicPath = path.join(__dirname, '../public');
@@ -90,6 +92,7 @@ const bootstrap = async () => {
   const webhookRoutes = require('./routes/webhookRoutes');
   const apiRoutes = require('./routes/apiRoutes');
   const backupRoutes = require('./routes/backupRoutes');
+  const auditRoutes = require('./routes/auditRoutes');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -100,6 +103,7 @@ const bootstrap = async () => {
   app.use('/webhook', webhookRoutes);
   app.use('/api', apiRoutes);
   app.use('/api', backupRoutes);
+  app.use('/api', auditRoutes);
 
   // Health check endpoint
   app.get('/api/health', (req, res) => {

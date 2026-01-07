@@ -1,5 +1,6 @@
 const { getPool } = require('../config/db');
 const { withTransaction } = require('./transactionService');
+const { registrarCambio } = require('./auditService');
 
 /**
  * Servicio para gestión de clientes (auto-registro)
@@ -93,20 +94,39 @@ const obtenerTodosLosClientes = async () => {
 /**
  * Actualizar DNI del cliente
  * TRANSACCIÓN: Actualiza DNI + timestamp en una sola operación atómica
+ * AUDITORÍA: Registra el cambio en audit_log
  * @param {string} telefono - Número de teléfono
  * @param {string} dni - DNI del cliente
+ * @param {string} usuario - Usuario que realizó el cambio (para auditoría)
  */
-const actualizarDni = async (telefono, dni) => {
+const actualizarDni = async (telefono, dni, usuario = 'SYSTEM') => {
   return withTransaction(async (connection) => {
     try {
       console.log(`📝 Actualizando DNI en TRANSACCIÓN...`);
       
+      // Obtener valor anterior para auditoría
+      const [clienteActual] = await connection.execute(
+        'SELECT padron FROM clientes WHERE telefono = ?',
+        [telefono]
+      );
+      const valoresAnteriores = clienteActual.length > 0 ? { padron: clienteActual[0].padron } : null;
+
       // OPERACIÓN 1: Actualizar DNI
       const [result] = await connection.execute(
         'UPDATE clientes SET padron = ?, ultima_interaccion = NOW() WHERE telefono = ?',
         [dni, telefono]
       );
       console.log(`   ✅ DNI ${dni} actualizado para ${telefono}`);
+
+      // AUDITORÍA: Registrar el cambio
+      await registrarCambio(
+        usuario,
+        'UPDATE',
+        'clientes',
+        telefono,
+        valoresAnteriores,
+        { padron: dni }
+      );
 
       return result.affectedRows > 0;
     } catch (error) {
@@ -137,16 +157,37 @@ const obtenerDni = async (telefono) => {
 
 /**
  * Cambiar estado del bot para un cliente
+ * AUDITORÍA: Registra el cambio en audit_log
  * @param {string} telefono - Número de teléfono
  * @param {boolean} activo - Estado del bot (true/false)
+ * @param {string} usuario - Usuario que realizó el cambio (para auditoría)
  */
-const cambiarEstadoBot = async (telefono, activo) => {
+const cambiarEstadoBot = async (telefono, activo, usuario = 'SYSTEM') => {
   try {
     const pool = getPool();
+
+    // Obtener estado anterior para auditoría
+    const [clienteActual] = await pool.execute(
+      'SELECT bot_activo FROM clientes WHERE telefono = ?',
+      [telefono]
+    );
+    const valoresAnteriores = clienteActual.length > 0 ? { bot_activo: clienteActual[0].bot_activo } : null;
+
     await pool.execute(
       'UPDATE clientes SET bot_activo = ? WHERE telefono = ?',
       [activo, telefono]
     );
+
+    // AUDITORÍA: Registrar el cambio
+    await registrarCambio(
+      usuario,
+      'UPDATE',
+      'clientes',
+      telefono,
+      valoresAnteriores,
+      { bot_activo: activo }
+    );
+
     console.log(`🤖 Bot ${activo ? 'activado' : 'pausado'} para ${telefono}`);
     return true;
   } catch (error) {
