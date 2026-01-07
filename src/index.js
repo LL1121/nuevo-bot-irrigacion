@@ -8,8 +8,10 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
+const swaggerUi = require('swagger-ui-express');
 const { initializeDB } = require('./config/db');
 const { ipMiddleware } = require('./middlewares/ipMiddleware');
+const swaggerSpec = require('./config/swaggerConfig');
 
 const app = express();
 const server = http.createServer(app);
@@ -104,7 +106,14 @@ const bootstrap = async () => {
   app.use('/webhook', webhookRoutes);
   app.use('/api', apiRoutes);
   app.use('/api', backupRoutes);
+  app.use('/api', auditRoutes);
   app.use('/api', healthRoutes);
+
+  // Swagger/OpenAPI Documentation
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customCss: '.swagger-ui .topbar { display: none }',
+    customSiteTitle: 'Bot Irrigación - API Documentation'
+  }));
 
   // Health check endpoint (deprecated - moved to healthRoutes, kept for backwards compatibility)
   // GET /api/health - Ahora manejado por healthRoutes (más completo)

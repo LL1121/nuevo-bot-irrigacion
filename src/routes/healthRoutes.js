@@ -4,9 +4,24 @@ const { performHealthCheck, checkDatabase, checkPuppeteer, checkWhatsAppAPI, che
 const { verifyToken } = require('../middlewares/authMiddleware');
 
 /**
- * GET /api/health
- * Health check público (sin autenticación)
- * Retorna un status simple para monitoring/load balancer
+ * @swagger
+ * /api/health:
+ *   get:
+ *     summary: "Health check público - Estado del sistema"
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: "Sistema funcionando correctamente"
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/HealthCheck'
+ *       503:
+ *         description: "Componente crítico caído o degradado"
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/HealthCheck'
  */
 router.get('/health', async (req, res) => {
   try {
@@ -27,7 +42,17 @@ router.get('/health', async (req, res) => {
 });
 
 /**
- * GET /api/health/detailed
+ * @swagger
+ * /api/health/detailed:
+ *   get:
+ *     summary: "Health check detallado - Incluye configuración sensible"
+ *     tags: [Health]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "Información detallada del sistema"
+ */
  * Health check detallado (requiere autenticación)
  * Incluye información sensible (tokens, rutas, etc)
  */

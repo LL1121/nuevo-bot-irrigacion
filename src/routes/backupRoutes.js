@@ -4,8 +4,31 @@ const { verifyToken } = require('../middleware/authMiddleware');
 const backupService = require('../services/backupService');
 
 /**
- * GET /api/backups - Listar backups disponibles en S3
- * Requiere: Token JWT de operador/admin
+ * @swagger
+ * /api/backups:
+ *   get:
+ *     summary: "Listar todos los backups disponibles en S3"
+ *     tags: [Backups]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "Lista de backups disponibles"
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 total:
+ *                   type: integer
+ *                 backups:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Backup'
+ *       401:
+ *         description: "No autenticado"
  */
 router.get('/backups', verifyToken, async (req, res) => {
   try {
@@ -27,8 +50,28 @@ router.get('/backups', verifyToken, async (req, res) => {
 });
 
 /**
- * POST /api/backups/manual - Ejecutar backup manual ahora
- * Requiere: Token JWT de admin
+ * @swagger
+ * /api/backups/manual:
+ *   post:
+ *     summary: "Iniciar un backup manual inmediatamente"
+ *     tags: [Backups]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       202:
+ *         description: "Backup iniciado en segundo plano"
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 status:
+ *                   type: string
+ *                   enum: [processing]
  */
 router.post('/backups/manual', verifyToken, async (req, res) => {
   try {
@@ -56,8 +99,32 @@ router.post('/backups/manual', verifyToken, async (req, res) => {
 });
 
 /**
- * GET /api/backups/download/:filename - Descargar un backup específico
- * Requiere: Token JWT de admin
+ * @swagger
+ * /api/backups/download/{filename}:
+ *   get:
+ *     summary: "Descargar un backup específico desde S3"
+ *     tags: [Backups]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: filename
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: "Nombre del archivo backup (ej: irrigacion_bot_2026-01-07.sql.gz)"
+ *     responses:
+ *       200:
+ *         description: "Archivo gzip descargado"
+ *         content:
+ *           application/gzip:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       400:
+ *         description: "Nombre de archivo inválido"
+ *       404:
+ *         description: "Archivo no encontrado"
  */
 router.get('/backups/download/:filename', verifyToken, async (req, res) => {
   try {
