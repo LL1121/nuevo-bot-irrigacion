@@ -40,6 +40,7 @@ const initializeDB = async () => {
       telefono VARCHAR(20) PRIMARY KEY,
       nombre_whatsapp VARCHAR(255) DEFAULT 'Sin Nombre',
       nombre_asignado VARCHAR(255),
+      foto_perfil VARCHAR(500),
       padron VARCHAR(50),
       estado_deuda VARCHAR(50),
       bot_activo BOOLEAN DEFAULT TRUE,
@@ -47,6 +48,12 @@ const initializeDB = async () => {
       fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  // Agregar columna foto_perfil si no existe (migración)
+  await pool.query(`
+    ALTER TABLE clientes 
+    ADD COLUMN IF NOT EXISTS foto_perfil VARCHAR(500) AFTER nombre_asignado;
+  `).catch(() => {});
 
   // Tabla legacy para compatibilidad con flujos existentes
   await pool.query(`
