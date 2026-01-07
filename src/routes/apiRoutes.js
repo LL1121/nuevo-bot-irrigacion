@@ -21,4 +21,7 @@ router.get('/stats', apiController.obtenerEstadisticas);
 router.post('/chats/:phone/pause', apiController.pausarBot);
 router.post('/chats/:phone/activate', apiController.activarBot);
 
+// Proxy de media (descarga/visualización)
+router.get('/media/:mediaId', apiController.descargarMedia);
+
 module.exports = router;

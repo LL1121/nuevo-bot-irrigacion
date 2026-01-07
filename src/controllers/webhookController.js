@@ -119,28 +119,36 @@ const receiveMessage = async (req, res) => {
 
         console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${tipoMensaje})`);
 
-        // Helper para guardar/emitir el mensaje del cliente DESPUÉS de responder
+        // Guardar mensaje del usuario en segundo plano (sin bloquear) y EMITIR inmediatamente
         const persistIncoming = async () => {
           try {
             await mensajeService.guardarMensaje({
               telefono: from,
               tipo: tipoMensaje,
               cuerpo: messageBody,
-              url_archivo: mediaUrl
+              url_archivo: mediaUrl,
+              emisor: 'usuario'
             });
-
-            if (global.io) {
-              global.io.emit('nuevo_mensaje', {
-                telefono: from,
-                mensaje: messageBody,
-                remitente: 'cliente',
-                timestamp: new Date()
-              });
-            }
           } catch (error) {
             console.error('❌ Error al guardar mensaje del cliente:', error);
           }
         };
+
+        // Emitir al frontend antes de responder (para mantener orden correcto)
+        if (global.io) {
+          global.io.emit('nuevo_mensaje', {
+            telefono: from,
+            mensaje: messageBody,
+            emisor: 'usuario',
+            tipo: tipoMensaje,
+            timestamp: new Date()
+          });
+        }
+
+        // Lanzar persistencia en segundo plano
+        persistIncoming().catch(error => {
+          console.error('❌ Error en persistIncoming background:', error);
+        });
 
         // ============================================
         // VERIFICAR ESTADO DEL BOT ANTES DE RESPONDER
@@ -159,9 +167,6 @@ const receiveMessage = async (req, res) => {
             });
           }
           
-          // Guardar mensaje (aunque el bot esté pausado)
-          await persistIncoming();
-          
           // No enviar respuesta automática
           return res.sendStatus(200);
         }
@@ -174,11 +179,7 @@ const receiveMessage = async (req, res) => {
         // Procesar mensaje según el estado actual
         await handleUserMessage(from, messageBody);
 
-        // Guardar mensaje del cliente EN BACKGROUND (sin bloquear respuesta)
-        // Se ejecuta async pero no esperamos su resultado
-        persistIncoming().catch(error => {
-          console.error('❌ Error en persistIncoming background:', error);
-        });
+        // Persistencia lanzada antes, no repetir aquí
       }
 
       // Siempre responder con 200 OK
@@ -280,28 +281,15 @@ Soy tu asistente virtual, diseñado para ayudarte con tus gestiones hídricas de
 const sendMenuList = async (from) => {
   const sections = [
     {
-      title: 'Servicios Disponibles',
+      title: 'Trámites Disponibles',
       rows: [
-        {
-          id: 'option_1',
-          title: '📍 Ubicación y Horarios',
-          description: 'Dirección y horarios de atención'
-        },
-        {
-          id: 'option_2',
-          title: '📋 Empadronamiento',
-          description: 'Requisitos para registro de usuarios'
-        },
-        {
-          id: 'option_3',
-          title: '💳 Consultar Deuda',
-          description: 'Ver estado de cuenta y boleto'
-        },
-        {
-          id: 'option_4',
-          title: '👤 Hablar con Operador',
-          description: 'Atención personalizada'
-        }
+        { id: 'ubicacion',       title: '📍 Ubicación y Horarios', description: 'Cómo y cuándo atenderte' },
+        { id: 'empadronamiento', title: '📝 Empadronamiento',      description: 'Requisitos y cómo empadronarte' },
+        { id: 'deuda',           title: '💳 Consultar Deuda',      description: 'Estado de cuenta y deuda actual' },
+        { id: 'pedido_agua',     title: '🚰 Pedido de Agua',       description: 'Requisitos y pasos' },
+        { id: 'renuncia',        title: '🧾 Tramitar Renuncia',    description: 'Documentación necesaria' },
+        { id: 'turnos',          title: '🗓️ Consultar Turnos',     description: 'Cómo gestionar turnos' },
+        { id: 'operador',        title: '👤 Hablar con Operador',   description: 'Atención personalizada' }
       ]
     }
   ];
@@ -314,8 +302,33 @@ const sendMenuList = async (from) => {
     sections
   );
   
-  // Guardar representación textual del menú (interactivo)
-  await sendMessageAndSave(from, 'Menú interactivo: ¿Qué trámite desea realizar hoy? (Ubicación, Empadronamiento, Consultar Deuda, Hablar con Operador)', 'interactive');
+  // Guardar estructura JSON completa para que el frontend pueda reconstruir las opciones
+  const menuData = {
+    type: 'interactive_list',
+    header: 'Atención al Ciudadano',
+    body: '¿Qué trámite desea realizar hoy?',
+    buttonText: 'Ver Opciones',
+    sections: sections
+  };
+  
+  // Guardar en BD y emitir a frontend SIN reenviar el JSON por WhatsApp
+  await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(menuData),
+    emisor: 'bot',
+    url_archivo: null
+  });
+  
+  if (global.io) {
+    global.io.emit('nuevo_mensaje', {
+      telefono: from,
+      mensaje: JSON.stringify(menuData),
+      emisor: 'bot',
+      tipo: 'interactive',
+      timestamp: new Date()
+    });
+  }
   
   console.log(`📋 Lista de menú enviada a ${from}`);
 };
@@ -327,6 +340,7 @@ const handleMainMenu = async (from, option) => {
   switch (option) {
     case '1':
     case 'option_1':
+    case 'ubicacion':
       const locationText = `📍 Nuestras Oficinas
 
 🏛️ Dirección: Av. San Martín 123, Malargüe (Mendoza)
@@ -345,6 +359,7 @@ const handleMainMenu = async (from, option) => {
 
     case '2':
     case 'option_2':
+    case 'empadronamiento':
       const infoText = `📋 Requisitos de Empadronamiento
 
 Para darte de alta como usuario del sistema hídrico, acercate con:
@@ -363,23 +378,67 @@ Para darte de alta como usuario del sistema hídrico, acercate con:
 
     case '3':
     case 'option_3':
+    case 'deuda':
       // Consultar Deuda: Verificar si tiene DNI vinculado
       await handleConsultarDeuda(from);
       break;
 
+    case 'pedido_agua': {
+      const aguaText = `🚰 Pedido de Agua
+
+Requisitos para solicitar agua:
+• Nota firmada del titular
+• Croquis de riego (trazado y puntos)
+• Canon al día
+
+Presentate en nuestras oficinas con la documentación.`;
+      await sendMessageAndSave(from, aguaText);
+      await sendMenuList(from);
+      console.log(`🚰 Info de pedido de agua enviada a ${from}`);
+      break;
+    }
+
+    case 'renuncia': {
+      const renunciaText = `🧾 Tramitar Renuncia
+
+Requisitos:
+• Libre deuda
+• Escritura o instrumento que acredite titularidad
+• DNI del titular
+• Nota de baja firmada
+
+Trámite presencial en oficinas.`;
+      await sendMessageAndSave(from, renunciaText);
+      await sendMenuList(from);
+      console.log(`🧾 Info de renuncia enviada a ${from}`);
+      break;
+    }
+
+    case 'turnos': {
+      const turnosText = `🗓️ Turnos
+
+La gestión de turnos se realiza en Inspección de Cauce.
+Contacto: +54 9 260 432-0807`;
+      await sendMessageAndSave(from, turnosText);
+      await sendMenuList(from);
+      console.log(`🗓️ Info de turnos enviada a ${from}`);
+      break;
+    }
+
     case '4':
     case 'option_4':
+    case 'operador': {
       const operatorText = `👤 Derivando a un Agente
 
-Su consulta ha sido registrada. Un operador humano se pondrá en contacto a la brevedad.
-
-⏳ Tiempo de espera estimado: 5 minutos.`;
-      
+Un operador humano te atenderá en breve.`;
       await sendMessageAndSave(from, operatorText);
-      // Reenviar solo la lista, sin bienvenida
-      await sendMenuList(from);
-      console.log(`👤 Mensaje de operador enviado a ${from}`);
+      await clienteService.cambiarEstadoBot(from, false);
+      if (global.io) {
+        global.io.emit('bot_mode_changed', { telefono: from, bot_activo: false });
+      }
+      console.log(`👤 Derivado a operador y bot pausado para ${from}`);
       break;
+    }
 
     default:
       // Opción no válida, reenviar solo la lista
@@ -718,8 +777,7 @@ const ejecutarScraper = async (from, dni) => {
     if (!resultado.success) {
       // Error en scraping
       const errorMsg = `❌ ${resultado.error || 'No se pudo consultar la deuda'}.\n\nPor favor intenta más tarde o comunícate con nuestras oficinas.`;
-      await whatsappService.sendMessage(from, errorMsg);
-      await saveBotMessage(from, errorMsg);
+      await sendMessageAndSave(from, errorMsg);
       await sendMenuList(from);
       return;
     }
@@ -738,8 +796,7 @@ const ejecutarScraper = async (from, dni) => {
 
 💰 *DEUDA TOTAL:* ${deuda}`;
     
-    await whatsappService.sendMessage(from, datosMsg);
-    await saveBotMessage(from, datosMsg);
+    await sendMessageAndSave(from, datosMsg);
     
     // Guardar PDF path en el estado para descarga a demanda
     if (resultado.pdfPath) {
@@ -766,35 +823,8 @@ const ejecutarScraper = async (from, dni) => {
   } catch (error) {
     console.error('❌ Error en ejecutarScraper:', error);
     const errorMsg = '❌ Ocurrió un error al consultar la deuda. Por favor intenta más tarde.';
-    await whatsappService.sendMessage(from, errorMsg);
-    await saveBotMessage(from, errorMsg);
+    await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from);
-  }
-};
-
-/**
- * Guarda el mensaje del bot en la base de datos y emite evento Socket.io
- */
-const saveBotMessage = async (telefono, contenido) => {
-  try {
-    await mensajeService.guardarMensaje({
-      telefono,
-      tipo: 'text',
-      cuerpo: contenido,
-      emisor: 'bot'
-    });
-    
-    // Emitir evento Socket.io
-    if (global.io) {
-      global.io.emit('nuevo_mensaje', {
-        telefono,
-        mensaje: contenido,
-        remitente: 'bot',
-        timestamp: new Date()
-      });
-    }
-  } catch (error) {
-    console.error('❌ Error al guardar mensaje del bot:', error);
   }
 };
 

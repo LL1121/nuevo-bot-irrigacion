@@ -44,14 +44,15 @@ const guardarMensaje = async (data) => {
  * @param {number} limit - Cantidad de mensajes a traer
  * @returns {Array} Lista de mensajes
  */
-const obtenerMensajes = async (telefono, limit = 100) => {
+const obtenerMensajes = async (telefono, limit = 100, offset = 0) => {
   try {
     const pool = getPool();
     // Convertir limit a número entero para evitar inyección SQL
     const limitNum = Math.min(Math.max(parseInt(limit) || 100, 1), 1000);
+    const offsetNum = Math.max(parseInt(offset) || 0, 0);
     
     const [rows] = await pool.execute(
-      `SELECT * FROM mensajes WHERE cliente_telefono = ? ORDER BY fecha ASC LIMIT ${limitNum}`,
+      `SELECT * FROM mensajes WHERE cliente_telefono = ? ORDER BY fecha ASC LIMIT ${limitNum} OFFSET ${offsetNum}`,
       [telefono]
     );
 
