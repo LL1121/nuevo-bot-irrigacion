@@ -4,6 +4,8 @@ const userService = require('../services/userService');
 const clienteService = require('../services/clienteService');
 const { getMediaInfo, fetchMediaStream } = require('../services/whatsappService');
 const fs = require('fs');
+const path = require('path');
+const { validateFileIntegrity } = require('../services/fileValidator');
 
 /**
  * Lista todas las conversaciones activas (chats)
@@ -76,6 +78,35 @@ const obtenerMensajes = async (req, res) => {
       success: false,
       error: 'Error al obtener mensajes'
     });
+  }
+};
+
+/**
+ * Maneja subida de archivos desde el operador
+ */
+const subirArchivo = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No se envió archivo' });
+    }
+
+    try {
+      await validateFileIntegrity(req.file.path);
+    } catch (err) {
+      return res.status(400).json({ success: false, error: 'Archivo rechazado por seguridad' });
+    }
+
+    const relativeUrl = `/uploads/${req.file.filename}`;
+
+    res.json({
+      success: true,
+      url: relativeUrl,
+      filename: req.file.filename,
+      size: req.file.size
+    });
+  } catch (error) {
+    console.error('❌ Error en subirArchivo:', error);
+    res.status(500).json({ success: false, error: 'Error al subir archivo' });
   }
 };
 
@@ -282,5 +313,6 @@ module.exports = {
   obtenerEstadisticas,
   pausarBot,
   activarBot,
-  descargarMedia
+  descargarMedia,
+  subirArchivo
 };
