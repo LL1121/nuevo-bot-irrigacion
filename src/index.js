@@ -11,7 +11,10 @@ const path = require('path');
 const swaggerUi = require('swagger-ui-express');
 const { initializeDB } = require('./config/db');
 const { ipMiddleware } = require('./middlewares/ipMiddleware');
+const requestLogger = require('./middlewares/requestLoggerMiddleware');
 const swaggerSpec = require('./config/swaggerConfig');
+const { initRedis } = require('./services/cacheService');
+const logger = require('./services/logService');
 
 const app = express();
 const server = http.createServer(app);
@@ -71,6 +74,7 @@ const authLimiter = rateLimit({
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(ipMiddleware);
+app.use(requestLogger);
 
 // Servir archivos estáticos
 const publicPath = path.join(__dirname, '../public');
@@ -87,15 +91,22 @@ const frontendBuildPath = path.join(__dirname, '../Frontend/dist');
 app.use(express.static(frontendBuildPath));
 
 const bootstrap = async () => {
-  // Inicializar base de datos antes de registrar rutas
-  await initializeDB();
+  try {
+    // Inicializar Redis para caching
+    logger.info('Inicializando Redis...');
+    await initRedis();
 
-  // Cargar rutas después de que DB exista
-  const webhookRoutes = require('./routes/webhookRoutes');
-  const apiRoutes = require('./routes/apiRoutes');
-  const backupRoutes = require('./routes/backupRoutes');
-  const auditRoutes = require('./routes/auditRoutes');
-  const healthRoutes = require('./routes/healthRoutes');
+    // Inicializar base de datos antes de registrar rutas
+    logger.info('Inicializando Base de Datos...');
+    await initializeDB();
+
+    // Cargar rutas después de que DB exista
+    const webhookRoutes = require('./routes/webhookRoutes');
+    const apiRoutes = require('./routes/apiRoutes');
+    const backupRoutes = require('./routes/backupRoutes');
+    const auditRoutes = require('./routes/auditRoutes');
+    const healthRoutes = require('./routes/healthRoutes');
+    const cacheTestRoutes = require('./routes/cacheTestRoutes');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -108,6 +119,7 @@ const bootstrap = async () => {
   app.use('/api', backupRoutes);
   app.use('/api', auditRoutes);
   app.use('/api', healthRoutes);
+  app.use('/api', cacheTestRoutes);
 
   // Swagger/OpenAPI Documentation
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
@@ -150,10 +162,16 @@ const bootstrap = async () => {
 
   // Start server
   server.listen(PORT, async () => {
+    logger.info(`Servidor iniciado en puerto ${PORT}`, {
+      webhook: `http://localhost:${PORT}/webhook`,
+      api: `http://localhost:${PORT}/api`,
+      docs: `http://localhost:${PORT}/api-docs`
+    });
     console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
     console.log(`📱 Webhook URL: http://localhost:${PORT}/webhook`);
     console.log(`🔌 Socket.io activo en puerto ${PORT}`);
     console.log(`🌐 API REST: http://localhost:${PORT}/api`);
+    console.log(`📚 Documentación: http://localhost:${PORT}/api-docs`);
     console.log('✅ Sistema de scraping listo');
     
     // Iniciar scheduler de backups automáticos
@@ -163,22 +181,38 @@ const bootstrap = async () => {
   
   // Graceful shutdown: detener backups y cerrar conexiones
   process.on('SIGINT', () => {
-    console.log('\n\n🛑 Recibida señal SIGINT - Iniciando shutdown graceful...');
+    logger.warn('Recibida señal SIGINT - Shutdown graceful');
+    console.log('\n\n🛑 Iniciando shutdown graceful...');
     stopBackupScheduler();
     server.close(() => {
+      logger.info('Servidor cerrado correctamente');
       console.log('✅ Servidor cerrado correctamente');
       process.exit(0);
     });
   });
 
   process.on('SIGTERM', () => {
-    console.log('\n\n🛑 Recibida señal SIGTERM - Iniciando shutdown graceful...');
+    logger.warn('Recibida señal SIGTERM - Shutdown graceful');
+    console.log('\n\n🛑 Iniciando shutdown graceful...');
     stopBackupScheduler();
     server.close(() => {
+      logger.info('Servidor cerrado correctamente');
       console.log('✅ Servidor cerrado correctamente');
       process.exit(0);
     });
   });
+
+  // Capturar excepciones no manejadas
+  process.on('uncaughtException', (error) => {
+    logger.exception(error, { type: 'uncaughtException' });
+    console.error('❌ Excepción no capturada:', error);
+  });
+
+  } catch (error) {
+    logger.error('Error durante bootstrap', { error: error.message });
+    console.error('❌ Error durante startup:', error);
+    process.exit(1);
+  }
 };
 
 bootstrap();
