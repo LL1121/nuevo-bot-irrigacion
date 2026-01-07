@@ -141,13 +141,7 @@ const bootstrap = async () => {
     console.log(`📱 Webhook URL: http://localhost:${PORT}/webhook`);
     console.log(`🔌 Socket.io activo en puerto ${PORT}`);
     console.log(`🌐 API REST: http://localhost:${PORT}/api`);
-    
-    // Inicializar navegador Puppeteer (Singleton)
-    console.log('');
-    console.log('🌐 Inicializando navegador Puppeteer...');
-    const scraperService = require('./services/scraperService');
-    await scraperService.initBrowser();
-    console.log('✅ Navegador listo para scraping optimizado');
+    console.log('✅ Sistema de scraping listo');
   });
 };
 

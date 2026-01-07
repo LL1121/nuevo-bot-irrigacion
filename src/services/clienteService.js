@@ -8,9 +8,10 @@ const { getPool } = require('../config/db');
  * Obtener o crear cliente desde WhatsApp
  * @param {string} telefono - Número de WhatsApp
  * @param {string} nombre - Nombre de perfil (pushName)
+ * @param {string} fotoPerfil - URL de foto de perfil (opcional)
  * @returns {Object} Datos del cliente
  */
-const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre') => {
+const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil = null) => {
   try {
     // Buscar cliente existente
     const pool = getPool();
@@ -20,10 +21,10 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre') => {
     );
 
     if (rows.length > 0) {
-      // Cliente existe - actualizar ultima_interaccion y nombre si está vacío
+      // Cliente existe - actualizar ultima_interaccion, nombre y foto si están vacíos
       await pool.execute(
-        'UPDATE clientes SET ultima_interaccion = NOW(), nombre_whatsapp = COALESCE(nombre_whatsapp, ?) WHERE telefono = ?',
-        [nombre, telefono]
+        'UPDATE clientes SET ultima_interaccion = NOW(), nombre_whatsapp = COALESCE(nombre_whatsapp, ?), foto_perfil = COALESCE(foto_perfil, ?) WHERE telefono = ?',
+        [nombre, fotoPerfil, telefono]
       );
       
       console.log(`👤 Cliente existente: ${telefono} - ${nombre}`);
@@ -37,8 +38,8 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre') => {
 
     // Cliente nuevo - crear registro
     await pool.execute(
-      'INSERT INTO clientes (telefono, nombre_whatsapp, bot_activo, fecha_registro, ultima_interaccion) VALUES (?, ?, TRUE, NOW(), NOW())',
-      [telefono, nombre]
+      'INSERT INTO clientes (telefono, nombre_whatsapp, foto_perfil, bot_activo, fecha_registro, ultima_interaccion) VALUES (?, ?, ?, TRUE, NOW(), NOW())',
+      [telefono, nombre, fotoPerfil]
     );
 
     console.log(`✨ Nuevo cliente registrado: ${telefono} - ${nombre}`);

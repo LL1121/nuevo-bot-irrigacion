@@ -107,9 +107,11 @@ export default function App() {
   const [audioVolume, setAudioVolume] = useState<Record<number, number>>({});
   const [showVolumeControl, setShowVolumeControl] = useState<number | null>(null);
   const [messagesOffset, setMessagesOffset] = useState<Record<string, number>>({});
-  const [messagesLimit] = useState(50);
+  const [messagesLimit] = useState(20); // Mostrar solo 20 mensajes inicialmente
   const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
   const [messagesEndReached, setMessagesEndReached] = useState<Record<string, boolean>>({});
+  const [allMessagesCache, setAllMessagesCache] = useState<Record<string, any[]>>({}); // Caché en memoria de todos los mensajes
+  const [currentMessageIndex, setCurrentMessageIndex] = useState<Record<string, number>>({}); // Índice del último mensaje mostrado
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatMenuRef = useRef<HTMLDivElement>(null);
@@ -240,12 +242,14 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         // Mapear los datos del backend a la estructura esperada por la UI
         const mappedChats = chats.map((chat: any) => ({
           id: chat.id,
-          name: chat.nombre || chat.telefono,
+          name: chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono,
           phone: chat.telefono,
           lastMessage: chat.ultimo_mensaje || '',
+          lastMessageDate: chat.ultimo_mensaje_fecha || new Date().toISOString(),
           time: chat.ultimo_mensaje_fecha ? formatTime(new Date(chat.ultimo_mensaje_fecha)) : '',
           unread: chat.mensajes_no_leidos || 0,
-          avatar: getInitials(chat.nombre || chat.telefono),
+          avatar: getInitials(chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono),
+          profilePic: chat.foto_perfil || null,
           operator: chat.operador || null,
           conversationStatus: chat.estado || 'unattended',
           archived: chat.archivado || false,
@@ -268,7 +272,22 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
     loadChats();
     
     // Escuchar mensajes en tiempo real
-    socket.on('nuevo_mensaje', (newMsg: any) => {
+    socket.on('nuevo_mensaje', (data: any) => {
+      // Normalizar datos del socket: mapear campos de BD a campos esperados
+      const newMsg = {
+        id: data.id,
+        telefono: data.telefono || data.cliente_telefono,
+        mensaje: data.mensaje || data.cuerpo,  // El socket envía 'cuerpo', no 'mensaje'
+        tipo: data.tipo || 'text',
+        emisor: data.emisor,
+        timestamp: data.timestamp || data.fecha,  // El socket envía 'fecha', no 'timestamp'
+        url_archivo: data.url_archivo,
+        archivo_nombre: data.archivo_nombre,
+        archivo_tamanio: data.archivo_tamanio,
+        duracion: data.duracion,
+        nombre: data.nombre
+      };
+      
       console.log('📨 Nuevo mensaje recibido del socket:', newMsg);
       console.log('📱 Teléfono del mensaje:', newMsg.telefono);
       console.log('💬 Contenido:', newMsg.mensaje);
@@ -290,10 +309,9 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           
           // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
+            const msgTimestamp = new Date(newMsg.timestamp || new Date());
+            
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
-            // Comprobamos por ID O por texto+timestamp reciente (5 segundos)
-            const now = new Date();
-            const msgTimestamp = new Date(newMsg.timestamp || now);
             const messageExists = chat.messages.some((m: any) => {
               // Verificar por ID si ambos lo tienen
               if (newMsg.id && m.id === newMsg.id) return true;
@@ -315,18 +333,25 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                 : null;
               
               if (existingOptimisticMsg) {
-                // Actualizar solo el ID, mantener el timestamp original
+                // Actualizar solo el ID, mantener el timestamp original (forzar nuevo estado)
                 console.log('🔄 Actualizando ID del mensaje optimista:', existingOptimisticMsg.id, '→', newMsg.id);
-                existingOptimisticMsg.id = newMsg.id;
-                existingOptimisticMsg.read = true;
+                const msgIndex = chat.messages.findIndex((m: any) => m === existingOptimisticMsg);
+                if (msgIndex !== -1) {
+                  chat.messages[msgIndex] = {
+                    ...existingOptimisticMsg,
+                    id: newMsg.id,
+                    read: true
+                  };
+                }
               } else {
                 // Agregar nuevo mensaje
+                const messageText = typeof newMsg.mensaje === 'string' ? newMsg.mensaje : JSON.stringify(newMsg.mensaje || '');
                 const mappedMessage = {
-                  id: newMsg.id || Date.now(),
-                  text: newMsg.mensaje || '',
+                  id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
+                  text: messageText || '',
                   time: formatTime(msgTimestamp),
                   date: newMsg.timestamp || msgTimestamp.toISOString(),
-                  sent: emisorLimpio === 'bot' || emisorLimpio === 'operador', // true = derecha/verde, false = izquierda/blanco
+                  sent: newMsg.emisor !== 'usuario',
                   read: true,
                   type: newMsg.tipo || 'text',
                   fileUrl: newMsg.url_archivo,
@@ -334,22 +359,40 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                   size: newMsg.archivo_tamanio,
                   duration: newMsg.duracion
                 };
-                console.log('➕ Agregando mensaje:', { id: mappedMessage.id, sent: mappedMessage.sent, emisor: newMsg.emisor, texto: mappedMessage.text.substring(0, 30) });
-                chat.messages.push(mappedMessage);
+                const previewText = typeof messageText === 'string' ? messageText.substring(0, 30) : '[Mensaje interactivo]';
+                console.log('➕ Agregando mensaje:', { id: mappedMessage.id, sent: mappedMessage.sent, emisor: newMsg.emisor, texto: previewText });
                 
-                // IMPORTANTE: Ordenar por fecha para mantener el orden correcto aunque los sockets lleguen desordenados
-                chat.messages.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+                // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
+                chat.messages = [...chat.messages, mappedMessage].sort((a: any, b: any) => 
+                  new Date(a.date).getTime() - new Date(b.date).getTime()
+                );
                 console.log('📅 Mensajes ordenados por fecha');
+                
+                // También agregar al caché de memoria
+                setAllMessagesCache(prev => {
+                  const phoneCache = prev[chat.phone] || [];
+                  const updatedCache = [...phoneCache, mappedMessage].sort((a: any, b: any) => 
+                    new Date(a.date).getTime() - new Date(b.date).getTime()
+                  );
+                  console.log('💾 Mensaje agregado al caché de memoria');
+                  return { ...prev, [chat.phone]: updatedCache };
+                });
               }
             } else {
-              console.log('⏭️ Mensaje ya existe, no se duplica:', newMsg.mensaje?.substring(0, 30));
+              console.log('⏭️ Mensaje ya existe, no se duplica:', typeof newMsg.mensaje === 'string' ? newMsg.mensaje?.substring(0, 30) : '[Objeto JSON]');
             }
           }
           
-          // Actualizar último mensaje y traer al frente
-          chat.lastMessage = newMsg.mensaje || '';
+          // Actualizar último mensaje y traer al frente (convertir a string si es objeto)
+          const lastMsgText = typeof newMsg.mensaje === 'string' 
+            ? newMsg.mensaje 
+            : (typeof newMsg.mensaje === 'object' ? '[Mensaje interactivo]' : String(newMsg.mensaje || ''));
+          chat.lastMessage = lastMsgText;
+          chat.lastMessageDate = newMsg.timestamp || new Date().toISOString();
           chat.time = formatTime(new Date(newMsg.timestamp || new Date()));
-          if ((newMsg.emisor || '').trim() === 'usuario') {
+          
+          // Solo incrementar unread si es mensaje del usuario
+          if (newMsg.emisor === 'usuario') {
             chat.unread = (chat.unread || 0) + 1;
           }
           
@@ -360,25 +403,28 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           return updated;
         } else {
           // Crear nueva conversación
+          const messageText = typeof newMsg.mensaje === 'string' ? newMsg.mensaje : JSON.stringify(newMsg.mensaje || '');
           const newChat = {
             id: Date.now(),
             name: newMsg.nombre || newMsg.telefono,
             phone: newMsg.telefono,
-            lastMessage: newMsg.mensaje || '',
+            lastMessage: messageText || '',
+            lastMessageDate: newMsg.timestamp || new Date().toISOString(),
             time: formatTime(new Date(newMsg.timestamp || new Date())),
-            unread: (newMsg.emisor || '').trim() === 'usuario' ? 1 : 0,
+            unread: newMsg.emisor === 'usuario' ? 1 : 0,
             avatar: getInitials(newMsg.nombre || newMsg.telefono),
+            profilePic: null, // Se actualizará con la foto de perfil cuando se recarguen los chats
             operator: null,
             conversationStatus: 'unattended',
             archived: false,
             padron: { number: '', location: '', debtStatus: '' },
             notes: [],
             messages: [{
-              id: newMsg.id || Date.now(),
-              text: newMsg.mensaje || '',
+              id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
+              text: messageText || '',
               time: formatTime(new Date(newMsg.timestamp || new Date())),
               date: newMsg.timestamp || new Date().toISOString(),
-              sent: (newMsg.emisor || '').trim() !== 'usuario',
+              sent: newMsg.emisor !== 'usuario',
               read: true,
               type: newMsg.tipo || 'text',
               fileUrl: newMsg.url_archivo
@@ -464,47 +510,47 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
     const currentChat = conversationsState[selectedChat];
     if (!currentChat || !currentChat.phone) return;
     
-    // Solo cargar si aún no hay mensajes cargados
-    if (!currentChat.messages || currentChat.messages.length === 0) {
+    // Verificar si necesitamos cargar mensajes (no hay mensajes O el caché expiró)
+    const shouldLoadMessages = !currentChat.messages || currentChat.messages.length === 0;
+    const cacheKey = `messages_${currentChat.phone}`;
+    const cachedData = localStorage.getItem(cacheKey);
+    let cacheExpired = false;
+    
+    if (cachedData && !shouldLoadMessages) {
+      try {
+        const { timestamp } = JSON.parse(cachedData);
+        const cacheAge = Date.now() - timestamp;
+        cacheExpired = cacheAge >= 10 * 1000; // 10 segundos
+      } catch (e) {
+        cacheExpired = true;
+      }
+    }
+    
+    // Solo cargar si no hay mensajes O si el caché expiró
+    if (shouldLoadMessages || cacheExpired) {
       const loadMessages = async () => {
         try {
-          // Intentar cargar desde caché primero
+          // DESARROLLO: Eliminar caché viejo para forzar recarga desde API
           const cacheKey = `messages_${currentChat.phone}`;
-          const cachedData = localStorage.getItem(cacheKey);
-          
-          if (cachedData) {
-            try {
-              const { messages: cachedMessages, timestamp } = JSON.parse(cachedData);
-              // Usar caché si tiene menos de 5 minutos
-              const cacheAge = Date.now() - timestamp;
-              if (cacheAge < 5 * 60 * 1000) {
-                console.log('💾 Usando mensajes desde caché:', currentChat.phone);
-                setConversationsState(prev => {
-                  const updated = [...prev];
-                  updated[selectedChat] = {
-                    ...updated[selectedChat],
-                    messages: cachedMessages
-                  };
-                  return updated;
-                });
-                return; // Salir, ya tenemos los mensajes en caché
-              }
-            } catch (e) {
-              console.log('⚠️ Error parseando caché, cargando desde API');
-            }
-          }
+          localStorage.removeItem(cacheKey);
+          console.log('🗑️ Caché eliminado, cargando desde API');
           
           console.log('📨 Cargando mensajes para:', currentChat.phone);
-          const currentOffset = messagesOffset[currentChat.phone] || 0;
           const token = localStorage.getItem('authToken');
-          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=${messagesLimit}&offset=${currentOffset}`, {
+          
+          // Traer hasta 100 mensajes para optimizar y quedarnos con los últimos 20
+          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=100&offset=0`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           console.log('📦 Respuesta de mensajes:', response.data);
           
-          // El backend devuelve { success, messages, telefono, limit, offset, total }
-          const messages = response.data.messages || [];
-          console.log('✅ Mensajes extraídos:', messages.length, 'de', response.data.total, 'total');
+          const allMessages = response.data.messages || [];
+          const totalMessages = response.data.total || allMessages.length;
+          console.log('📊 Total de mensajes recibidos:', allMessages.length, 'de', totalMessages);
+          
+          // Quedarnos solo con los últimos N mensajes
+          const messages = allMessages.slice(-messagesLimit);
+          console.log('✅ Mensajes filtrados (últimos', messagesLimit, '):', messages.length);
           console.log('📋 Primer mensaje completo:', messages[0]);
           console.log('📋 Campos del primer mensaje:', Object.keys(messages[0] || {}));
           
@@ -532,50 +578,59 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           
           console.log('✅ Mensajes mapeados:', mappedMessages);
           
-          // Actualizar offset y detectar si llegamos al final
-          setMessagesOffset(prev => ({ ...prev, [currentChat.phone]: currentOffset + messages.length }));
-          if (messages.length < messagesLimit) {
+          // Guardar TODOS los mensajes mapeados en caché de memoria
+          const allMappedMessages = allMessages.map((msg: any) => {
+            const emisor = (msg.emisor || '').trim();
+            return {
+              id: msg.id,
+              text: msg.cuerpo || '',
+              time: formatTime(new Date(msg.fecha)),
+              date: msg.fecha,
+              sent: emisor !== 'usuario',
+              read: true,
+              type: msg.tipo || 'text',
+              fileUrl: msg.url_archivo,
+              filename: msg.archivo_nombre,
+              size: msg.archivo_tamanio,
+              duration: msg.duracion
+            };
+          });
+          
+          // Guardar en caché de memoria
+          setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: allMappedMessages }));
+          setCurrentMessageIndex(prev => ({ ...prev, [currentChat.phone]: allMappedMessages.length - messagesLimit }));
+          console.log('💾 Guardados', allMappedMessages.length, 'mensajes en caché de memoria');
+          
+          // Solo mostrar los últimos N
+          const messagesToShow = allMappedMessages.slice(-messagesLimit);
+          
+          // Marcar que NO llegamos al final si hay más mensajes en caché o en BD
+          if (allMappedMessages.length > messagesLimit || allMessages.length >= 100) {
+            setMessagesEndReached(prev => ({ ...prev, [currentChat.phone]: false }));
+            console.log('📄 Hay más mensajes disponibles');
+          } else {
             setMessagesEndReached(prev => ({ ...prev, [currentChat.phone]: true }));
+            console.log('✅ Todos los mensajes cargados');
           }
           
-          // Guardar en caché (solo si no hay errores)
-          try {
-            localStorage.setItem(cacheKey, JSON.stringify({
-              messages: mappedMessages,
-              timestamp: Date.now()
-            }));
-            console.log('💾 Mensajes guardados en caché');
-          } catch (e) {
-            console.warn('⚠️ No se pudo guardar en caché (posiblemente lleno):', e);
-            // Si falla, intentar limpiar caché antiguo
-            try {
-              for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith('messages_')) {
-                  const data = localStorage.getItem(key);
-                  if (data) {
-                    const { timestamp } = JSON.parse(data);
-                    // Eliminar cachés de más de 1 hora
-                    if (Date.now() - timestamp > 60 * 60 * 1000) {
-                      localStorage.removeItem(key);
-                    }
-                  }
-                }
-              }
-            } catch (cleanupError) {
-              console.warn('Error limpiando caché:', cleanupError);
-            }
-          }
-          
-          // Actualizar el chat con los mensajes cargados
+          // Actualizar el chat con los mensajes a mostrar
           setConversationsState(prev => {
             const updated = [...prev];
             updated[selectedChat] = {
               ...updated[selectedChat],
-              messages: mappedMessages
+              messages: messagesToShow
             };
             return updated;
           });
+          
+          // Scroll al final después de cargar mensajes
+          setTimeout(() => {
+            const messagesContainer = document.querySelector('[data-messages-container]');
+            if (messagesContainer) {
+              messagesContainer.scrollTop = messagesContainer.scrollHeight;
+              console.log('⬇️ Scroll al final del chat');
+            }
+          }, 100);
         } catch (error: any) {
           console.error('❌ Error cargando mensajes:', error);
           console.error('❌ Detalles del error:', {
@@ -747,9 +802,26 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           }
           updated[selectedChat].messages.push(tempMessage);
           updated[selectedChat].lastMessage = messageText;
+          updated[selectedChat].lastMessageDate = new Date().toISOString();
           updated[selectedChat].time = formatTime(new Date());
           return updated;
         });
+        
+        // También agregar al caché de memoria
+        setAllMessagesCache(prev => {
+          const phoneCache = prev[currentChat.phone] || [];
+          const updatedCache = [...phoneCache, tempMessage];
+          console.log('💾 Mensaje enviado agregado al caché de memoria');
+          return { ...prev, [currentChat.phone]: updatedCache };
+        });
+        
+        // Scroll inmediato después de agregar mensaje
+        setTimeout(() => {
+          const messagesContainer = document.querySelector('[data-messages-container]');
+          if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          }
+        }, 10);
         
         // Limpiar input
         setMessage('');
@@ -765,23 +837,42 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           const response = await axios.post('http://localhost:3000/api/send', {
             telefono: currentChat.phone,
             mensaje: messageText,
-            operador: 'Panel Frontend',
-            emisor: 'operador' // Explícitamente marcar como operador
+            operador: 'Panel Frontend'
           }, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           
           console.log('✅ Mensaje enviado:', response.data);
           
+          // Scroll al final después de enviar
+          setTimeout(() => {
+            const messagesContainer = document.querySelector('[data-messages-container]');
+            if (messagesContainer) {
+              messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+          }, 50);
+          
           // Actualizar con el ID real del backend si viene
-          if (response.data && response.data.id) {
+          if (response.data && response.data.message && response.data.message.id) {
             setConversationsState(prev => {
               const updated = [...prev];
-              const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
-              if (msgIndex !== -1) {
-                updated[selectedChat].messages[msgIndex].id = response.data.id;
+              if (selectedChat < updated.length && updated[selectedChat].messages) {
+                const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
+                if (msgIndex !== -1) {
+                  updated[selectedChat].messages[msgIndex].id = response.data.message.id;
+                }
               }
               return updated;
+            });
+            
+            // También actualizar en el caché de memoria
+            setAllMessagesCache(prev => {
+              const phoneCache = prev[currentChat.phone] || [];
+              const updatedCache = phoneCache.map(msg => 
+                msg.id === tempId ? { ...msg, id: response.data.message.id } : msg
+              );
+              console.log('💾 ID actualizado en caché de memoria:', tempId, '→', response.data.message.id);
+              return { ...prev, [currentChat.phone]: updatedCache };
             });
           }
         } catch (error) {
@@ -789,9 +880,11 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           // Marcar el mensaje como error
           setConversationsState(prev => {
             const updated = [...prev];
-            const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
-            if (msgIndex !== -1) {
-              updated[selectedChat].messages[msgIndex].error = true;
+            if (selectedChat < updated.length && updated[selectedChat].messages) {
+              const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
+              if (msgIndex !== -1) {
+                updated[selectedChat].messages[msgIndex].error = true;
+              }
             }
             return updated;
           });
@@ -1300,16 +1393,31 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
             >
               <div className="flex items-start gap-3">
                 <div className="relative">
+                  {conv.profilePic ? (
+                    <img 
+                      src={conv.profilePic} 
+                      alt={conv.name}
+                      className="w-12 h-12 rounded-full object-cover"
+                      onError={(e) => {
+                        // Fallback a las iniciales si la imagen falla
+                        e.currentTarget.style.display = 'none';
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
                   <div className="w-12 h-12 rounded-full flex items-center justify-center text-white font-semibold transition-colors" style={{
                     backgroundColor: selectedId === conv.id ? themeColors[theme].hex : undefined,
-                    backgroundImage: selectedId !== conv.id ? `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)` : undefined
+                    backgroundImage: selectedId !== conv.id ? `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)` : undefined,
+                    display: conv.profilePic ? 'none' : 'flex'
                   }}>
                     {conv.avatar}
                   </div>
                   {(() => {
-                    const lastMsgDate = conv.messages && conv.messages.length > 0 
-                      ? conv.messages[conv.messages.length - 1].date 
-                      : new Date();
+                    const lastMsgDate = conv.lastMessageDate 
+                      || (conv.messages && conv.messages.length > 0 
+                        ? conv.messages[conv.messages.length - 1].date 
+                        : new Date());
                     const status = getContactStatus(lastMsgDate);
                     return (
                       <div className={`absolute bottom-0 right-0 w-3 h-3 ${status.color} rounded-full border-2 border-white dark:border-gray-800`}></div>
@@ -1357,8 +1465,21 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
               className="flex items-center gap-3 text-left focus:outline-none"
             >
               <div className="relative">
+                {currentChat.profilePic ? (
+                  <img 
+                    src={currentChat.profilePic} 
+                    alt={currentChat.name}
+                    className="w-10 h-10 rounded-full object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                      const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                      if (fallback) fallback.style.display = 'flex';
+                    }}
+                  />
+                ) : null}
                 <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold" style={{
-                  backgroundImage: `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)`
+                  backgroundImage: `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)`,
+                  display: currentChat.profilePic ? 'none' : 'flex'
                 }}>
                   {currentChat.avatar}
                 </div>
@@ -1380,9 +1501,10 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                   {currentChat.name}
                 </div>
                 {(() => {
-                  const lastMsgDate = currentChat.messages && currentChat.messages.length > 0 
-                    ? currentChat.messages[currentChat.messages.length - 1].date 
-                    : new Date();
+                  const lastMsgDate = currentChat.lastMessageDate 
+                    || (currentChat.messages && currentChat.messages.length > 0 
+                      ? currentChat.messages[currentChat.messages.length - 1].date 
+                      : new Date());
                   const status = getContactStatus(lastMsgDate);
                   const relativeTime = getRelativeTime(lastMsgDate);
                   return (
@@ -1469,6 +1591,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         {currentChat && (
         <div 
           key={selectedChat}
+          data-messages-container
           className="flex-1 overflow-y-auto p-6 space-y-4 relative pb-6 animate-fadeIn"
           onContextMenu={openBlankMenu}
           onDragOver={(e) => {
@@ -1510,56 +1633,115 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                   
                   if (messagesLoading[phone]) return;
                   
-                  setMessagesLoading(prev => ({ ...prev, [phone]: true }));
+                  // Primero verificar si hay mensajes en el caché de memoria
+                  const cachedMessages = allMessagesCache[phone] || [];
+                  const currentIndex = currentMessageIndex[phone] || 0;
                   
-                  try {
-                    const currentOffset = messagesOffset[phone] || 0;
-                    const token = localStorage.getItem('authToken');
-                    const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=${messagesLimit}&offset=${currentOffset}`, {
-                      headers: token ? { Authorization: `Bearer ${token}` } : {}
-                    });
-                    const newMessages = response.data.messages || [];
+                  if (cachedMessages.length > 0 && currentIndex > 0) {
+                    // Hay mensajes en caché para mostrar
+                    console.log('📦 Cargando desde caché de memoria. Index actual:', currentIndex);
                     
-                    if (newMessages.length > 0) {
-                      const mappedMessages = newMessages.map((msg: any) => {
-                        const emisor = (msg.emisor || '').trim();
-                        return {
-                          id: msg.id,
-                          text: msg.cuerpo || '',
-                          time: formatTime(new Date(msg.fecha)),
-                          date: msg.fecha,
-                          sent: emisor !== 'usuario',
-                          read: true,
-                          type: msg.tipo || 'text',
-                          fileUrl: msg.url_archivo,
-                          filename: msg.archivo_nombre,
-                          size: msg.archivo_tamanio,
-                          duration: msg.duracion
-                        };
-                      });
-                      
-                      setConversationsState(prev => {
-                        const updated = [...prev];
-                        const chatIndex = updated.findIndex(c => c.phone === phone);
-                        if (chatIndex !== -1) {
-                          // Concatenar al FINAL (orden ASC)
-                          updated[chatIndex].messages = [...updated[chatIndex].messages, ...mappedMessages];
-                        }
-                        return updated;
-                      });
-                      
-                      setMessagesOffset(prev => ({ ...prev, [phone]: currentOffset + newMessages.length }));
-                      
-                      if (newMessages.length < messagesLimit) {
-                        setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                    // Calcular cuántos mensajes cargar
+                    const messagesToLoad = Math.min(messagesLimit, currentIndex);
+                    const startIndex = currentIndex - messagesToLoad;
+                    
+                    // Obtener mensajes del caché
+                    const messagesFromCache = cachedMessages.slice(startIndex, currentIndex);
+                    console.log('📤 Mostrando', messagesFromCache.length, 'mensajes del caché (desde index', startIndex, 'hasta', currentIndex, ')');
+                    
+                    // Añadir al principio de los mensajes actuales
+                    setConversationsState(prev => {
+                      const updated = [...prev];
+                      const chatIndex = updated.findIndex(c => c.phone === phone);
+                      if (chatIndex !== -1) {
+                        updated[chatIndex].messages = [...messagesFromCache, ...updated[chatIndex].messages];
                       }
-                    } else {
-                      setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                      return updated;
+                    });
+                    
+                    // Actualizar el índice
+                    setCurrentMessageIndex(prev => ({ ...prev, [phone]: startIndex }));
+                    
+                    // Si llegamos al inicio del caché, marcar que no hay más en memoria
+                    if (startIndex === 0) {
+                      console.log('✅ Caché de memoria agotado');
+                      // Verificar si hay más en la BD
+                      if (cachedMessages.length >= 100) {
+                        console.log('🔄 Puede haber más mensajes en BD, el botón seguirá disponible');
+                      } else {
+                        setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                        console.log('✅ No hay más mensajes para cargar');
+                      }
                     }
-                  } catch (error) {
-                    console.error('❌ Error cargando más mensajes:', error);
-                  } finally {
-                    setMessagesLoading(prev => ({ ...prev, [phone]: false }));
+                  } else {
+                    // No hay más en caché, hacer llamada a la API
+                    console.log('🌐 Caché agotado, cargando desde API');
+                    
+                    setMessagesLoading(prev => ({ ...prev, [phone]: true }));
+                    
+                    try {
+                      const currentOffset = cachedMessages.length; // Offset basado en mensajes ya cargados
+                      const token = localStorage.getItem('authToken');
+                      const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=100&offset=${currentOffset}`, {
+                        headers: token ? { Authorization: `Bearer ${token}` } : {}
+                      });
+                      const newMessages = response.data.messages || [];
+                      
+                      if (newMessages.length > 0) {
+                        console.log('📥 Recibidos', newMessages.length, 'mensajes nuevos de la API');
+                        
+                        const allMappedMessages = newMessages.map((msg: any) => {
+                          const emisor = (msg.emisor || '').trim();
+                          return {
+                            id: msg.id,
+                            text: msg.cuerpo || '',
+                            time: formatTime(new Date(msg.fecha)),
+                            date: msg.fecha,
+                            sent: emisor !== 'usuario',
+                            read: true,
+                            type: msg.tipo || 'text',
+                            fileUrl: msg.url_archivo,
+                            filename: msg.archivo_nombre,
+                            size: msg.archivo_tamanio,
+                            duration: msg.duracion
+                          };
+                        });
+                        
+                        // Añadir al caché (al principio, porque son mensajes más antiguos)
+                        const updatedCache = [...allMappedMessages, ...cachedMessages];
+                        setAllMessagesCache(prev => ({ ...prev, [phone]: updatedCache }));
+                        
+                        // Mostrar solo los primeros 20 de los nuevos
+                        const messagesToShow = allMappedMessages.slice(-messagesLimit);
+                        
+                        setConversationsState(prev => {
+                          const updated = [...prev];
+                          const chatIndex = updated.findIndex(c => c.phone === phone);
+                          if (chatIndex !== -1) {
+                            updated[chatIndex].messages = [...messagesToShow, ...updated[chatIndex].messages];
+                          }
+                          return updated;
+                        });
+                        
+                        // Actualizar índice
+                        setCurrentMessageIndex(prev => ({ 
+                          ...prev, 
+                          [phone]: updatedCache.length - (cachedMessages.length + messagesToShow.length)
+                        }));
+                        
+                        if (newMessages.length < 100) {
+                          setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                          console.log('✅ No hay más mensajes en BD');
+                        }
+                      } else {
+                        setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                        console.log('✅ No hay más mensajes para cargar');
+                      }
+                    } catch (error) {
+                      console.error('❌ Error al cargar más mensajes:', error);
+                    } finally {
+                      setMessagesLoading(prev => ({ ...prev, [phone]: false }));
+                    }
                   }
                 }}
                 disabled={messagesLoading[currentChat.phone]}
@@ -2334,8 +2516,21 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
             <X className="w-4 h-4" />
           </button>
           <div className="text-center mb-6">
+            {currentChat.profilePic ? (
+              <img 
+                src={currentChat.profilePic} 
+                alt={currentChat.name}
+                className="w-24 h-24 mx-auto rounded-full object-cover mb-4"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                  const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                  if (fallback) fallback.style.display = 'flex';
+                }}
+              />
+            ) : null}
             <div className="w-24 h-24 mx-auto rounded-full flex items-center justify-center text-white text-3xl font-semibold mb-4" style={{
-              backgroundImage: `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)`
+              backgroundImage: `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)`,
+              display: currentChat.profilePic ? 'none' : 'flex'
             }}>
               {currentChat.avatar}
             </div>
@@ -2919,7 +3114,22 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                     className="flex items-center justify-between p-3 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg cursor-pointer border border-gray-200 dark:border-gray-600"
                   >
                     <div className="flex items-center gap-3 flex-1">
-                      <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-medium" style={{ backgroundColor: themeColors[theme].hex }}>
+                      {conv.profilePic ? (
+                        <img 
+                          src={conv.profilePic} 
+                          alt={conv.name}
+                          className="w-10 h-10 rounded-full object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                            if (fallback) fallback.style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-medium" style={{ 
+                        backgroundColor: themeColors[theme].hex,
+                        display: conv.profilePic ? 'none' : 'flex'
+                      }}>
                         {conv.avatar}
                       </div>
                       <div className="flex-1">
