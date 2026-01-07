@@ -1,5 +1,6 @@
 require('dotenv').config();
 const axios = require('axios');
+const { validateFileIntegrity } = require('./fileValidator');
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
 
@@ -58,6 +59,52 @@ const getMediaInfo = async (mediaId) => {
     return response.data; // { url, mime_type, ... }
   } catch (error) {
     console.error('❌ Error obteniendo media info:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * Descarga media de WhatsApp y lo guarda localmente en public/uploads
+ * @param {string} mediaId - ID del media en WhatsApp
+ * @returns {Promise<string>} - URL local relativa (ej: /uploads/123.jpg)
+ */
+const downloadMedia = async (mediaId) => {
+  const fs = require('fs');
+  const path = require('path');
+  const mime = require('mime-types');
+
+  try {
+    const info = await getMediaInfo(mediaId);
+    if (!info?.url) {
+      throw new Error('No se encontró URL para el media');
+    }
+
+    // Obtener stream y content-type
+    const { stream, contentType } = await fetchMediaStream(info.url);
+    const uploadsDir = path.join(__dirname, '../../public/uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    const ext = mime.extension(contentType || info.mime_type || '') || 'bin';
+    const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}.${ext}`;
+    const filePath = path.join(uploadsDir, filename);
+
+    const writeStream = fs.createWriteStream(filePath);
+    await new Promise((resolve, reject) => {
+      stream.pipe(writeStream);
+      stream.on('error', reject);
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+    });
+
+    // Validar integridad (magic numbers)
+    await validateFileIntegrity(filePath);
+
+    // Retornar URL relativa
+    return `/uploads/${filename}`;
+  } catch (error) {
+    console.error('❌ Error descargando media:', error.response?.data || error.message);
     throw error;
   }
 };
@@ -419,5 +466,6 @@ module.exports = {
   sendDocument,
   sendButtonReply,
   getMediaInfo,
-  fetchMediaStream
+  fetchMediaStream,
+  downloadMedia
 };

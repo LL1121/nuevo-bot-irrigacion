@@ -122,11 +122,20 @@ const receiveMessage = async (req, res) => {
         // Guardar mensaje del usuario en segundo plano (sin bloquear) y EMITIR inmediatamente
         const persistIncoming = async () => {
           try {
+            let storedUrl = mediaUrl;
+            if ((tipoMensaje === 'image' || tipoMensaje === 'document') && mediaUrl) {
+              try {
+                storedUrl = await whatsappService.downloadMedia(mediaUrl);
+              } catch (downloadErr) {
+                console.error('❌ Error descargando media entrante:', downloadErr);
+              }
+            }
+
             await mensajeService.guardarMensaje({
               telefono: from,
               tipo: tipoMensaje,
               cuerpo: messageBody,
-              url_archivo: mediaUrl,
+              url_archivo: storedUrl,
               emisor: 'usuario'
             });
           } catch (error) {

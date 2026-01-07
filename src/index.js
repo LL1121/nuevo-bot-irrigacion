@@ -6,6 +6,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const fs = require('fs');
 const path = require('path');
 const { initializeDB } = require('./config/db');
 
@@ -63,6 +64,16 @@ const authLimiter = rateLimit({
 });
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// Servir archivos estáticos
+const publicPath = path.join(__dirname, '../public');
+const uploadsPath = path.join(publicPath, 'uploads');
+if (!fs.existsSync(uploadsPath)) {
+  fs.mkdirSync(uploadsPath, { recursive: true });
+}
+
+app.use('/uploads', express.static(uploadsPath));
+app.use(express.static(publicPath));
 
 // Servir archivos estáticos del build de frontend (producción)
 const frontendBuildPath = path.join(__dirname, '../Frontend/dist');

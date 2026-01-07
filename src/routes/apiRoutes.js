@@ -3,9 +3,13 @@ const router = express.Router();
 const apiController = require('../controllers/apiController');
 const authController = require('../controllers/authController');
 const { verifyToken } = require('../middleware/authMiddleware');
+const upload = require('../middleware/uploadMiddleware');
 
 // Login (sin protección)
 router.post('/auth/login', authController.login);
+
+// Subida de archivos (protegido)
+router.post('/upload', verifyToken, upload.single('file'), apiController.subirArchivo);
 
 // Listar todas las conversaciones activas (protegido)
 router.get('/chats', verifyToken, apiController.listarChats);
