@@ -1,6 +1,8 @@
 # Change Log
 
 ## 2026-01-07
+- **Fixed:** Removed invalid `emisor` field from POST `/api/send` to match backend spec; now sends only `telefono`, `mensaje`, `operador`.
+- **Fixed:** Socket `nuevo_mensaje` mapping now correctly identifies sender type (`usuario` = left, `bot`/`operador` = right) without extra parsing.
 - Login UI now inherits saved theme and dark mode (background, cards, inputs, errors) and keeps the brand-only logo sized up with subtle shadow.
 - Added autocomplete hints to login inputs and aligned focus styles with themed tokens.
 - Ensured authenticated requests use bearer token headers across chats, messages, and control actions; logout clears client state and disconnects cleanly.

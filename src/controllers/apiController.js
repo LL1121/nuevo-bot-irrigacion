@@ -1,6 +1,5 @@
 const mensajeService = require('../services/mensajeService');
 const whatsappService = require('../services/whatsappService');
-const userService = require('../services/userService');
 const clienteService = require('../services/clienteService');
 const { getMediaInfo, fetchMediaStream } = require('../services/whatsappService');
 const fs = require('fs');

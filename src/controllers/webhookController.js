@@ -1,6 +1,5 @@
 const whatsappService = require('../services/whatsappService');
-const userService = require('../services/userService');
-const scraperService = require('../services/scraperService');
+const debtScraperService = require('../services/debtScraperService');
 const mensajeService = require('../services/mensajeService');
 const clienteService = require('../services/clienteService');
 
@@ -72,12 +71,14 @@ const receiveMessage = async (req, res) => {
         // ============================================
         // AUTO-REGISTRO DEL CLIENTE
         // ============================================
-        const pushName = body.entry[0].changes[0].value.contacts?.[0]?.profile?.name || 'Sin Nombre';
+        const contactInfo = body.entry[0].changes[0].value.contacts?.[0] || {};
+        const pushName = contactInfo.profile?.name || 'Sin Nombre';
+        const fotoPerfil = contactInfo.wa_id ? `https://graph.facebook.com/v21.0/${contactInfo.wa_id}/profile_picture` : null;
         
         let cliente = null;
         let esClienteNuevo = false;
         try {
-          cliente = await clienteService.obtenerOCrearCliente(from, pushName);
+          cliente = await clienteService.obtenerOCrearCliente(from, pushName, fotoPerfil);
           // Detectar si es cliente nuevo: ultima_interaccion ≈ fecha_registro
           if (cliente) {
             const ultimaInteraccion = new Date(cliente.ultima_interaccion).getTime();
@@ -780,8 +781,8 @@ const handleDescargarBoleto = async (from) => {
  */
 const ejecutarScraper = async (from, dni) => {
   try {
-    // Ejecutar scraping (retorna datos extendidos)
-    const resultado = await scraperService.obtenerDatosDeuda(dni);
+    // Ejecutar scraping con el nuevo servicio
+    const resultado = await debtScraperService.obtenerDeudaYBoleto(dni);
     
     if (!resultado.success) {
       // Error en scraping
