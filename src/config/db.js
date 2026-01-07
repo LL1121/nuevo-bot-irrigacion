@@ -84,7 +84,19 @@ const initializeDB = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  console.log('✅ Tablas clientes, mensajes y notas_internas listas');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS operadores (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      email VARCHAR(255) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      role ENUM('admin', 'operador') DEFAULT 'operador',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_email (email)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  console.log('✅ Tablas clientes, mensajes, notas_internas y operadores listas');
 
   await tempConnection.end();
   return pool;
