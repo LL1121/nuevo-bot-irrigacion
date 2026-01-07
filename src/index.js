@@ -4,6 +4,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const { initializeDB } = require('./config/db');
 
@@ -24,11 +26,41 @@ global.io = io;
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-// Middlewares
+// Security Middlewares
+// 1) Helmet for secure HTTP headers
+app.use(helmet());
+
+// 2) Strict CORS whitelist
+const corsWhitelist = [
+  'http://localhost:5173',
+  FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000'],
+  origin: (origin, callback) => {
+    // Allow server-to-server or CLI requests without origin
+    if (!origin) return callback(null, true);
+    if (corsWhitelist.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
+
+// 3) Rate Limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per window
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const authLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // limit each IP to 5 login requests per window
+  message: 'Too many login attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false
+});
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -45,6 +77,11 @@ const bootstrap = async () => {
   const apiRoutes = require('./routes/apiRoutes');
 
   // Routes API
+  // Apply rate limiting: general API limiter
+  app.use('/api', apiLimiter);
+  // Apply stricter limiter to login route
+  app.post('/api/auth/login', authLimiter, (req, res, next) => next());
+
   app.use('/webhook', webhookRoutes);
   app.use('/api', apiRoutes);
 

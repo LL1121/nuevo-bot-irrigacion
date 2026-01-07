@@ -1,27 +1,32 @@
 const express = require('express');
 const router = express.Router();
 const apiController = require('../controllers/apiController');
+const authController = require('../controllers/authController');
+const { verifyToken } = require('../middleware/authMiddleware');
 
-// Listar todas las conversaciones activas
-router.get('/chats', apiController.listarChats);
+// Login (sin protección)
+router.post('/auth/login', authController.login);
 
-// Obtener historial de mensajes de un usuario
-router.get('/messages/:telefono', apiController.obtenerMensajes);
+// Listar todas las conversaciones activas (protegido)
+router.get('/chats', verifyToken, apiController.listarChats);
 
-// Enviar mensaje desde el operador
-router.post('/send', apiController.enviarMensaje);
+// Obtener historial de mensajes de un usuario (protegido)
+router.get('/messages/:telefono', verifyToken, apiController.obtenerMensajes);
 
-// Marcar conversación como leída
-router.post('/mark-read/:telefono', apiController.marcarLeido);
+// Enviar mensaje desde el operador (protegido)
+router.post('/send', verifyToken, apiController.enviarMensaje);
 
-// Estadísticas del panel
-router.get('/stats', apiController.obtenerEstadisticas);
+// Marcar conversación como leída (protegido)
+router.post('/mark-read/:telefono', verifyToken, apiController.marcarLeido);
 
-// Control del bot (pausar/activar)
-router.post('/chats/:phone/pause', apiController.pausarBot);
-router.post('/chats/:phone/activate', apiController.activarBot);
+// Estadísticas del panel (protegido)
+router.get('/stats', verifyToken, apiController.obtenerEstadisticas);
 
-// Proxy de media (descarga/visualización)
-router.get('/media/:mediaId', apiController.descargarMedia);
+// Control del bot (pausar/activar) (protegido)
+router.post('/chats/:phone/pause', verifyToken, apiController.pausarBot);
+router.post('/chats/:phone/activate', verifyToken, apiController.activarBot);
+
+// Proxy de media (descarga/visualización) (protegido)
+router.get('/media/:mediaId', verifyToken, apiController.descargarMedia);
 
 module.exports = router;
