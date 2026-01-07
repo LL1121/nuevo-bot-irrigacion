@@ -103,7 +103,25 @@ const initializeDB = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  console.log('✅ Tablas clientes, mensajes, notas_internas y operadores listas');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      usuario VARCHAR(255) NOT NULL,
+      accion VARCHAR(50) NOT NULL,
+      tabla VARCHAR(50) NOT NULL,
+      id_registro VARCHAR(255) NOT NULL,
+      valores_anteriores JSON,
+      valores_nuevos JSON,
+      ip_address VARCHAR(45),
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_usuario_timestamp (usuario, timestamp),
+      INDEX idx_tabla_id (tabla, id_registro),
+      INDEX idx_accion (accion),
+      INDEX idx_timestamp (timestamp)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  console.log('✅ Tablas clientes, mensajes, notas_internas, operadores y audit_log listas');
 
   await tempConnection.end();
   return pool;
