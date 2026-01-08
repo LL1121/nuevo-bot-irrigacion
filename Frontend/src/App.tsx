@@ -308,13 +308,23 @@ const dedupeMessages = (msgs: any[]) => {
     // Escuchar mensajes en tiempo real
     const handleNewMessage = (data: any) => {
       // Normalizar datos del socket: mapear campos de BD a campos esperados
+      // IMPORTANTE: Asegurar que 'mensaje' siempre sea un string, no un objeto
+      let messageText = '';
+      if (typeof data.mensaje === 'string') {
+        messageText = data.mensaje;
+      } else if (data.mensaje && typeof data.mensaje === 'object' && (data.mensaje as any).cuerpo) {
+        messageText = (data.mensaje as any).cuerpo;
+      } else if (typeof data.cuerpo === 'string') {
+        messageText = data.cuerpo;
+      }
+      
       const newMsg = {
         id: data.id,
         telefono: data.telefono || data.cliente_telefono,
-        mensaje: data.mensaje || data.cuerpo,  // El socket envía 'cuerpo', no 'mensaje'
+        mensaje: messageText,  // Siempre un string normalizado
         tipo: data.tipo || 'text',
         emisor: data.emisor,
-        timestamp: data.timestamp || data.fecha,  // El socket envía 'fecha', no 'timestamp'
+        timestamp: data.timestamp || data.fecha,
         url_archivo: data.url_archivo,
         archivo_nombre: data.archivo_nombre,
         archivo_tamanio: data.archivo_tamanio,
@@ -325,7 +335,7 @@ const dedupeMessages = (msgs: any[]) => {
       
       console.log('📨 Nuevo mensaje recibido del socket:', newMsg);
       console.log('📱 Teléfono del mensaje:', newMsg.telefono);
-      console.log('💬 Contenido:', newMsg.mensaje);
+      console.log('💬 Contenido normalizado:', messageText);
       
       setConversationsState(prev => {
         console.log('📋 Conversaciones actuales:', prev.length);
@@ -345,11 +355,8 @@ const dedupeMessages = (msgs: any[]) => {
           // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
             const msgTimestamp = new Date(newMsg.timestamp || new Date());
-            const incomingText = typeof newMsg.mensaje === 'string'
-              ? newMsg.mensaje
-              : (newMsg.mensaje && typeof (newMsg.mensaje as any).cuerpo === 'string')
-                ? (newMsg.mensaje as any).cuerpo
-                : (newMsg.cuerpo || '');
+            // newMsg.mensaje ya está normalizado a string en handleNewMessage
+            const incomingText = newMsg.mensaje;
             
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
             const messageExists = chat.messages.some((m: any) => {
@@ -423,11 +430,9 @@ const dedupeMessages = (msgs: any[]) => {
             }
           }
           
-          // Actualizar último mensaje y traer al frente (convertir a string si es objeto)
-          const lastMsgText = typeof newMsg.mensaje === 'string' 
-            ? newMsg.mensaje 
-            : (typeof newMsg.mensaje === 'object' ? '[Mensaje interactivo]' : String(newMsg.mensaje || ''));
-          chat.lastMessage = lastMsgText;
+          // Actualizar último mensaje y traer al frente
+          // newMsg.mensaje ya está normalizado a string en la parte superior de handleNewMessage
+          chat.lastMessage = newMsg.mensaje || '[Mensaje sin contenido]';
           chat.lastMessageDate = newMsg.timestamp || new Date().toISOString();
           chat.time = formatTime(new Date(newMsg.timestamp || new Date()));
           
@@ -899,10 +904,19 @@ const dedupeMessages = (msgs: any[]) => {
             setConversationsState(prev => {
               const updated = [...prev];
               if (selectedChat < updated.length && updated[selectedChat].messages) {
-                updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
-                  m.id === tempId ? { ...m, id: response.data.message.id } : m
-                );
-                updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
+                // Verificar si ya existe un mensaje con el ID real (fue actualizado por el socket)
+                const msgAlreadyUpdated = updated[selectedChat].messages.some((m: any) => m.id === response.data.message.id);
+                
+                if (!msgAlreadyUpdated) {
+                  // Solo actualizar si el socket aún no lo hizo
+                  updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
+                    m.id === tempId ? { ...m, id: response.data.message.id } : m
+                  );
+                  updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
+                  console.log('🔄 ID actualizado por POST response:', tempId, '→', response.data.message.id);
+                } else {
+                  console.log('✅ ID ya fue actualizado por socket, ignorando POST response');
+                }
               }
               return updated;
             });
@@ -910,11 +924,18 @@ const dedupeMessages = (msgs: any[]) => {
             // También actualizar en el caché de memoria
             setAllMessagesCache(prev => {
               const phoneCache = prev[currentChat.phone] || [];
-              const updatedCache = dedupeMessages(phoneCache.map(msg => 
-                msg.id === tempId ? { ...msg, id: response.data.message.id } : msg
-              ));
-              console.log('💾 ID actualizado en caché de memoria:', tempId, '→', response.data.message.id);
-              return { ...prev, [currentChat.phone]: updatedCache };
+              const msgAlreadyUpdated = phoneCache.some((m: any) => m.id === response.data.message.id);
+              
+              if (!msgAlreadyUpdated) {
+                const updatedCache = dedupeMessages(phoneCache.map(msg => 
+                  msg.id === tempId ? { ...msg, id: response.data.message.id } : msg
+                ));
+                console.log('💾 ID actualizado en caché de memoria:', tempId, '→', response.data.message.id);
+                return { ...prev, [currentChat.phone]: updatedCache };
+              } else {
+                console.log('✅ Caché de memoria ya fue actualizado por socket, ignorando');
+                return prev;
+              }
             });
           }
         } catch (error) {
@@ -1859,17 +1880,15 @@ const dedupeMessages = (msgs: any[]) => {
             const prevLabel = labelFor(prev);
             const isImage = (msg as any).type === 'image' || (typeof msg.text === 'string' && (msg.text.startsWith('http') || msg.text.startsWith('data:image')));
             
-            // Delay escalonado: 50ms por mensaje (máximo 20 mensajes = 1 segundo)
-            const animationDelay = Math.min(idx * 50, 1000);
+            // Animación rápida: 0.25s para aparición inmediata, sin delay escalonado
+            // Usar key estable (msg.id) evita re-render al actualizar el ID del mensaje
             
             return (
               <div 
                 key={msg.id} 
                 className="space-y-2"
                 style={{
-                  animation: 'messageSlideIn 0.4s ease-out forwards',
-                  animationDelay: `${animationDelay}ms`,
-                  opacity: 0
+                  animation: 'messageSlideIn 0.25s ease-out forwards'
                 }}
               >
                 {currLabel && currLabel !== prevLabel && (

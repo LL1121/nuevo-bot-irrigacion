@@ -29,11 +29,18 @@ const guardarMensaje = async (data) => {
       );
       console.log(`   ✅ Mensaje insertado - ID: ${result.insertId}`);
 
-      // OPERACIÓN 2: Actualizar última interacción del cliente
-      const [updateResult] = await connection.execute(
-        'UPDATE clientes SET ultima_interaccion = NOW() WHERE telefono = ?',
-        [telefono]
-      );
+      // OPERACIÓN 2: Actualizar última interacción del cliente (SOLO si el mensaje es del usuario)
+      if (emisor === 'usuario') {
+        const [updateResult] = await connection.execute(
+          'UPDATE clientes SET ultima_interaccion = NOW() WHERE telefono = ?',
+          [telefono]
+        );
+        console.log(`   ✅ Cliente actualizado - Filas afectadas: ${updateResult.affectedRows}`);
+      } else {
+        console.log(`   ⏭️ Cliente NO actualizado (emisor: ${emisor})`);
+      }
+
+      const updateResult = { affectedRows: emisor === 'usuario' ? 1 : 0 };
       console.log(`   ✅ Cliente actualizado - Filas afectadas: ${updateResult.affectedRows}`);
 
       return {
