@@ -194,6 +194,17 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   return `http://localhost:3000/api/media/${mediaId}`;
 };
 
+// Dedupe helper to avoid duplicated IDs in UI
+const dedupeMessages = (msgs: any[]) => {
+  const seen = new Set<string | number>();
+  return msgs.filter((m: any) => {
+    const key = m.id ?? `${m.text}-${m.date}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
   // Auth handlers
   const handleLoginSuccess = () => {
     setIsAuthenticated(true);
@@ -227,9 +238,15 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
     const loadChats = async () => {
       try {
         const token = localStorage.getItem('token');
-        console.log('🔄 Cargando chats desde la API...');
+        if (!token) {
+          console.warn('⚠️ No hay token en localStorage, retornando a login');
+          handleLogout();
+          return;
+        }
+
+        console.log('🔄 Cargando chats desde la API... Token:', token.slice(0, 16) + '...');
         const response = await axios.get('http://localhost:3000/api/chats', {
-          headers: token ? { Authorization: `Bearer ${token}` } : {}
+          headers: { Authorization: `Bearer ${token}` }
         });
         console.log('📦 Respuesta completa del backend:', response.data);
         console.log('📦 Tipo de response.data:', typeof response.data);
@@ -264,15 +281,24 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         
         console.log('✅ Chats mapeados y listos:', mappedChats);
         setConversationsState(mappedChats);
-      } catch (error) {
-        console.error('❌ Error cargando chats:', error);
+      } catch (error: any) {
+        const status = error?.response?.status;
+        const data = error?.response?.data;
+        const token = localStorage.getItem('token');
+        console.error('❌ Error cargando chats:', status, data || error);
+        console.warn('🔑 Token usado:', token ? token.slice(0, 24) + '...' : 'sin token');
+        // Si el token es inválido/expirado, forzar logout para reautenticar
+        if (status === 401 || status === 403) {
+          console.warn('🔒 Token inválido o expirado. Cerrando sesión.');
+          handleLogout();
+        }
       }
     };
     
     loadChats();
     
     // Escuchar mensajes en tiempo real
-    socket.on('nuevo_mensaje', (data: any) => {
+    const handleNewMessage = (data: any) => {
       // Normalizar datos del socket: mapear campos de BD a campos esperados
       const newMsg = {
         id: data.id,
@@ -285,6 +311,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         archivo_nombre: data.archivo_nombre,
         archivo_tamanio: data.archivo_tamanio,
         duracion: data.duracion,
+        cuerpo: data.cuerpo,
         nombre: data.nombre
       };
       
@@ -310,6 +337,11 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
             const msgTimestamp = new Date(newMsg.timestamp || new Date());
+            const incomingText = typeof newMsg.mensaje === 'string'
+              ? newMsg.mensaje
+              : (newMsg.mensaje && typeof (newMsg.mensaje as any).cuerpo === 'string')
+                ? (newMsg.mensaje as any).cuerpo
+                : (newMsg.cuerpo || '');
             
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
             const messageExists = chat.messages.some((m: any) => {
@@ -319,7 +351,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
               // Verificar por texto y timestamp cercano (mismo mensaje en los últimos 5 seg)
               const mTimestamp = new Date(m.date);
               const diffSeconds = Math.abs((msgTimestamp.getTime() - mTimestamp.getTime()) / 1000);
-              return m.text === (newMsg.mensaje || '') && diffSeconds < 5;
+              return m.text === incomingText && diffSeconds < 5;
             });
             
             if (!messageExists) {
@@ -327,9 +359,9 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
               
               // Si es un mensaje del operador, buscar si ya existe como optimistic update
               // y NO reemplazarlo, para mantener el timestamp original
-              const isOperatorMessage = emisorLimpio === 'operador';
+              const isOperatorMessage = emisorLimpio === 'operador' || emisorLimpio === 'operadora';
               const existingOptimisticMsg = isOperatorMessage 
-                ? chat.messages.find((m: any) => m.text === (newMsg.mensaje || '') && m.sent === true)
+                ? chat.messages.find((m: any) => m.text === incomingText && m.sent === true)
                 : null;
               
               if (existingOptimisticMsg) {
@@ -345,7 +377,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                 }
               } else {
                 // Agregar nuevo mensaje
-                const messageText = typeof newMsg.mensaje === 'string' ? newMsg.mensaje : JSON.stringify(newMsg.mensaje || '');
+                const messageText = incomingText;
                 const mappedMessage = {
                   id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
                   text: messageText || '',
@@ -363,17 +395,17 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                 console.log('➕ Agregando mensaje:', { id: mappedMessage.id, sent: mappedMessage.sent, emisor: newMsg.emisor, texto: previewText });
                 
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
-                chat.messages = [...chat.messages, mappedMessage].sort((a: any, b: any) => 
+                chat.messages = dedupeMessages([...chat.messages, mappedMessage].sort((a: any, b: any) => 
                   new Date(a.date).getTime() - new Date(b.date).getTime()
-                );
+                ));
                 console.log('📅 Mensajes ordenados por fecha');
                 
                 // También agregar al caché de memoria
                 setAllMessagesCache(prev => {
                   const phoneCache = prev[chat.phone] || [];
-                  const updatedCache = [...phoneCache, mappedMessage].sort((a: any, b: any) => 
+                  const updatedCache = dedupeMessages([...phoneCache, mappedMessage].sort((a: any, b: any) => 
                     new Date(a.date).getTime() - new Date(b.date).getTime()
-                  );
+                  ));
                   console.log('💾 Mensaje agregado al caché de memoria');
                   return { ...prev, [chat.phone]: updatedCache };
                 });
@@ -433,10 +465,9 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           return [newChat, ...prev];
         }
       });
-    });
-    
-    // Escuchar cambios en el modo del bot
-    socket.on('bot_mode_changed', (data: { telefono: string; bot_activo: boolean }) => {
+    };
+
+    const handleBotModeChanged = (data: { telefono: string; bot_activo: boolean }) => {
       console.log('🤖 Cambio en modo del bot:', data);
       setConversationsState(prev => {
         const chatIndex = prev.findIndex(c => c.phone === data.telefono);
@@ -447,12 +478,15 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         }
         return prev;
       });
-    });
+    };
+
+    socket.on('nuevo_mensaje', handleNewMessage);
+    socket.on('bot_mode_changed', handleBotModeChanged);
     
     // Cleanup al desmontar
     return () => {
-      socket.off('nuevo_mensaje');
-      socket.off('bot_mode_changed');
+      socket.off('nuevo_mensaje', handleNewMessage);
+      socket.off('bot_mode_changed', handleBotModeChanged);
     };
   }, [isAuthenticated]);
 
@@ -800,7 +834,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           if (!updated[selectedChat].messages) {
             updated[selectedChat].messages = [];
           }
-          updated[selectedChat].messages.push(tempMessage);
+          updated[selectedChat].messages = dedupeMessages([...updated[selectedChat].messages, tempMessage]);
           updated[selectedChat].lastMessage = messageText;
           updated[selectedChat].lastMessageDate = new Date().toISOString();
           updated[selectedChat].time = formatTime(new Date());
@@ -810,7 +844,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         // También agregar al caché de memoria
         setAllMessagesCache(prev => {
           const phoneCache = prev[currentChat.phone] || [];
-          const updatedCache = [...phoneCache, tempMessage];
+          const updatedCache = dedupeMessages([...phoneCache, tempMessage]);
           console.log('💾 Mensaje enviado agregado al caché de memoria');
           return { ...prev, [currentChat.phone]: updatedCache };
         });
@@ -857,10 +891,10 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
             setConversationsState(prev => {
               const updated = [...prev];
               if (selectedChat < updated.length && updated[selectedChat].messages) {
-                const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
-                if (msgIndex !== -1) {
-                  updated[selectedChat].messages[msgIndex].id = response.data.message.id;
-                }
+                updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
+                  m.id === tempId ? { ...m, id: response.data.message.id } : m
+                );
+                updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
               }
               return updated;
             });
@@ -868,9 +902,9 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
             // También actualizar en el caché de memoria
             setAllMessagesCache(prev => {
               const phoneCache = prev[currentChat.phone] || [];
-              const updatedCache = phoneCache.map(msg => 
+              const updatedCache = dedupeMessages(phoneCache.map(msg => 
                 msg.id === tempId ? { ...msg, id: response.data.message.id } : msg
-              );
+              ));
               console.log('💾 ID actualizado en caché de memoria:', tempId, '→', response.data.message.id);
               return { ...prev, [currentChat.phone]: updatedCache };
             });

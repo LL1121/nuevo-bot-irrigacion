@@ -3,6 +3,7 @@ const logger = require('../services/logService');
 /**
  * Middleware para loguear todos los requests HTTP
  * Registra: método, ruta, usuario, status, latencia, IP
+ * OPTIMIZADO: Solo log críticos y errores (reduce I/O)
  */
 const requestLogger = (req, res, next) => {
   const startTime = Date.now();
@@ -14,25 +15,14 @@ const requestLogger = (req, res, next) => {
 
     // Solo loguear requests a API (no assets estáticos)
     if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) {
-      logger.http(req, res, latency);
-
-      // Loguear si es lento (> 100ms)
-      if (latency > 100) {
-        logger.warn(`Request lento detectado`, {
-          method: req.method,
-          path: req.path,
-          latency: `${latency}ms`,
-          user: req.user?.email || 'anonymous'
-        });
-      }
-
-      // Loguear errores (status >= 400)
-      if (res.statusCode >= 400) {
-        logger.warn(`Request error`, {
+      // OPTIMIZACIÓN: Solo log si es lento o error (reduce escrituras)
+      if (latency > 200 || res.statusCode >= 400) {
+        logger.warn(`Request ${res.statusCode >= 400 ? 'error' : 'lento'}`, {
           method: req.method,
           path: req.path,
           status: res.statusCode,
-          user: req.user?.email || 'anonymous'
+          latency: `${latency}ms`,
+          user: req.user?.username || req.user?.email || 'anonymous'
         });
       }
     }
