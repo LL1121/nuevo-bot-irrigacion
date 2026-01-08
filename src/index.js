@@ -33,9 +33,6 @@ global.io = io;
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-// Importar backup scheduler
-const { startBackupScheduler, stopBackupScheduler } = require('./services/backupScheduler');
-
 // Security Middlewares
 // 1) Helmet for secure HTTP headers
 app.use(helmet());
@@ -99,14 +96,20 @@ const bootstrap = async () => {
     // Inicializar base de datos antes de registrar rutas
     logger.info('Inicializando Base de Datos...');
     await initializeDB();
+    console.log('✅ Base de datos inicializada correctamente');
 
     // Cargar rutas después de que DB exista
+    console.log('📄 Cargando rutas...');
     const webhookRoutes = require('./routes/webhookRoutes');
+    console.log('✅ Rutas de webhook cargadas');
     const apiRoutes = require('./routes/apiRoutes');
-    const backupRoutes = require('./routes/backupRoutes');
+    console.log('✅ Rutas de API cargadas');
     const auditRoutes = require('./routes/auditRoutes');
+    console.log('✅ Rutas de auditoría cargadas');
     const healthRoutes = require('./routes/healthRoutes');
+    console.log('✅ Rutas de health cargadas');
     const cacheTestRoutes = require('./routes/cacheTestRoutes');
+    console.log('✅ Rutas de cache test cargadas');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -116,7 +119,6 @@ const bootstrap = async () => {
 
   app.use('/webhook', webhookRoutes);
   app.use('/api', apiRoutes);
-  app.use('/api', backupRoutes);
   app.use('/api', auditRoutes);
   app.use('/api', healthRoutes);
   app.use('/api', cacheTestRoutes);
@@ -173,17 +175,12 @@ const bootstrap = async () => {
     console.log(`🌐 API REST: http://localhost:${PORT}/api`);
     console.log(`📚 Documentación: http://localhost:${PORT}/api-docs`);
     console.log('✅ Sistema de scraping listo');
-    
-    // Iniciar scheduler de backups automáticos
-    console.log('');
-    startBackupScheduler();
   });
   
   // Graceful shutdown: detener backups y cerrar conexiones
   process.on('SIGINT', () => {
     logger.warn('Recibida señal SIGINT - Shutdown graceful');
     console.log('\n\n🛑 Iniciando shutdown graceful...');
-    stopBackupScheduler();
     server.close(() => {
       logger.info('Servidor cerrado correctamente');
       console.log('✅ Servidor cerrado correctamente');
@@ -194,7 +191,6 @@ const bootstrap = async () => {
   process.on('SIGTERM', () => {
     logger.warn('Recibida señal SIGTERM - Shutdown graceful');
     console.log('\n\n🛑 Iniciando shutdown graceful...');
-    stopBackupScheduler();
     server.close(() => {
       logger.info('Servidor cerrado correctamente');
       console.log('✅ Servidor cerrado correctamente');

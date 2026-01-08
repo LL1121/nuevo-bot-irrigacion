@@ -47,14 +47,12 @@ router.get('/health', async (req, res) => {
  *   get:
  *     summary: "Health check detallado - Incluye configuración sensible"
  *     tags: [Health]
+ *     description: "Health check detallado que requiere autenticación y devuelve información sensible"
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: "Información detallada del sistema"
- */
- * Health check detallado (requiere autenticación)
- * Incluye información sensible (tokens, rutas, etc)
  */
 router.get('/health/detailed', verifyToken, async (req, res) => {
   try {
