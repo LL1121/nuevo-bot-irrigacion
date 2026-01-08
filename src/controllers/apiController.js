@@ -131,7 +131,8 @@ const enviarMensaje = async (req, res) => {
       telefono,
       tipo: 'text',
       cuerpo: mensaje,
-      url_archivo: null
+      url_archivo: null,
+      emisor: 'operador'
     });
 
     // Emitir evento en tiempo real
