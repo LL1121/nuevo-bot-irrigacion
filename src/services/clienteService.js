@@ -71,6 +71,7 @@ const obtenerTodosLosClientes = async () => {
         c.telefono,
         c.nombre_whatsapp,
         c.nombre_asignado,
+        c.foto_perfil,
         c.padron,
         c.estado_deuda,
         c.bot_activo,

@@ -49,11 +49,19 @@ const initializeDB = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  // Agregar columna foto_perfil si no existe (migración)
-  await pool.query(`
-    ALTER TABLE clientes 
-    ADD COLUMN IF NOT EXISTS foto_perfil VARCHAR(500) AFTER nombre_asignado;
-  `).catch(() => {});
+  // Agregar columna foto_perfil si no existe (migración compatible con MySQL)
+  try {
+    await pool.query(`
+      ALTER TABLE clientes 
+      ADD COLUMN foto_perfil VARCHAR(500) AFTER nombre_asignado;
+    `);
+    console.log('✅ Columna foto_perfil agregada');
+  } catch (error) {
+    // Columna ya existe o error - ignorar silenciosamente
+    if (!error.message.includes('Duplicate column')) {
+      console.log('⚠️ Migración foto_perfil:', error.message);
+    }
+  }
 
   // Tabla legacy para compatibilidad con flujos existentes
   await pool.query(`
