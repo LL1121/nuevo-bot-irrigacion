@@ -116,6 +116,7 @@ const marcarComoLeido = async (telefono) => {
         [telefono]
       );
       console.log(`   ✅ Cliente actualizado`);
+      console.log(`✅ Mensajes marcados como leídos: ${telefono}`);
 
       return { affectedRows: result.affectedRows };
     } catch (error) {
@@ -123,11 +124,6 @@ const marcarComoLeido = async (telefono) => {
       throw error;
     }
   });
-
-    console.log(`✅ Mensajes marcados como leídos: ${telefono}`);
-  } catch (error) {
-    console.error('❌ Error marcando como leído:', error);
-  }
 };
 
 module.exports = {

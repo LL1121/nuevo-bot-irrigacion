@@ -78,15 +78,6 @@ const options = {
             timestamp: { type: 'string', format: 'date-time' }
           }
         },
-        Backup: {
-          type: 'object',
-          properties: {
-            filename: { type: 'string', description: 'Nombre del archivo de backup' },
-            size: { type: 'integer', description: 'Tamaño en bytes' },
-            sizeInMB: { type: 'number', description: 'Tamaño en MB' },
-            date: { type: 'string', format: 'date-time' }
-          }
-        },
         HealthCheck: {
           type: 'object',
           properties: {
@@ -112,7 +103,6 @@ const options = {
       { name: 'Clientes', description: 'Gestión de clientes y su información' },
       { name: 'Mensajes', description: 'Mensajes entre bot y clientes' },
       { name: 'Scraping', description: 'Web scraping para obtener deuda' },
-      { name: 'Backups', description: 'Backup automático de BD a AWS S3' },
       { name: 'Auditoría', description: 'Log de cambios en la BD' },
       { name: 'Health', description: 'Estado y salud del sistema' }
     ]
