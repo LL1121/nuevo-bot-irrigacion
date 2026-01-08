@@ -69,7 +69,7 @@ const obtenerMensajes = async (telefono, limit = 50, offset = 0) => {
     
     // OPTIMIZACIÓN: Campos específicos en lugar de SELECT *
     const [rows] = await pool.execute(
-      `SELECT id, cliente_telefono, tipo, cuerpo, url_archivo, emisor, fecha, leido 
+      `SELECT id, cliente_telefono, tipo, cuerpo, url_archivo, emisor, fecha 
        FROM mensajes 
        WHERE cliente_telefono = ? 
        ORDER BY fecha DESC 
