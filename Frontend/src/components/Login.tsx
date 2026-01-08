@@ -16,7 +16,7 @@ const themeTokens: Record<string, { hex: string; gradient: string; lightBg: stri
 };
 
 export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -29,9 +29,10 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
 
     try {
       const response = await axios.post('http://localhost:3000/api/auth/login', {
-        email,
+        username,
         password
       });
+      console.log('🔑 Respuesta login:', response.data);
 
       if (response.data.success && response.data.token) {
         // Guardar el JWT token
@@ -40,13 +41,13 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
         if (response.data.operador) {
           localStorage.setItem('operador', JSON.stringify(response.data.operador));
         }
-        console.log('✅ Login exitoso:', response.data.operador?.nombre || response.data.operador?.email);
+        console.log('✅ Login exitoso:', response.data.operador?.nombre || response.data.operador?.email, 'token:', response.data.token?.slice(0, 20) + '...');
         onLoginSuccess();
       } else {
-        setError(response.data?.message || 'Error al iniciar sesión');
+        setError(response.data?.message || 'Error al iniciar sesión (token no recibido)');
       }
     } catch (err: any) {
-      console.error('Error de login:', err);
+      console.error('Error de login:', err?.response?.data || err);
       setError(err.response?.data?.message || 'Error al iniciar sesión. Verifica tus credenciales.');
     } finally {
       setLoading(false);
@@ -95,21 +96,21 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
 
           {/* Login form */}
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Email input */}
+            {/* Username input */}
             <div className="space-y-2">
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-                Email
+              <label htmlFor="username" className="block text-sm font-medium text-gray-700">
+                Usuario
               </label>
               <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
                 className={`w-full px-4 py-3 border rounded-lg transition-all outline-none ${inputBg} ${focusRing}`}
-                placeholder="tu@email.com"
+                placeholder="admin"
                 disabled={loading}
-                autoComplete="email"
+                autoComplete="username"
               />
             </div>
 
@@ -144,7 +145,7 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
             {/* Submit button */}
             <button
               type="submit"
-              disabled={loading || !email || !password}
+              disabled={loading || !username || !password}
               className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl hover:from-emerald-600 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:scale-[1.02] active:scale-[0.98]"
             >
               {loading ? (

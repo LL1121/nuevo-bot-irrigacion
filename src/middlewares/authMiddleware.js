@@ -19,8 +19,10 @@ const verifyToken = (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     req.user = decoded;
-    
-    logService.http(`✅ Token verificado para usuario: ${decoded.email}`);
+
+    // OPTIMIZACIÓN: Sin log en cada request (reduce I/O)
+    // Solo loggear en desarrollo si es necesario
+    // logService.info(`✅ Token verificado para usuario: ${decoded.username || decoded.email || 'desconocido'}`);
     next();
   } catch (error) {
     logService.error(`❌ Error verificando token: ${error.message}`);

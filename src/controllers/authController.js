@@ -2,7 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { getPool } = require('../config/db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'tu_clave_secreta_muy_segura_change_in_production';
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const TOKEN_EXPIRY = '8h';
 
 /**
