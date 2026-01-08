@@ -18,9 +18,9 @@ const upload = require('../middleware/uploadMiddleware');
  *           schema:
  *             type: object
  *             properties:
- *               email:
+ *               username:
  *                 type: string
- *                 example: admin@bot.com
+ *                 example: admin
  *               password:
  *                 type: string
  *                 example: "MiPassword123!"
@@ -37,7 +37,7 @@ const upload = require('../middleware/uploadMiddleware');
  *                 token:
  *                   type: string
  *                   description: "JWT para incluir en Authorization header"
- *                 operador:
+ *                 user:
  *                   type: object
  *       401:
  *         description: "Credenciales inválidas"

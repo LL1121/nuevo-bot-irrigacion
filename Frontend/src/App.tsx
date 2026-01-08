@@ -8,10 +8,11 @@ import Login from './components/Login';
 // Configurar Axios base y Bearer token interceptor
 axios.defaults.baseURL = 'http://localhost:3000';
 axios.interceptors.request.use((config) => {
-  const token = localStorage.getItem('authToken');
+  const token = localStorage.getItem('token');
   if (token) {
     config.headers = config.headers ?? {};
     config.headers.Authorization = `Bearer ${token}`;
+    console.log('🔐 Token enviado en header Authorization');
   }
   return config;
 });
@@ -36,11 +37,10 @@ socket.on('disconnect', () => {
 socket.on('connect_error', (error) => {
   console.error('❌ Error de conexión del socket:', error);
 });
-
 export default function App() {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return !!localStorage.getItem('authToken');
+    return !!localStorage.getItem('token');
   });
 
   // Theme color mapping
@@ -204,8 +204,8 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('authToken');
-    localStorage.removeItem('user');
+    localStorage.removeItem('token');
+    localStorage.removeItem('operador');
     
     // Limpiar estado de conversaciones
     setConversationsState([]);
@@ -226,7 +226,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
 
     const loadChats = async () => {
       try {
-        const token = localStorage.getItem('authToken');
+        const token = localStorage.getItem('token');
         console.log('🔄 Cargando chats desde la API...');
         const response = await axios.get('http://localhost:3000/api/chats', {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
@@ -536,7 +536,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
           console.log('🗑️ Caché eliminado, cargando desde API');
           
           console.log('📨 Cargando mensajes para:', currentChat.phone);
-          const token = localStorage.getItem('authToken');
+          const token = localStorage.getItem('token');
           
           // Traer hasta 100 mensajes para optimizar y quedarnos con los últimos 20
           const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=100&offset=0`, {
@@ -733,7 +733,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   // Funciones para control del bot
   const pauseBot = async (phone: string) => {
     try {
-      const token = localStorage.getItem('authToken');
+      const token = localStorage.getItem('token');
       await axios.post(`http://localhost:3000/api/chats/${phone}/pause`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
@@ -745,7 +745,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   
   const activateBot = async (phone: string) => {
     try {
-      const token = localStorage.getItem('authToken');
+      const token = localStorage.getItem('token');
       await axios.post(`http://localhost:3000/api/chats/${phone}/activate`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
@@ -833,7 +833,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
         
         // Enviar al backend
         try {
-          const token = localStorage.getItem('authToken');
+          const token = localStorage.getItem('token');
           const response = await axios.post('http://localhost:3000/api/send', {
             telefono: currentChat.phone,
             mensaje: messageText,
@@ -1681,7 +1681,7 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
                     
                     try {
                       const currentOffset = cachedMessages.length; // Offset basado en mensajes ya cargados
-                      const token = localStorage.getItem('authToken');
+                      const token = localStorage.getItem('token');
                       const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=100&offset=${currentOffset}`, {
                         headers: token ? { Authorization: `Bearer ${token}` } : {}
                       });
