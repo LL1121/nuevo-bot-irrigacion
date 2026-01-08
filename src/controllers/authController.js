@@ -6,29 +6,29 @@ const JWT_SECRET = process.env.JWT_SECRET || 'tu_clave_secreta_muy_segura_change
 const TOKEN_EXPIRY = '8h';
 
 /**
- * Login: valida email/password y retorna JWT
+ * Login: valida username/password y retorna JWT
  */
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { username, password } = req.body;
 
-    if (!email || !password) {
+    if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Email y contraseña son requeridos'
+        message: 'Usuario y contraseña son requeridos'
       });
     }
 
     const pool = getPool();
     const [rows] = await pool.query(
-      'SELECT id, email, password_hash, role FROM operadores WHERE email = ?',
-      [email]
+      'SELECT id, username, email, password_hash, role FROM operadores WHERE username = ?',
+      [username]
     );
 
     if (rows.length === 0) {
       return res.status(401).json({
         success: false,
-        message: 'Email o contraseña incorrectos'
+        message: 'Usuario o contraseña incorrectos'
       });
     }
 
@@ -38,7 +38,7 @@ const login = async (req, res) => {
     if (!passwordMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Email o contraseña incorrectos'
+        message: 'Usuario o contraseña incorrectos'
       });
     }
 
@@ -46,6 +46,7 @@ const login = async (req, res) => {
     const token = jwt.sign(
       {
         id: operador.id,
+        username: operador.username,
         email: operador.email,
         role: operador.role
       },
