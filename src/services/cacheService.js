@@ -20,40 +20,50 @@ const initRedis = async (options = {}) => {
     const password = process.env.REDIS_PASSWORD || undefined;
 
     redisClient = redis.createClient({
-      host,
-      port,
+      socket: {
+        host,
+        port,
+        connectTimeout: 3000
+      },
       password,
-      retry_strategy: (options) => {
-        if (options.error && options.error.code === 'ECONNREFUSED') {
-          console.warn('⚠️ Redis no disponible - funcionando sin cache');
-          return new Error('Redis server refused the connection');
-        }
-        if (options.total_retry_time > 1000 * 60 * 60) {
-          return new Error('Retry time exhausted');
-        }
-        return Math.min(options.attempt * 100, 3000);
-      }
+      legacyMode: false,
+      disableOfflineQueue: true
     });
 
-    redisClient.on('error', (error) => {
-      console.warn('⚠️ Error en Redis:', error.message);
-    });
+    // Manejador de error temporal para timeout
+    const errorHandler = (error) => {
+      // Solo loggear errores críticos
+    };
+    
+    redisClient.once('error', errorHandler);
 
-    redisClient.on('connect', () => {
-      console.log('✅ Conectado a Redis');
-    });
-
-    // Promisify para usar async/await
-    const { promisify } = require('util');
-    redisClient.getAsync = promisify(redisClient.get).bind(redisClient);
-    redisClient.setAsync = promisify(redisClient.set).bind(redisClient);
-    redisClient.delAsync = promisify(redisClient.del).bind(redisClient);
-    redisClient.existsAsync = promisify(redisClient.exists).bind(redisClient);
-    redisClient.expireAsync = promisify(redisClient.expire).bind(redisClient);
-    redisClient.ttlAsync = promisify(redisClient.ttl).bind(redisClient);
-    redisClient.flushAsync = promisify(redisClient.flushall).bind(redisClient);
+    // Conectar con timeout más agresivo
+    try {
+      await Promise.race([
+        redisClient.connect(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+      ]);
+      
+      // Si conectó, remover handler temporal
+      redisClient.removeListener('error', errorHandler);
+      
+      // Agregar handler permanente
+      redisClient.on('error', (error) => {
+        console.warn('⚠️ Error en Redis (runtime):', error.message);
+      });
+      
+      console.log(`✅ Redis inicializado en ${host}:${port}`);
+    } catch (err) {
+      // Conexión falló
+      redisClient.removeListener('error', errorHandler);
+      redisClient = null;
+      console.warn(`⚠️ No se pudo conectar a Redis en ${host}:${port}`);
+      console.warn('💡 Para activar: docker run -d -p 6379:6379 redis:latest');
+      console.warn('⚠️ Continuando sin cache (modo degradado)');
+    }
   } catch (error) {
-    console.warn('⚠️ No se pudo inicializar Redis:', error.message);
+    console.warn('⚠️ Error inicializando Redis:', error.message);
+    redisClient = null;
   }
 };
 
@@ -78,13 +88,13 @@ const getRedis = () => {
  */
 const cacheSet = async (key, value, ttl = 3600) => {
   try {
-    if (!redisClient) return false;
+    if (!redisClient || !redisClient.isReady) return false;
 
     const serialized = JSON.stringify(value);
     if (ttl) {
-      await redisClient.setAsync(key, serialized, 'EX', ttl);
+      await redisClient.setEx(key, ttl, serialized);
     } else {
-      await redisClient.setAsync(key, serialized);
+      await redisClient.set(key, serialized);
     }
 
     console.log(`💾 Cache SET: ${key} (TTL: ${ttl}s)`);
@@ -102,9 +112,9 @@ const cacheSet = async (key, value, ttl = 3600) => {
  */
 const cacheGet = async (key) => {
   try {
-    if (!redisClient) return null;
+    if (!redisClient || !redisClient.isReady) return null;
 
-    const value = await redisClient.getAsync(key);
+    const value = await redisClient.get(key);
     if (!value) return null;
 
     console.log(`📖 Cache HIT: ${key}`);
@@ -122,9 +132,9 @@ const cacheGet = async (key) => {
  */
 const cacheDel = async (key) => {
   try {
-    if (!redisClient) return false;
+    if (!redisClient || !redisClient.isReady) return false;
 
-    await redisClient.delAsync(key);
+    await redisClient.del(key);
     console.log(`🗑️  Cache DELETE: ${key}`);
     return true;
   } catch (error) {
@@ -139,9 +149,9 @@ const cacheDel = async (key) => {
  */
 const cacheFlush = async () => {
   try {
-    if (!redisClient) return false;
+    if (!redisClient || !redisClient.isReady) return false;
 
-    await redisClient.flushAsync();
+    await redisClient.flushAll();
     console.log('🧹 Cache FLUSHED - Todo limpio');
     return true;
   } catch (error) {
@@ -157,9 +167,9 @@ const cacheFlush = async () => {
  */
 const cacheExists = async (key) => {
   try {
-    if (!redisClient) return false;
+    if (!redisClient || !redisClient.isReady) return false;
 
-    const exists = await redisClient.existsAsync(key);
+    const exists = await redisClient.exists(key);
     return exists === 1;
   } catch (error) {
     console.warn('⚠️ Error en cacheExists:', error.message);
@@ -174,9 +184,9 @@ const cacheExists = async (key) => {
  */
 const cacheTTL = async (key) => {
   try {
-    if (!redisClient) return -2;
+    if (!redisClient || !redisClient.isReady) return -2;
 
-    return await redisClient.ttlAsync(key);
+    return await redisClient.ttl(key);
   } catch (error) {
     console.warn('⚠️ Error en cacheTTL:', error.message);
     return -2;
