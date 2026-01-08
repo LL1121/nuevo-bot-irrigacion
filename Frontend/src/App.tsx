@@ -223,6 +223,14 @@ const dedupeMessages = (msgs: any[]) => {
     setSelectedChat(null);
     setMessage('');
     
+    // Cerrar todos los menus y modales abiertos
+    setShowMenu(false);
+    setShowInfo(false);
+    setShowEmojiPicker(false);
+    setShowAttachMenu(false);
+    setShowSidebarMenu(false);
+    setContextMenu({ visible: false, x: 0, y: 0, type: null });
+    
     // Desconectar y reconectar socket sin autenticación
     socket.disconnect();
     
