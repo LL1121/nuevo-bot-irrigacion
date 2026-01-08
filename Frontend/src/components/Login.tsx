@@ -33,12 +33,17 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
         password
       });
 
-      if (response.data.token) {
-        localStorage.setItem('authToken', response.data.token);
-        if (response.data.user) {
-          localStorage.setItem('user', JSON.stringify(response.data.user));
+      if (response.data.success && response.data.token) {
+        // Guardar el JWT token
+        localStorage.setItem('token', response.data.token);
+        // Guardar información del operador
+        if (response.data.operador) {
+          localStorage.setItem('operador', JSON.stringify(response.data.operador));
         }
+        console.log('✅ Login exitoso:', response.data.operador?.nombre || response.data.operador?.email);
         onLoginSuccess();
+      } else {
+        setError(response.data?.message || 'Error al iniciar sesión');
       }
     } catch (err: any) {
       console.error('Error de login:', err);
