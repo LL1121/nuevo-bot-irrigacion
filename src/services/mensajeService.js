@@ -72,7 +72,7 @@ const obtenerMensajes = async (telefono, limit = 50, offset = 0) => {
       `SELECT id, cliente_telefono, tipo, cuerpo, url_archivo, emisor, fecha 
        FROM mensajes 
        WHERE cliente_telefono = ? 
-       ORDER BY fecha DESC 
+       ORDER BY fecha ASC 
        LIMIT ${limitNum} OFFSET ${offsetNum}`,
       [telefono]
     );
