@@ -63,33 +63,27 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
  * Obtener todos los clientes con su último mensaje
  * @returns {Array} Lista de clientes con último mensaje
  */
-/**
- * Obtener todos los clientes
- * OPTIMIZADO: Sin subqueries costosas, solo datos básicos
- */
 const obtenerTodosLosClientes = async () => {
   try {
     const pool = getPool();
-    
-    // OPTIMIZACIÓN: Sin subqueries (mucho más rápido)
-    // Frontend puede pedir mensajes individuales si los necesita
     const [rows] = await pool.execute(`
       SELECT 
-        telefono,
-        nombre_whatsapp,
-        nombre_asignado,
-        foto_perfil,
-        padron,
-        estado_deuda,
-        bot_activo,
-        ultima_interaccion,
-        fecha_registro
-      FROM clientes
-      ORDER BY ultima_interaccion DESC
-      LIMIT 100
+        c.telefono,
+        c.nombre_whatsapp,
+        c.nombre_asignado,
+        c.padron,
+        c.estado_deuda,
+        c.bot_activo,
+        c.ultima_interaccion,
+        c.fecha_registro,
+        (SELECT cuerpo FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje,
+        (SELECT fecha FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje_fecha,
+        (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono) as total_mensajes
+      FROM clientes c
+      ORDER BY c.ultima_interaccion DESC
     `);
 
-    // OPTIMIZACIÓN: Sin console.log en cada request
+    console.log(`📋 ${rows.length} clientes obtenidos`);
     return rows;
   } catch (error) {
     console.error('❌ Error en obtenerTodosLosClientes:', error);
