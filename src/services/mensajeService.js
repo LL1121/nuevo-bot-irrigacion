@@ -54,23 +54,30 @@ const guardarMensaje = async (data) => {
 
 /**
  * Obtiene el historial de mensajes de un teléfono
+ * OPTIMIZADO: Solo campos necesarios, límite razonable por defecto
  * @param {string} telefono - Número de teléfono
  * @param {number} limit - Cantidad de mensajes a traer
  * @returns {Array} Lista de mensajes
  */
-const obtenerMensajes = async (telefono, limit = 100, offset = 0) => {
+const obtenerMensajes = async (telefono, limit = 50, offset = 0) => {
   try {
     const pool = getPool();
     // Convertir limit a número entero para evitar inyección SQL
-    const limitNum = Math.min(Math.max(parseInt(limit) || 100, 1), 1000);
+    // OPTIMIZACIÓN: Límite por defecto 50 en lugar de 100
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
     const offsetNum = Math.max(parseInt(offset) || 0, 0);
     
+    // OPTIMIZACIÓN: Campos específicos en lugar de SELECT *
     const [rows] = await pool.execute(
-      `SELECT * FROM mensajes WHERE cliente_telefono = ? ORDER BY fecha ASC LIMIT ${limitNum} OFFSET ${offsetNum}`,
+      `SELECT id, cliente_telefono, tipo, cuerpo, url_archivo, emisor, fecha, leido 
+       FROM mensajes 
+       WHERE cliente_telefono = ? 
+       ORDER BY fecha DESC 
+       LIMIT ${limitNum} OFFSET ${offsetNum}`,
       [telefono]
     );
 
-    console.log(`📜 ${rows.length} mensajes obtenidos para ${telefono}`);
+    // OPTIMIZACIÓN: Sin console.log en cada request (reduce I/O)
     return rows;
   } catch (error) {
     console.error('❌ Error obteniendo mensajes:', error);

@@ -89,14 +89,21 @@ app.use(express.static(frontendBuildPath));
 
 const bootstrap = async () => {
   try {
-    // Inicializar Redis para caching
-    logger.info('Inicializando Redis...');
-    await initRedis();
+    // Inicializar Redis en paralelo (no bloqueante)
+    const redisPromise = initRedis().catch(() => {
+      console.log('⚠️ Redis no disponible - continuando sin cache');
+    });
 
-    // Inicializar base de datos antes de registrar rutas
+    // Inicializar base de datos (crítico)
     logger.info('Inicializando Base de Datos...');
     await initializeDB();
     console.log('✅ Base de datos inicializada correctamente');
+
+    // Esperar Redis solo si no tardó más de 1 segundo
+    await Promise.race([
+      redisPromise,
+      new Promise(resolve => setTimeout(resolve, 1000))
+    ]);
 
     // Cargar rutas después de que DB exista
     console.log('📄 Cargando rutas...');

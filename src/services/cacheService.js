@@ -37,11 +37,11 @@ const initRedis = async (options = {}) => {
     
     redisClient.once('error', errorHandler);
 
-    // Conectar con timeout más agresivo
+    // Conectar con timeout RÁPIDO (1 segundo)
     try {
       await Promise.race([
         redisClient.connect(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1000))
       ]);
       
       // Si conectó, remover handler temporal
