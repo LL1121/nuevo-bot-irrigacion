@@ -44,6 +44,53 @@ const sendMessage = async (to, text) => {
 };
 
 /**
+ * Envía una Plantilla (Template) para reactivar conversaciones >24hs
+ * @param {string} to - Número de teléfono del destinatario
+ * @param {string} templateName - Nombre de la plantilla (ej: 'hello_world')
+ * @param {string} languageCode - Código de idioma (ej: 'en_US', 'es', 'es_AR')
+ * @param {Array} components - Componentes opcionales (header/body/button) según template
+ */
+const sendTemplate = async (to, templateName, languageCode = 'en_US', components = undefined) => {
+  // Parche para Argentina en Sandbox (quita el 9 después del 54)
+  if (to.includes('549')) {
+    to = to.replace('549', '54');
+  }
+
+  try {
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+
+    const templatePayload = {
+      name: templateName,
+      language: { code: languageCode }
+    };
+    if (components && Array.isArray(components) && components.length > 0) {
+      templatePayload.components = components;
+    }
+
+    const data = {
+      messaging_product: 'whatsapp',
+      to: to,
+      type: 'template',
+      template: templatePayload
+    };
+
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    };
+
+    const response = await axios.post(url, data, config);
+    console.log('✅ Template enviado correctamente:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error enviando template:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
  * Obtiene metadata de un media (url temporal, mime, etc.)
  * @param {string} mediaId
  */
@@ -458,6 +505,7 @@ const sendButtonReply = async (to, text, buttons) => {
 
 module.exports = {
   sendMessage,
+  sendTemplate,
   sendImage,
   sendInteractiveList,
   sendInteractiveButtons,

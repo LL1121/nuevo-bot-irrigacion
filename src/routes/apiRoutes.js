@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const apiController = require('../controllers/apiController');
+const chatController = require('../controllers/chatController');
 const authController = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
@@ -224,6 +225,9 @@ router.post('/chats/:phone/pause', verifyToken, apiController.pausarBot);
  *         description: "Bot activado correctamente"
  */
 router.post('/chats/:phone/activate', verifyToken, apiController.activarBot);
+
+// Reactivar conversación vencida (>24hs) usando plantilla (protegido)
+router.post('/chats/:phone/reactivate', verifyToken, chatController.reactivate);
 
 /**
  * @swagger
