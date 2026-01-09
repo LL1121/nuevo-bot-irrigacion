@@ -9,8 +9,7 @@ import Login from './components/Login';
 axios.defaults.baseURL = 'http://localhost:3000';
 axios.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  if (token) {
-    config.headers = config.headers ?? {};
+  if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
     console.log('🔐 Token enviado en header Authorization');
   }
@@ -98,6 +97,7 @@ export default function App() {
   const [tempName, setTempName] = useState('');
   const [showMediaMenu, setShowMediaMenu] = useState(false);
   const [mediaFilter, setMediaFilter] = useState<'all' | 'images' | 'videos' | 'files' | 'urls'>('all');
+  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(new Set()); // Para controlar qué menús de opciones están expandidos
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [videoProgress, setVideoProgress] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -158,6 +158,15 @@ export default function App() {
       return (parts[0][0] + parts[1][0]).toUpperCase();
     }
     return name.substring(0, 2).toUpperCase();
+  };
+
+  // Función para normalizar mensajes (convertir JSON a string)
+  const normalizeMessage = (msg: any): string => {
+    if (typeof msg === 'string') return msg;
+    if (typeof msg === 'object' && msg !== null) {
+      return msg.cuerpo || msg.text || msg.contenido || msg.body || JSON.stringify(msg).substring(0, 50) || '[Mensaje sin contenido]';
+    }
+    return String(msg || '[Mensaje sin contenido]');
   };
 
 const getContactStatus = (lastMessageDate: string | Date) => {
@@ -265,27 +274,36 @@ const dedupeMessages = (msgs: any[]) => {
         console.log('✅ Chats extraídos:', chats.length, chats);
         
         // Mapear los datos del backend a la estructura esperada por la UI
-        const mappedChats = chats.map((chat: any) => ({
-          id: chat.id,
-          name: chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono,
-          phone: chat.telefono,
-          lastMessage: chat.ultimo_mensaje || '',
-          lastMessageDate: chat.ultimo_mensaje_fecha || new Date().toISOString(),
-          time: chat.ultimo_mensaje_fecha ? formatTime(new Date(chat.ultimo_mensaje_fecha)) : '',
-          unread: chat.mensajes_no_leidos || 0,
-          avatar: getInitials(chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono),
-          profilePic: chat.foto_perfil || null,
-          operator: chat.operador || null,
-          conversationStatus: chat.estado || 'unattended',
-          archived: chat.archivado || false,
-          padron: {
-            number: chat.padron || '',
-            location: chat.ubicacion || '',
-            debtStatus: chat.estado_deuda || ''
-          },
-          notes: chat.notas ? JSON.parse(chat.notas) : [],
-          messages: [] // Los mensajes se cargan al seleccionar el chat
-        }));
+        const mappedChats = chats.map((chat: any) => {
+          // Normalizar último mensaje: si es objeto JSON, extraer el texto
+          let lastMessage = chat.ultimo_mensaje || '';
+          if (typeof lastMessage === 'object') {
+            // Si es un objeto, intentar extraer el campo 'cuerpo' o convertir a JSON string
+            lastMessage = lastMessage.cuerpo || JSON.stringify(lastMessage);
+          }
+          
+          return {
+            id: chat.id,
+            name: chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono,
+            phone: chat.telefono,
+            lastMessage: lastMessage,
+            lastMessageDate: chat.ultimo_mensaje_fecha || new Date().toISOString(),
+            time: chat.ultimo_mensaje_fecha ? formatTime(new Date(chat.ultimo_mensaje_fecha)) : '',
+            unread: chat.mensajes_no_leidos || 0,
+            avatar: getInitials(chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono),
+            profilePic: chat.foto_perfil || null,
+            operator: chat.operador || null,
+            conversationStatus: chat.estado || 'unattended',
+            archived: chat.archivado || false,
+            padron: {
+              number: chat.padron || '',
+              location: chat.ubicacion || '',
+              debtStatus: chat.estado_deuda || ''
+            },
+            notes: chat.notas ? JSON.parse(chat.notas) : [],
+            messages: [] // Los mensajes se cargan al seleccionar el chat
+          };
+        });
         
         console.log('✅ Chats mapeados y listos:', mappedChats);
         setConversationsState(mappedChats);
@@ -312,10 +330,32 @@ const dedupeMessages = (msgs: any[]) => {
       let messageText = '';
       if (typeof data.mensaje === 'string') {
         messageText = data.mensaje;
-      } else if (data.mensaje && typeof data.mensaje === 'object' && (data.mensaje as any).cuerpo) {
-        messageText = (data.mensaje as any).cuerpo;
+      } else if (data.mensaje && typeof data.mensaje === 'object') {
+        // Si es un objeto, intentar extraer cuerpo o usar el primer campo de texto que encuentre
+        const msg = data.mensaje as any;
+        messageText = msg.cuerpo || msg.text || msg.contenido || msg.body || '';
+        // Si aún no tiene texto, buscar en todos los valores del objeto
+        if (!messageText) {
+          for (const key in msg) {
+            if (typeof msg[key] === 'string' && msg[key].length > 0) {
+              messageText = msg[key];
+              break;
+            }
+          }
+        }
       } else if (typeof data.cuerpo === 'string') {
         messageText = data.cuerpo;
+      }
+      
+      // Si aún está vacío, usar el objeto como string (último recurso)
+      if (!messageText && data.mensaje) {
+        messageText = typeof data.mensaje === 'string' ? data.mensaje : JSON.stringify(data.mensaje);
+      }
+      
+      // Normalizar nombre: si es objeto JSON, convertir a string
+      let nombre = data.nombre || '';
+      if (typeof nombre === 'object') {
+        nombre = JSON.stringify(nombre);
       }
       
       const newMsg = {
@@ -330,7 +370,7 @@ const dedupeMessages = (msgs: any[]) => {
         archivo_tamanio: data.archivo_tamanio,
         duracion: data.duracion,
         cuerpo: data.cuerpo,
-        nombre: data.nombre
+        nombre: nombre  // Siempre un string normalizado
       };
       
       console.log('📨 Nuevo mensaje recibido del socket:', newMsg);
@@ -424,6 +464,14 @@ const dedupeMessages = (msgs: any[]) => {
                   console.log('💾 Mensaje agregado al caché de memoria');
                   return { ...prev, [chat.phone]: updatedCache };
                 });
+                
+                // Incrementar contador solo si es mensaje del usuario Y no es del operador
+                const emisorLimpio = (newMsg.emisor || '').trim().toLowerCase();
+                const isUserMessage = emisorLimpio === 'usuario';
+                if (isUserMessage) {
+                  chat.unread = (chat.unread || 0) + 1;
+                  console.log('📫 Contador incrementado:', chat.unread);
+                }
               }
             } else {
               console.log('⏭️ Mensaje ya existe, no se duplica:', typeof newMsg.mensaje === 'string' ? newMsg.mensaje?.substring(0, 30) : '[Objeto JSON]');
@@ -433,13 +481,9 @@ const dedupeMessages = (msgs: any[]) => {
           // Actualizar último mensaje y traer al frente
           // newMsg.mensaje ya está normalizado a string en la parte superior de handleNewMessage
           chat.lastMessage = newMsg.mensaje || '[Mensaje sin contenido]';
+          console.log('✉️ LastMessage actualizado:', { lastMessage: chat.lastMessage, tipo: typeof chat.lastMessage });
           chat.lastMessageDate = newMsg.timestamp || new Date().toISOString();
           chat.time = formatTime(new Date(newMsg.timestamp || new Date()));
-          
-          // Solo incrementar unread si es mensaje del usuario
-          if (newMsg.emisor === 'usuario') {
-            chat.unread = (chat.unread || 0) + 1;
-          }
           
           // Mover al inicio del array
           updated.splice(existingChatIndex, 1);
@@ -542,6 +586,21 @@ const dedupeMessages = (msgs: any[]) => {
     if (storedBg !== null) setBackgroundPattern(storedBg === 'true');
     if (storedSound !== null) setSoundEnabled(storedSound === 'true');
   }, []);
+
+  // Auto-scroll cuando cambian los mensajes del chat actual
+  useEffect(() => {
+    if (currentChat && currentChat.messages && currentChat.messages.length > 0) {
+      // Pequeño delay para asegurar que el DOM se haya actualizado
+      const timer = setTimeout(() => {
+        const messagesEnd = document.getElementById('messages-end');
+        if (messagesEnd) {
+          messagesEnd.scrollIntoView({ behavior: 'auto', block: 'end' });
+          console.log('📜 Auto-scroll ejecutado');
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [currentChat?.messages?.length, selectedChat]);
 
   // Persist preferences to storage
   useEffect(() => {
@@ -669,15 +728,6 @@ const dedupeMessages = (msgs: any[]) => {
             };
             return updated;
           });
-          
-          // Scroll al final después de cargar mensajes
-          setTimeout(() => {
-            const messagesContainer = document.querySelector('[data-messages-container]');
-            if (messagesContainer) {
-              messagesContainer.scrollTop = messagesContainer.scrollHeight;
-              console.log('⬇️ Scroll al final del chat');
-            }
-          }, 100);
         } catch (error: any) {
           console.error('❌ Error cargando mensajes:', error);
           console.error('❌ Detalles del error:', {
@@ -861,14 +911,6 @@ const dedupeMessages = (msgs: any[]) => {
           console.log('💾 Mensaje enviado agregado al caché de memoria');
           return { ...prev, [currentChat.phone]: updatedCache };
         });
-        
-        // Scroll inmediato después de agregar mensaje
-        setTimeout(() => {
-          const messagesContainer = document.querySelector('[data-messages-container]');
-          if (messagesContainer) {
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-          }
-        }, 10);
         
         // Limpiar input
         setMessage('');
@@ -1447,6 +1489,8 @@ const dedupeMessages = (msgs: any[]) => {
                 const originalIndex = conversationsState.findIndex((c) => c.id === conv.id);
                 setSelectedChat(originalIndex === -1 ? idx : originalIndex);
                 setChatClosed(false);
+                // Marcar como leído cuando se selecciona el chat
+                markChatReadById(conv.id);
               }}
               className={`p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-700`}
               style={selectedId === conv.id ? {
@@ -1492,14 +1536,23 @@ const dedupeMessages = (msgs: any[]) => {
                   <div className="flex items-center justify-between mb-1 gap-2">
                     <h3 className="font-semibold text-gray-900 dark:text-gray-100 truncate">{conv.name}</h3>
                     {conv.unread > 0 ? (
-                      <span className="text-white text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: themeColors[theme].hex }}>
+                      <span 
+                        className="text-white text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 animate-pulse transition-all duration-300"
+                        style={{ 
+                          backgroundColor: themeColors[theme].hex,
+                          opacity: conv.unread > 0 ? 1 : 0,
+                          transform: conv.unread > 0 ? 'scale(1)' : 'scale(0.8)'
+                        }}
+                      >
                         {conv.unread}
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">{conv.time}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0 transition-opacity duration-300">{conv.time}</span>
                     )}
                   </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-300 truncate mb-1">{conv.lastMessage}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300 truncate mb-1">
+                    {normalizeMessage(conv.lastMessage)}
+                  </p>
                   <div className="flex items-center justify-end">
                   </div>
                 </div>
@@ -2203,59 +2256,79 @@ const dedupeMessages = (msgs: any[]) => {
                                 </div>
                               )}
                               
-                              {/* Botón principal */}
-                              {menuData.buttonText && (
-                                <div className="px-4 pb-2">
-                                  <div 
-                                    className="w-full px-3 py-2 rounded-lg border text-center text-sm font-medium cursor-pointer transition"
-                                    style={{
-                                      borderColor: msg.sent ? 'rgba(255,255,255,0.4)' : themeColors[theme].hex,
-                                      color: msg.sent ? 'white' : themeColors[theme].hex,
-                                      backgroundColor: msg.sent ? 'rgba(255,255,255,0.1)' : 'transparent'
-                                    }}
-                                  >
-                                    {menuData.buttonText}
-                                  </div>
-                                </div>
-                              )}
-                              
-                              {/* Secciones con opciones */}
+                              {/* Secciones con opciones - Compacto por defecto, expandible */}
                               {menuData.sections && menuData.sections.length > 0 && (
                                 <div className="border-t" style={{ borderColor: msg.sent ? 'rgba(255,255,255,0.2)' : (darkMode ? '#374151' : '#e5e7eb') }}>
-                                  {menuData.sections.map((section: any, sIdx: number) => (
-                                    <div key={sIdx}>
-                                      {section.title && (
-                                        <div className="px-4 pt-3 pb-1">
-                                          <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">
-                                            {section.title}
-                                          </h4>
-                                        </div>
-                                      )}
-                                      <div className="px-2 pb-2">
-                                        {(section.rows || []).map((option: any, oIdx: number) => (
-                                          <div 
-                                            key={option.id || oIdx}
-                                            className="mx-2 my-1 px-3 py-2.5 rounded-lg cursor-pointer transition-all border"
-                                            style={{
-                                              backgroundColor: msg.sent ? 'rgba(255,255,255,0.05)' : (darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)'),
-                                              borderColor: msg.sent ? 'rgba(255,255,255,0.15)' : (darkMode ? '#374151' : '#e5e7eb')
-                                            }}
-                                            onMouseEnter={(e) => {
-                                              e.currentTarget.style.backgroundColor = msg.sent ? 'rgba(255,255,255,0.15)' : (darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)');
-                                            }}
-                                            onMouseLeave={(e) => {
-                                              e.currentTarget.style.backgroundColor = msg.sent ? 'rgba(255,255,255,0.05)' : (darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)');
-                                            }}
-                                          >
-                                            <div className="font-medium text-sm leading-tight">{option.title}</div>
-                                            {option.description && (
-                                              <div className="text-xs opacity-75 mt-1 leading-snug">{option.description}</div>
-                                            )}
+                                  {menuData.sections.map((section: any, sIdx: number) => {
+                                    const menuId = `menu_${msg.id}_${sIdx}`;
+                                    const isExpanded = expandedMenus.has(menuId);
+                                    const totalOptions = (section.rows || []).length;
+                                    
+                                    return (
+                                      <div key={sIdx}>
+                                        {/* Botón principal para expandir/colapsar */}
+                                        {menuData.buttonText && (
+                                          <div className="px-4 py-2">
+                                            <div 
+                                              onClick={() => {
+                                                setExpandedMenus(prev => {
+                                                  const newSet = new Set(prev);
+                                                  if (newSet.has(menuId)) {
+                                                    newSet.delete(menuId);
+                                                  } else {
+                                                    newSet.add(menuId);
+                                                  }
+                                                  return newSet;
+                                                });
+                                              }}
+                                              className="w-full px-3 py-2 rounded-lg border text-center text-sm font-medium cursor-pointer transition hover:opacity-80"
+                                              style={{
+                                                borderColor: msg.sent ? 'rgba(255,255,255,0.4)' : themeColors[theme].hex,
+                                                color: msg.sent ? 'white' : themeColors[theme].hex,
+                                                backgroundColor: msg.sent ? 'rgba(255,255,255,0.1)' : 'transparent'
+                                              }}
+                                            >
+                                              {menuData.buttonText} {isExpanded ? '▲' : '▼'}
+                                            </div>
                                           </div>
-                                        ))}
+                                        )}
+                                        
+                                        {/* Opciones expandibles */}
+                                        {isExpanded && (
+                                          <div className="px-2 pb-2 max-h-96 overflow-y-auto">
+                                            {section.title && (
+                                              <div className="px-4 pt-2 pb-1">
+                                                <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                                                  {section.title}
+                                                </h4>
+                                              </div>
+                                            )}
+                                            {(section.rows || []).map((option: any, oIdx: number) => (
+                                              <div 
+                                                key={option.id || oIdx}
+                                                className="mx-2 my-1 px-3 py-2.5 rounded-lg cursor-pointer transition-all border"
+                                                style={{
+                                                  backgroundColor: msg.sent ? 'rgba(255,255,255,0.05)' : (darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)'),
+                                                  borderColor: msg.sent ? 'rgba(255,255,255,0.15)' : (darkMode ? '#374151' : '#e5e7eb')
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                  e.currentTarget.style.backgroundColor = msg.sent ? 'rgba(255,255,255,0.15)' : (darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)');
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                  e.currentTarget.style.backgroundColor = msg.sent ? 'rgba(255,255,255,0.05)' : (darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)');
+                                                }}
+                                              >
+                                                <div className="font-medium text-sm leading-tight">{option.title}</div>
+                                                {option.description && (
+                                                  <div className="text-xs opacity-75 mt-1 leading-snug">{option.description}</div>
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
-                                    </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               )}
                               
@@ -2397,6 +2470,8 @@ const dedupeMessages = (msgs: any[]) => {
               </div>
             );
           })}
+          {/* Elemento para hacer scroll al final */}
+          <div id="messages-end" style={{ height: '1px', float: 'left', clear: 'both' }}></div>
         </div>
         )}
 
