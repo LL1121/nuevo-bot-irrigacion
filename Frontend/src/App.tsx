@@ -113,6 +113,7 @@ export default function App() {
   const [messagesEndReached, setMessagesEndReached] = useState<Record<string, boolean>>({});
   const [allMessagesCache, setAllMessagesCache] = useState<Record<string, any[]>>({}); // Caché en memoria de todos los mensajes
   const [currentMessageIndex, setCurrentMessageIndex] = useState<Record<string, number>>({}); // Índice del último mensaje mostrado
+  const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({}); // Track quien está escribiendo por teléfono
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatMenuRef = useRef<HTMLDivElement>(null);
@@ -586,12 +587,36 @@ const dedupeMessages = (msgs: any[]) => {
       });
     };
 
+    const handleTyping = (data: { telefono: string; typing: boolean }) => {
+      console.log('⌨️ Usuario escribiendo:', data.telefono, '- Typing:', data.typing);
+      setTypingUsers(prev => {
+        const updated = { ...prev };
+        if (data.typing) {
+          updated[data.telefono] = true;
+          // Auto-limpiar el indicador después de 3 segundos si no llega otro evento
+          setTimeout(() => {
+            setTypingUsers(p => {
+              const cleaned = { ...p };
+              delete cleaned[data.telefono];
+              return cleaned;
+            });
+          }, 3000);
+        } else {
+          delete updated[data.telefono];
+        }
+        return updated;
+      });
+    };
+
     socket.on('nuevo_mensaje', handleNewMessage);
     socket.on('bot_mode_changed', handleBotModeChanged);
+    socket.on('typing', handleTyping);
     
     // Cleanup al desmontar
     return () => {
       socket.off('nuevo_mensaje', handleNewMessage);
+      socket.off('bot_mode_changed', handleBotModeChanged);
+      socket.off('typing', handleTyping);
       socket.off('bot_mode_changed', handleBotModeChanged);
     };
   }, [isAuthenticated]);
@@ -914,6 +939,30 @@ const dedupeMessages = (msgs: any[]) => {
     return () => document.removeEventListener('mousedown', handler);
   }, [chatSearchMode]);
 
+  // Atajos de teclado
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+K: Abrir búsqueda de chats
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        setChatSearchMode(true);
+        setTimeout(() => chatSearchRef.current?.focus(), 100);
+      }
+      // Ctrl+Shift+F: Toggle filtro por estado (unread, resolved, all)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
+        e.preventDefault();
+        // Ciclar entre 'unread' -> 'resolved' -> 'all' -> 'unread'
+        const states = ['unread', 'resolved', 'all'];
+        const currentIdx = states.indexOf(filterState || 'all');
+        const nextIdx = (currentIdx + 1) % states.length;
+        setFilterState(states[nextIdx] as any);
+        console.log('🔍 Filtro cambió a:', states[nextIdx]);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [filterState]);
+
   const handleSendMessage = async () => {
     if (message.trim() && selectedChat !== null) {
       if (editingMessage) {
@@ -937,7 +986,8 @@ const dedupeMessages = (msgs: any[]) => {
           fileUrl: null,
           filename: null,
           size: null,
-          duration: null
+          duration: null,
+          status: 'sending'  // Estado inicial: enviando
         };
         
         // Actualizar UI inmediatamente (optimistic update)
@@ -1001,7 +1051,7 @@ const dedupeMessages = (msgs: any[]) => {
                 if (!msgAlreadyUpdated) {
                   // Solo actualizar si el socket aún no lo hizo
                   updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
-                    m.id === tempId ? { ...m, id: response.data.message.id } : m
+                    m.id === tempId ? { ...m, id: response.data.message.id, status: 'sent', read: true } : m
                   );
                   updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
                   console.log('🔄 ID actualizado por POST response:', tempId, '→', response.data.message.id);
@@ -1531,7 +1581,22 @@ const dedupeMessages = (msgs: any[]) => {
 
         {/* Conversaciones */}
         <div className="flex-1 overflow-y-auto">
-          {filteredConversations.map((conv, idx) => (
+          {filteredConversations.map((conv, idx) => {
+            // Determinar si la sesión está vencida
+            const sessionExpiredForChat = (() => {
+              if (!conv.messages || conv.messages.length === 0) return false;
+              for (let i = conv.messages.length - 1; i >= 0; i--) {
+                const m = conv.messages[i];
+                if (m && m.sent === false) {
+                  const lastUser = new Date(m.date);
+                  const diffMs = Date.now() - lastUser.getTime();
+                  return diffMs > 24 * 60 * 60 * 1000;
+                }
+              }
+              return false;
+            })();
+
+            return (
             <div
               key={conv.id}
               onContextMenu={(e) => openContextMenu(e, 'chat', conv.id)}
@@ -1542,11 +1607,20 @@ const dedupeMessages = (msgs: any[]) => {
                 // Marcar como leído cuando se selecciona el chat
                 markChatReadById(conv.id);
               }}
-              className={`p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-700`}
+              className={`p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-700 ${
+                sessionExpiredForChat ? 'opacity-60' : 'opacity-100'
+              }`}
               style={selectedId === conv.id ? {
                 backgroundColor: darkMode ? `${themeColors[theme].hex}20` : `${themeColors[theme].hex}10`,
-                borderLeft: `4px solid ${themeColors[theme].hex}`
-              } : {}}
+                borderLeft: `4px solid ${themeColors[theme].hex}`,
+                borderRightWidth: sessionExpiredForChat ? '3px' : '0px',
+                borderRightColor: sessionExpiredForChat ? '#ef4444' : undefined,
+                borderRightStyle: sessionExpiredForChat ? 'solid' : undefined
+              } : {
+                borderRightWidth: sessionExpiredForChat ? '3px' : '0px',
+                borderRightColor: sessionExpiredForChat ? '#ef4444' : undefined,
+                borderRightStyle: sessionExpiredForChat ? 'solid' : undefined
+              }}
             >
               <div className="flex items-start gap-3">
                 <div className="relative">
@@ -1608,7 +1682,8 @@ const dedupeMessages = (msgs: any[]) => {
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -1660,11 +1735,28 @@ const dedupeMessages = (msgs: any[]) => {
                 })()}
               </div>
               <div>
-                <div 
-                  className="font-semibold text-gray-900 dark:text-gray-100 cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition"
-                  onContextMenu={(e) => { e.preventDefault(); startEditName(); }}
-                >
-                  {currentChat.name}
+                <div className="flex items-center gap-2 mb-0.5">
+                  <div 
+                    className="font-semibold text-gray-900 dark:text-gray-100 cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition"
+                    onContextMenu={(e) => { e.preventDefault(); startEditName(); }}
+                  >
+                    {currentChat.name}
+                  </div>
+                  {(() => {
+                    // Calcular tiempo para expiración
+                    const lastUserMsg = currentChat.messages?.reverse().find((m: any) => m.sent === false)?.date;
+                    if (!lastUserMsg) return null;
+                    const lastUser = new Date(lastUserMsg);
+                    const diffMs = Date.now() - lastUser.getTime();
+                    const diffHours = diffMs / (1000 * 60 * 60);
+                    const diffDays = diffHours / 24;
+                    if (diffDays > 1) {
+                      return <span className="px-2 py-1 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-200 text-xs rounded-full font-medium">Sesión vencida</span>;
+                    } else if (diffHours > 22) {
+                      return <span className="px-2 py-1 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-200 text-xs rounded-full font-medium">Por expirar (~{Math.round(24 - diffHours)}h)</span>;
+                    }
+                    return null;
+                  })()}
                 </div>
                 {(() => {
                   const lastMsgDate = currentChat.lastMessageDate 
@@ -2511,7 +2603,12 @@ const dedupeMessages = (msgs: any[]) => {
                       })()}
                       <div className={`flex items-center gap-1 justify-end mt-1 ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
                         <span className="text-xs">{msg.time}</span>
-                        {msg.sent && (msg.read ? <CheckCheck size={14} /> : <Check size={14} />)}
+                        {msg.sent && (() => {
+                          if ((msg as any).status === 'sending') {
+                            return <span className="text-xs opacity-60 italic">Enviando...</span>;
+                          }
+                          return msg.read ? <CheckCheck size={14} /> : <Check size={14} />;
+                        })()}
                       </div>
                     </div>
                   )}
@@ -2520,6 +2617,19 @@ const dedupeMessages = (msgs: any[]) => {
               </div>
             );
           })}
+          {/* Indicador de escritura */}
+          {currentChat && typingUsers[currentChat.phone] && (
+            <div className="flex items-center gap-2 mb-3 ml-4">
+              <div className="text-sm italic text-gray-600 dark:text-gray-400">
+                <span>{currentChat.name || 'El cliente'} está escribiendo</span>
+              </div>
+              <div className="flex gap-1">
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+              </div>
+            </div>
+          )}
           {/* Elemento para hacer scroll al final */}
           <div id="messages-end" style={{ height: '1px', float: 'left', clear: 'both' }}></div>
         </div>

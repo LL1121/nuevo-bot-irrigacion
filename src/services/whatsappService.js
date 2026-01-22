@@ -1,6 +1,7 @@
 require('dotenv').config();
 const axios = require('axios');
 const { validateFileIntegrity } = require('./fileValidator');
+const { withWhatsAppRetry } = require('./retryService');
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
 
@@ -15,7 +16,7 @@ const sendMessage = async (to, text) => {
     to = to.replace('549', '54');
   }
 
-  try {
+  return withWhatsAppRetry(async () => {
     const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
     
     const data = {
@@ -37,10 +38,7 @@ const sendMessage = async (to, text) => {
     const response = await axios.post(url, data, config);
     console.log('✅ Mensaje enviado correctamente:', response.data);
     return response.data;
-  } catch (error) {
-    console.error('❌ Error enviando mensaje:', error.response?.data || error.message);
-    throw error;
-  }
+  }, `sendMessage to ${to}`);
 };
 
 /**
@@ -56,7 +54,7 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
     to = to.replace('549', '54');
   }
 
-  try {
+  return withWhatsAppRetry(async () => {
     const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
 
     const templatePayload = {
@@ -84,10 +82,7 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
     const response = await axios.post(url, data, config);
     console.log('✅ Template enviado correctamente:', response.data);
     return response.data;
-  } catch (error) {
-    console.error('❌ Error enviando template:', error.response?.data || error.message);
-    throw error;
-  }
+  }, `sendTemplate ${templateName} to ${to}`);
 };
 
 /**
