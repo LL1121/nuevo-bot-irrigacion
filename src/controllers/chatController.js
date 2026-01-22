@@ -39,7 +39,12 @@ const reactivate = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error reactivando conversación:', error.response?.data || error.message);
-    return res.status(500).json({ success: false, error: 'No se pudo reactivar la conversación' });
+    console.error('Stack:', error.stack);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'No se pudo reactivar la conversación',
+      details: error.response?.data || error.message
+    });
   }
 };
 
