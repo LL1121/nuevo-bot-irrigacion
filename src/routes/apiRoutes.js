@@ -5,6 +5,7 @@ const chatController = require('../controllers/chatController');
 const authController = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
+const { validate, sendMessageSchema, reactivateSchema, phoneSchema, phoneParamSchema } = require('../validators/messageValidators');
 
 /**
  * @swagger
@@ -137,7 +138,7 @@ router.get('/messages/:telefono', verifyToken, apiController.obtenerMensajes);
  *         description: "No autenticado"
  */
 // Enviar mensaje desde el operador (protegido)
-router.post('/send', verifyToken, apiController.enviarMensaje);
+router.post('/send', verifyToken, validate(sendMessageSchema), apiController.enviarMensaje);
 
 /**
  * @swagger
@@ -204,7 +205,7 @@ router.get('/stats', verifyToken, apiController.obtenerEstadisticas);
  *       200:
  *         description: "Bot pausado correctamente"
  */
-router.post('/chats/:phone/pause', verifyToken, apiController.pausarBot);
+router.post('/chats/:phone/pause', verifyToken, validate(phoneSchema, 'params'), apiController.pausarBot);
 
 /**
  * @swagger
@@ -224,10 +225,13 @@ router.post('/chats/:phone/pause', verifyToken, apiController.pausarBot);
  *       200:
  *         description: "Bot activado correctamente"
  */
-router.post('/chats/:phone/activate', verifyToken, apiController.activarBot);
+router.post('/chats/:phone/activate', verifyToken, validate(phoneSchema, 'params'), apiController.activarBot);
+
+// Estado de ventana 24h (protegido)
+router.get('/chats/:phone/window-status', verifyToken, validate(phoneSchema, 'params'), chatController.getWindowStatus);
 
 // Reactivar conversación vencida (>24hs) usando plantilla (protegido)
-router.post('/chats/:phone/reactivate', verifyToken, chatController.reactivate);
+router.post('/chats/:phone/reactivate', verifyToken, validate(phoneSchema, 'params'), validate(reactivateSchema), chatController.reactivate);
 
 /**
  * @swagger
