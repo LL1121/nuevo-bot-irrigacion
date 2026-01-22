@@ -68,6 +68,24 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+// Rate limiting por operador para envío de mensajes
+const operatorRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 10, // máximo 10 mensajes por minuto por operador
+  keyGenerator: (req) => req.user?.id || req.ip, // usar ID del operador del JWT, o IP como fallback
+  message: 'Demasiados mensajes enviados. Por favor espera un momento.',
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Middleware para capturar raw body (necesario para verificar firma webhook)
+app.use('/webhook', express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
+
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(ipMiddleware);
@@ -220,4 +238,4 @@ const bootstrap = async () => {
 
 bootstrap();
 
-module.exports = { app, io };
+module.exports = { app, io, operatorRateLimiter };
