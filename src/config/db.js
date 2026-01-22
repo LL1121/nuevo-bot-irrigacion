@@ -45,7 +45,8 @@ const initializeDB = async () => {
       estado_deuda VARCHAR(50),
       bot_activo BOOLEAN DEFAULT TRUE,
       ultima_interaccion DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
+      fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_ultima_interaccion (ultima_interaccion)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
