@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import Login from './components/Login';
+import { toast, Toaster } from 'sonner';
 
 // Configurar Axios base y Bearer token interceptor
 axios.defaults.baseURL = 'http://localhost:3000';
@@ -134,6 +135,54 @@ export default function App() {
   const [conversationsState, setConversationsState] = useState<any[]>([]);
   const currentChat = selectedChat !== null ? conversationsState[selectedChat] : null;
   const selectedId = selectedChat !== null ? conversationsState[selectedChat]?.id : undefined;
+
+  // Estado para gestionar reactivación de sesión 24h por chat
+  const [reactivating, setReactivating] = useState<boolean>(false);
+  const [reactivationSent, setReactivationSent] = useState<Record<string, boolean>>({});
+
+  // Determinar si la sesión (24h) está vencida según el último mensaje del usuario (cliente)
+  const sessionExpired = useMemo(() => {
+    if (!currentChat || !currentChat.messages || currentChat.messages.length === 0) return false;
+    // Buscar el último mensaje del usuario (en nuestro mapeo, usuario => sent === false)
+    for (let i = currentChat.messages.length - 1; i >= 0; i--) {
+      const m = currentChat.messages[i];
+      if (m && m.sent === false) {
+        const lastUser = new Date(m.date);
+        const diffMs = Date.now() - lastUser.getTime();
+        return diffMs > 24 * 60 * 60 * 1000; // > 24 horas
+      }
+    }
+    return false;
+  }, [currentChat?.messages, selectedChat]);
+
+  // Cerrar menús que no aplican si está expirada la sesión
+  useEffect(() => {
+    if (sessionExpired) {
+      setShowAttachMenu(false);
+      setShowEmojiPicker(false);
+    }
+  }, [sessionExpired]);
+
+  // Enviar plantilla de reactivación (desbloquea conversación luego de respuesta del usuario)
+  const handleSendReactivationTemplate = async () => {
+    if (!currentChat?.phone) return;
+    try {
+      setReactivating(true);
+      const token = localStorage.getItem('token');
+      await axios.post(`/api/chats/${currentChat.phone}/reactivate`, {}, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      // Marcar como enviada para este chat
+      setReactivationSent(prev => ({ ...prev, [currentChat.phone]: true }));
+      console.log('✅ Plantilla de reactivación enviada');
+      toast.success('Plantilla de reactivación enviada');
+    } catch (err) {
+      console.error('❌ Error enviando plantilla de reactivación:', err);
+      toast.error('No se pudo enviar la plantilla de reactivación');
+    } finally {
+      setReactivating(false);
+    }
+  };
 
   // Funciones auxiliares para formateo (definidas ANTES de los useEffect)
   const formatTime = (date: Date): string => {
@@ -1408,6 +1457,7 @@ const dedupeMessages = (msgs: any[]) => {
 
   return (
     <div className="flex h-screen bg-gray-100 dark:bg-gray-900 dark:text-gray-100 flex-col">
+      <Toaster richColors closeButton position="top-right" />
       {!isOnline && (
         <div className="bg-orange-500 text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
           Sin conexión - Intentando reconectar...
@@ -2543,93 +2593,111 @@ const dedupeMessages = (msgs: any[]) => {
             className="hidden" 
           />
           <div className="flex items-center gap-3">
-            <div className="relative" ref={attachMenuRef}>
-              <button 
-                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                onClick={() => setShowAttachMenu((v) => !v)}
-              >
-                <Paperclip size={22} className="text-gray-600 dark:text-gray-300" />
-              </button>
-              {showAttachMenu && (
-                <div className="absolute bottom-full left-0 mb-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 animate-slideInUp">
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
-                    onClick={() => handleAttachmentType('image/*')}
-                  >
-                    <ImageIcon size={18} className="text-blue-600" />
-                    <span className="text-gray-700">Imagen</span>
-                  </button>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
-                    onClick={() => handleAttachmentType('.pdf,.doc,.docx,.txt')}
-                  >
-                    <FileText size={18} className="text-emerald-600" />
-                    <span className="text-gray-700">Documento</span>
-                  </button>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
-                    onClick={() => handleAttachmentType('video/*')}
-                  >
-                    <Video size={18} className="text-purple-600" />
-                    <span className="text-gray-700">Video</span>
-                  </button>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
-                    onClick={() => handleAttachmentType('audio/*')}
-                  >
-                    <Music size={18} className="text-orange-600" />
-                    <span className="text-gray-700">Audio</span>
-                  </button>
+            {sessionExpired ? (
+              <div className="w-full flex items-center justify-between gap-3 p-3 rounded-lg border bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-100 border-amber-200 dark:border-amber-800">
+                <div className="text-sm">
+                  La sesión de 24hs ha caducado. Envía una plantilla de reactivación para continuar.
                 </div>
-              )}
-            </div>
-            
-            <div className="flex-1 flex items-center gap-2 bg-gray-100 dark:bg-gray-700 rounded-full px-4 py-2 relative">
-              <textarea
-                placeholder="Escribe un mensaje..."
-                value={message}
-                onChange={(e) => {
-                  setMessage(e.target.value);
-                  const textarea = e.target;
-                  setTimeout(() => {
-                    textarea.style.height = 'auto';
-                    const newHeight = Math.min(textarea.scrollHeight, 120);
-                    textarea.style.height = `${newHeight}px`;
-                  }, 0);
-                }}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendMessage();
-                  }
-                }}
-                className="flex-1 bg-transparent focus:outline-none text-gray-900 dark:text-gray-100 resize-none min-h-[24px] max-h-[120px] py-1"
-                rows={1}
-              />
-              <div className="relative flex-shrink-0" ref={emojiPickerRef}>
-                <button 
-                  className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors"
-                  onClick={() => setShowEmojiPicker((v) => !v)}
+                <button
+                  onClick={handleSendReactivationTemplate}
+                  disabled={reactivating}
+                  className="px-3 py-2 rounded-md text-white font-medium disabled:opacity-70"
+                  style={{ backgroundColor: themeColors[theme].hex }}
                 >
-                  <Smile size={20} className="text-gray-600 dark:text-gray-300" />
+                  {reactivating ? 'Enviando…' : 'Enviar Plantilla de Reactivación'}
                 </button>
-                {showEmojiPicker && (
-                  <div className="absolute bottom-full mb-2 right-0 z-50 animate-slideInUp">
-                    <EmojiPicker onEmojiClick={handleEmojiClick} />
-                  </div>
-                )}
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="relative" ref={attachMenuRef}>
+                  <button 
+                    className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    onClick={() => setShowAttachMenu((v) => !v)}
+                  >
+                    <Paperclip size={22} className="text-gray-600 dark:text-gray-300" />
+                  </button>
+                  {showAttachMenu && (
+                    <div className="absolute bottom-full left-0 mb-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 animate-slideInUp">
+                      <button 
+                        className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
+                        onClick={() => handleAttachmentType('image/*')}
+                      >
+                        <ImageIcon size={18} className="text-blue-600" />
+                        <span className="text-gray-700">Imagen</span>
+                      </button>
+                      <button 
+                        className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
+                        onClick={() => handleAttachmentType('.pdf,.doc,.docx,.txt')}
+                      >
+                        <FileText size={18} className="text-emerald-600" />
+                        <span className="text-gray-700">Documento</span>
+                      </button>
+                      <button 
+                        className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
+                        onClick={() => handleAttachmentType('video/*')}
+                      >
+                        <Video size={18} className="text-purple-600" />
+                        <span className="text-gray-700">Video</span>
+                      </button>
+                      <button 
+                        className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center gap-3"
+                        onClick={() => handleAttachmentType('audio/*')}
+                      >
+                        <Music size={18} className="text-orange-600" />
+                        <span className="text-gray-700">Audio</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex-1 flex items-center gap-2 bg-gray-100 dark:bg-gray-700 rounded-full px-4 py-2 relative">
+                  <textarea
+                    placeholder="Escribe un mensaje..."
+                    value={message}
+                    onChange={(e) => {
+                      setMessage(e.target.value);
+                      const textarea = e.target;
+                      setTimeout(() => {
+                        textarea.style.height = 'auto';
+                        const newHeight = Math.min(textarea.scrollHeight, 120);
+                        textarea.style.height = `${newHeight}px`;
+                      }, 0);
+                    }}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage();
+                      }
+                    }}
+                    className="flex-1 bg-transparent focus:outline-none text-gray-900 dark:text-gray-100 resize-none min-h-[24px] max-h-[120px] py-1"
+                    rows={1}
+                  />
+                  <div className="relative flex-shrink-0" ref={emojiPickerRef}>
+                    <button 
+                      className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors"
+                      onClick={() => setShowEmojiPicker((v) => !v)}
+                    >
+                      <Smile size={20} className="text-gray-600 dark:text-gray-300" />
+                    </button>
+                    {showEmojiPicker && (
+                      <div className="absolute bottom-full mb-2 right-0 z-50 animate-slideInUp">
+                        <EmojiPicker onEmojiClick={handleEmojiClick} />
+                      </div>
+                    )}
+                  </div>
+                </div>
 
-            <button
-              onClick={handleSendMessage}
-              className="p-3 text-white rounded-full transition-all duration-200 hover:scale-105 active:scale-95 shadow-lg"
-              style={{
-                backgroundImage: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)`
-              }}
-            >
-              <Send size={20} />
-            </button>
+                <button
+                  onClick={handleSendMessage}
+                  className="p-3 text-white rounded-full transition-all duration-200 hover:scale-105 active:scale-95 shadow-lg"
+                  style={{
+                    backgroundImage: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)`
+                  }}
+                >
+                  <Send size={20} />
+                </button>
+              </>
+            )}
           </div>
         </div>
         </div>
