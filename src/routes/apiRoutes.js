@@ -6,6 +6,7 @@ const authController = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
 const { validate, sendMessageSchema, reactivateSchema, phoneSchema, phoneParamSchema } = require('../validators/messageValidators');
+const { operatorRateLimiter } = require('../index');
 
 /**
  * @swagger
@@ -137,8 +138,8 @@ router.get('/messages/:telefono', verifyToken, apiController.obtenerMensajes);
  *       401:
  *         description: "No autenticado"
  */
-// Enviar mensaje desde el operador (protegido)
-router.post('/send', verifyToken, validate(sendMessageSchema), apiController.enviarMensaje);
+// Enviar mensaje desde el operador (protegido + rate limiting por operador)
+router.post('/send', verifyToken, operatorRateLimiter, validate(sendMessageSchema), apiController.enviarMensaje);
 
 /**
  * @swagger
@@ -230,8 +231,8 @@ router.post('/chats/:phone/activate', verifyToken, validate(phoneSchema, 'params
 // Estado de ventana 24h (protegido)
 router.get('/chats/:phone/window-status', verifyToken, validate(phoneSchema, 'params'), chatController.getWindowStatus);
 
-// Reactivar conversación vencida (>24hs) usando plantilla (protegido)
-router.post('/chats/:phone/reactivate', verifyToken, validate(phoneSchema, 'params'), validate(reactivateSchema), chatController.reactivate);
+// Reactivar conversación vencida (>24hs) usando plantilla (protegido + rate limiting)
+router.post('/chats/:phone/reactivate', verifyToken, operatorRateLimiter, validate(phoneSchema, 'params'), validate(reactivateSchema), chatController.reactivate);
 
 /**
  * @swagger
