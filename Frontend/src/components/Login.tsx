@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import axios from 'axios';
+import { env } from '../config/env';
+import { auth } from '../config/auth';
 
 interface LoginProps {
   onLoginSuccess: () => void;
@@ -28,19 +30,27 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:3000/api/auth/login', {
+      const response = await axios.post('/api/auth/login', {
         username,
         password
       });
       console.log('🔑 Respuesta login:', response.data);
 
       if (response.data.success && response.data.token) {
-        // Guardar el JWT token
-        localStorage.setItem('token', response.data.token);
+        // Guardar el access token
+        auth.setToken(response.data.token);
+        
+        // Guardar el refresh token (si lo proporciona el backend)
+        if (response.data.refreshToken) {
+          auth.setRefreshToken(response.data.refreshToken);
+          console.log('🔄 Refresh token guardado');
+        }
+        
         // Guardar información del operador
         if (response.data.operador) {
-          localStorage.setItem('operador', JSON.stringify(response.data.operador));
+          localStorage.setItem(env.operadorKey, JSON.stringify(response.data.operador));
         }
+        
         console.log('✅ Login exitoso:', response.data.operador?.nombre || response.data.operador?.email, 'token:', response.data.token?.slice(0, 20) + '...');
         onLoginSuccess();
       } else {

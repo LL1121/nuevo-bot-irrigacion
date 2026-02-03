@@ -5,24 +5,23 @@ import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import Login from './components/Login';
 import { toast, Toaster } from 'sonner';
+import { env } from './config/env';
+import { setupAxiosInterceptors } from './utils/axiosInterceptor';
+import { auth } from './config/auth';
 
-// Configurar Axios base y Bearer token interceptor
-axios.defaults.baseURL = 'http://localhost:3000';
-axios.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
-    console.log('🔐 Token enviado en header Authorization');
-  }
-  return config;
-});
+// Configurar Axios base
+axios.defaults.baseURL = env.apiUrl;
+axios.defaults.timeout = env.requestTimeoutMs;
+
+// Configurar interceptores de axios (refresh automático + reintentos)
+setupAxiosInterceptors(axios);
 
 // Configurar conexión con backend
-const socket: Socket = io('http://localhost:3000', {
+const socket: Socket = io(env.socketUrl, {
   transports: ['websocket', 'polling'],
   reconnection: true,
-  reconnectionDelay: 1000,
-  reconnectionAttempts: 5
+  reconnectionDelay: env.socketReconnectDelayMs,
+  reconnectionAttempts: env.socketReconnectAttempts
 });
 
 // Log de conexión del socket
@@ -40,7 +39,7 @@ socket.on('connect_error', (error) => {
 export default function App() {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return !!localStorage.getItem('token');
+    return !!localStorage.getItem(env.tokenKey);
   });
 
   // Theme color mapping
@@ -169,7 +168,7 @@ export default function App() {
     if (!currentChat?.phone) return;
     try {
       setReactivating(true);
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem(env.tokenKey);
       await axios.post(`/api/chats/${currentChat.phone}/reactivate`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
@@ -250,7 +249,7 @@ const getRelativeTime = (lastMessageDate: string | Date) => {
 
 const getMediaUrl = (mediaId: string | null | undefined): string => {
   if (!mediaId) return '';
-  return `http://localhost:3000/api/media/${mediaId}`;
+  return `${env.apiUrl}/api/media/${mediaId}`;
 };
 
 // Dedupe helper to avoid duplicated IDs in UI
@@ -273,9 +272,22 @@ const dedupeMessages = (msgs: any[]) => {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('operador');
+  const handleLogout = async () => {
+    try {
+      // Intentar logout en el backend (no bloquea si falla)
+      await axios.post('/api/auth/logout').catch(err => {
+        if (env.enableLogging) {
+          console.warn('⚠️ Logout en backend falló:', err.message);
+        }
+      });
+    } catch (err) {
+      if (env.enableLogging) {
+        console.warn('⚠️ Error durante logout:', err);
+      }
+    }
+    
+    // Limpiar tokens y datos locales
+    auth.clearSession();
     
     // Limpiar estado de conversaciones
     setConversationsState([]);
@@ -304,7 +316,7 @@ const dedupeMessages = (msgs: any[]) => {
 
     const loadChats = async () => {
       try {
-        const token = localStorage.getItem('token');
+        const token = localStorage.getItem(env.tokenKey);
         if (!token) {
           console.warn('⚠️ No hay token en localStorage, retornando a login');
           handleLogout();
@@ -312,7 +324,7 @@ const dedupeMessages = (msgs: any[]) => {
         }
 
         console.log('🔄 Cargando chats desde la API... Token:', token.slice(0, 16) + '...');
-        const response = await axios.get('http://localhost:3000/api/chats', {
+        const response = await axios.get('/api/chats', {
           headers: { Authorization: `Bearer ${token}` }
         });
         console.log('📦 Respuesta completa del backend:', response.data);
@@ -360,8 +372,7 @@ const dedupeMessages = (msgs: any[]) => {
       } catch (error: any) {
         const status = error?.response?.status;
         const data = error?.response?.data;
-        const token = localStorage.getItem('token');
-        console.error('❌ Error cargando chats:', status, data || error);
+        const token = localStorage.getItem(env.tokenKey);
         console.warn('🔑 Token usado:', token ? token.slice(0, 24) + '...' : 'sin token');
         // Si el token es inválido/expirado, forzar logout para reautenticar
         if (status === 401 || status === 403) {
@@ -716,10 +727,10 @@ const dedupeMessages = (msgs: any[]) => {
           console.log('🗑️ Caché eliminado, cargando desde API');
           
           console.log('📨 Cargando mensajes para:', currentChat.phone);
-          const token = localStorage.getItem('token');
+          const token = localStorage.getItem(env.tokenKey);
           
           // Traer hasta 100 mensajes para optimizar y quedarnos con los últimos 20
-          const response = await axios.get(`http://localhost:3000/api/messages/${currentChat.phone}?limit=100&offset=0`, {
+          const response = await axios.get(`/api/messages/${currentChat.phone}?limit=100&offset=0`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           console.log('📦 Respuesta de mensajes:', response.data);
@@ -904,9 +915,8 @@ const dedupeMessages = (msgs: any[]) => {
   // Funciones para control del bot
   const pauseBot = async (phone: string) => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:3000/api/chats/${phone}/pause`, {}, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      await axios.post(`/api/chats/${phone}/pause`, {}, {
+        headers: {}
       });
       console.log('✅ Bot pausado para:', phone);
     } catch (error) {
@@ -916,8 +926,8 @@ const dedupeMessages = (msgs: any[]) => {
   
   const activateBot = async (phone: string) => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:3000/api/chats/${phone}/activate`, {}, {
+      const token = localStorage.getItem(env.tokenKey);
+      await axios.post(`/api/chats/${phone}/activate`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       console.log('✅ Bot activado para:', phone);
@@ -949,19 +959,14 @@ const dedupeMessages = (msgs: any[]) => {
         setTimeout(() => chatSearchRef.current?.focus(), 100);
       }
       // Ctrl+Shift+F: Toggle filtro por estado (unread, resolved, all)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
-        e.preventDefault();
-        // Ciclar entre 'unread' -> 'resolved' -> 'all' -> 'unread'
-        const states = ['unread', 'resolved', 'all'];
-        const currentIdx = states.indexOf(filterState || 'all');
-        const nextIdx = (currentIdx + 1) % states.length;
-        setFilterState(states[nextIdx] as any);
-        console.log('🔍 Filtro cambió a:', states[nextIdx]);
-      }
+      // TODO: Implementar filtros por estado de chat cuando esté listo
+      // if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
+      //   e.preventDefault();
+      // }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [filterState]);
+  }, []);
 
   const handleSendMessage = async () => {
     if (message.trim() && selectedChat !== null) {
@@ -1021,13 +1026,12 @@ const dedupeMessages = (msgs: any[]) => {
         
         // Enviar al backend
         try {
-          const token = localStorage.getItem('token');
-          const response = await axios.post('http://localhost:3000/api/send', {
+          const response = await axios.post('/api/messages', {
             telefono: currentChat.phone,
             mensaje: messageText,
             operador: 'Panel Frontend'
           }, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {}
+            headers: {}
           });
           
           console.log('✅ Mensaje enviado:', response.data);
@@ -1939,9 +1943,9 @@ const dedupeMessages = (msgs: any[]) => {
                     
                     try {
                       const currentOffset = cachedMessages.length; // Offset basado en mensajes ya cargados
-                      const token = localStorage.getItem('token');
-                      const response = await axios.get(`http://localhost:3000/api/messages/${phone}?limit=100&offset=${currentOffset}`, {
-                        headers: token ? { Authorization: `Bearer ${token}` } : {}
+                      const response = await axios.get(`/api/chats/${phone}/messages`, {
+                        params: { limit: 100, offset: currentOffset },
+                        headers: {}
                       });
                       const newMessages = response.data.messages || [];
                       

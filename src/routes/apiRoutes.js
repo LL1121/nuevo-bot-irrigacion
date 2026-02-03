@@ -6,7 +6,7 @@ const authController = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
 const { validate, sendMessageSchema, reactivateSchema, phoneSchema, phoneParamSchema } = require('../validators/messageValidators');
-const { operatorRateLimiter } = require('../index');
+const { operatorRateLimiter } = require('../middlewares/rateLimiters');
 
 /**
  * @swagger
