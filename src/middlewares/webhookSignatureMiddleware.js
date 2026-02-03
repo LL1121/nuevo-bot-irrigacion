@@ -26,10 +26,15 @@ function verifyWebhookSignature(payload, signature, secret) {
     .digest('hex');
 
   // Comparación segura contra timing attacks
-  return crypto.timingSafeEqual(
-    Buffer.from(hash, 'hex'),
-    Buffer.from(expectedHash, 'hex')
-  );
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(hash, 'hex'),
+      Buffer.from(expectedHash, 'hex')
+    );
+  } catch (error) {
+    // timingSafeEqual falla si los buffers tienen diferente longitud
+    return false;
+  }
 }
 
 /**

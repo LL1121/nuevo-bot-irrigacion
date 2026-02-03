@@ -14,20 +14,89 @@ Interface React/TypeScript built with Vite, Tailwind, and Radix UI to manage irr
 - Chat window with attachments, audio controls, emoji support, and sidebar navigation.
 - Configurable theme tokens (emerald, blue, violet, amber) with gradient backgrounds and persisted dark mode.
 
-## Getting Started
-1) Install dependencies: `npm install`
-2) Start dev server: `npm run dev` (opens Vite on http://localhost:5173 by default)
-3) Lint: `npm run lint`
-4) Production build: `npm run build`; preview: `npm run preview`
+## Quick Start (Local Development)
 
-## Project Structure (frontend)
+### Prerequisites
+- Node.js 18+
+- npm or yarn
+
+### Installation
+
+1. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+2. **Setup environment variables**
+   ```bash
+   # Copy example file
+   cp .env.example .env.local
+   # Modify if backend is not on localhost:3000
+   ```
+
+3. **Start dev server**
+   ```bash
+   npm run dev
+   ```
+   Visit `http://localhost:5175` (or port suggested by Vite)
+
+## Environment Configuration
+
+### Local Development (`.env.local`)
+```
+VITE_API_URL=http://localhost:3000
+VITE_SOCKET_URL=http://localhost:3000
+VITE_ENABLE_LOGGING=true
+VITE_ENABLE_SENTRY=false
+```
+
+### Production (`.env.production`)
+```
+VITE_API_URL=https://api.irrigacion.com.ar
+VITE_SOCKET_URL=https://api.irrigacion.com.ar
+VITE_ENABLE_SENTRY=true
+VITE_SENTRY_DSN=<your-sentry-dsn>
+```
+
+**Automatic selection**: 
+- `npm run dev` uses `.env.local`
+- `npm run build` uses `.env.production`
+
+See `.env.example` for all available variables.
+
+## Available Scripts
+- `npm run dev` — Start dev server (port 5175)
+- `npm run build` — Build for production → `dist/` folder
+- `npm run preview` — Preview production build
+- `npm run lint` — Run ESLint
+
+## Project Structure
 - [src/main.tsx](src/main.tsx) bootstraps React and providers
 - [src/App.tsx](src/App.tsx) manages auth guard, theme props, and layout
+- [src/config/](src/config/) centralized configuration
+  - [config/env.ts](src/config/env.ts) environment variables
+  - [config/auth.ts](src/config/auth.ts) auth utilities
 - [src/components](src/components) UI composition:
   - [components/Login.tsx](src/components/Login.tsx) themed/dark-mode-aware login
-  - [components/chat-window.tsx](src/components/chat-window.tsx), [message-list.tsx](src/components/message-list.tsx), [message-input.tsx](src/components/message-input.tsx) chat experience
-  - [components/sidebar.tsx](src/components/sidebar.tsx) navigation and branding
   - [components/ui](src/components/ui) shared Radix-based primitives
+
+## Production Deployment
+
+### Build
+```bash
+npm run build
+```
+
+### Deploy
+- Upload `dist/` to your hosting (Netlify, Vercel, AWS S3, etc.)
+- Configure server to serve SPA (rewrite all routes to `index.html`)
+- Ensure `.env.production` variables are set correctly
+
+### Requirements
+- HTTPS enabled
+- CORS configured on backend
+- Backend health check at `GET /api/health`
+- Optional: Sentry for error tracking
 - [src/styles/global.css](src/styles/global.css) Tailwind base styles
 
 ## Theming and Branding

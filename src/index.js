@@ -5,7 +5,7 @@ const { Server } = require('socket.io');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
+const { apiLimiter, authLimiter } = require('./middlewares/rateLimiters');
 const fs = require('fs');
 const path = require('path');
 const swaggerUi = require('swagger-ui-express');
@@ -52,32 +52,6 @@ app.use(cors({
   },
   credentials: true
 }));
-
-// 3) Rate Limiting
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per window
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // limit each IP to 5 login requests per window
-  message: 'Too many login attempts, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-// Rate limiting por operador para envío de mensajes
-const operatorRateLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minuto
-  max: 10, // máximo 10 mensajes por minuto por operador
-  keyGenerator: (req) => req.user?.id || req.ip, // usar ID del operador del JWT, o IP como fallback
-  message: 'Demasiados mensajes enviados. Por favor espera un momento.',
-  standardHeaders: true,
-  legacyHeaders: false
-});
 
 // Middleware para capturar raw body (necesario para verificar firma webhook)
 app.use('/webhook', express.json({
@@ -238,4 +212,4 @@ const bootstrap = async () => {
 
 bootstrap();
 
-module.exports = { app, io, operatorRateLimiter };
+module.exports = { app, io };
