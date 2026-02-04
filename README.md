@@ -262,7 +262,70 @@ bot-irrigacion/
 - [ ] Dashboard con métricas de atención
 - [ ] Integración con CRM externo
 
-## 📄 Licencia
+## � Gestión de Secretos
+
+### GitHub Secrets
+
+Para CI/CD y producción, todos los secretos deben estar en GitHub Secrets:
+
+```bash
+# Listar secretos existentes
+gh secret list
+
+# Agregar un secreto
+gh secret set WHATSAPP_TOKEN
+
+# Ver documentación completa
+cat docs/GITHUB_SECRETS_SETUP.md
+```
+
+**Secretos requeridos:**
+- `WHATSAPP_TOKEN` - Token de Meta WhatsApp API
+- `WEBHOOK_APP_SECRET` - App Secret de Meta para validar webhooks
+- `JWT_SECRET` - Secreto para firmar tokens JWT
+- `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Credenciales de MySQL
+- `SENTRY_DSN` (opcional) - DSN de Sentry para monitoreo
+- `REDIS_URL` (opcional) - URL de conexión a Redis
+
+### Rotación de Secretos
+
+Usa el script automatizado para rotar secretos de forma segura:
+
+```bash
+# Rotar JWT_SECRET
+node scripts/rotate_secrets.js --type=jwt
+
+# Rotar WHATSAPP_TOKEN
+node scripts/rotate_secrets.js --type=whatsapp
+
+# Rotar WEBHOOK_APP_SECRET
+node scripts/rotate_secrets.js --type=webhook
+
+# Rotar DB_PASSWORD
+node scripts/rotate_secrets.js --type=db
+
+# Rotar todos (interactive)
+node scripts/rotate_secrets.js --type=all
+```
+
+**Frecuencias recomendadas:**
+- `WHATSAPP_TOKEN`: Cada 60-90 días
+- `WEBHOOK_APP_SECRET`: Cada 90 días
+- `JWT_SECRET`: Cada 180 días (invalida todos los tokens)
+- `DB_PASSWORD`: Cada 90 días
+
+Ver procedimientos detallados en [docs/SECRET_ROTATION.md](docs/SECRET_ROTATION.md).
+
+### Seguridad
+
+- ❌ **NUNCA** commits secretos en el código
+- ❌ **NUNCA** compartas secretos por chat/email
+- ✅ Usa `.env` solo para desarrollo local
+- ✅ Usa GitHub Secrets o Vault para producción
+- ✅ Rota secretos regularmente
+- ✅ Revisa logs de audit
+
+## �📄 Licencia
 
 Proyecto desarrollado para la Jefatura de Zona de Riego - Malargüe, Mendoza.
 
