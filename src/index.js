@@ -1,5 +1,16 @@
 require('dotenv').config();
 const express = require('express');
+// Optional Sentry for error monitoring
+let Sentry;
+if (process.env.SENTRY_DSN) {
+  try {
+    Sentry = require('@sentry/node');
+    Sentry.init({ dsn: process.env.SENTRY_DSN });
+    console.log('✅ Sentry initialised');
+  } catch (err) {
+    console.warn('⚠️ Could not initialize Sentry:', err.message);
+  }
+}
 const http = require('http');
 const { Server } = require('socket.io');
 const bodyParser = require('body-parser');
