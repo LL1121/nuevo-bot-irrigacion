@@ -322,7 +322,6 @@ const dedupeMessages = (msgs: any[]) => {
           handleLogout();
           return;
         }
-
         console.log('🔄 Cargando chats desde la API... Token:', token.slice(0, 16) + '...');
         const response = await axios.get('/api/chats', {
           headers: { Authorization: `Bearer ${token}` }
