@@ -25,6 +25,16 @@ jobs:
         run: npm audit --audit-level=high || true
 
       - name: Run tests (security smoke)
+        env:
+          WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
+          WEBHOOK_APP_SECRET: ${{ secrets.WEBHOOK_APP_SECRET }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
         run: node scripts/test_security.js
 
       - name: Upload test-artifacts
