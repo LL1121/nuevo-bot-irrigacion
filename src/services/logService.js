@@ -73,12 +73,55 @@ const logger = winston.createLogger({
 });
 
 /**
+ * Async logging buffer para evitar bloqueos de I/O
+ * Agrupa logs y escribe en batch cada 100ms o 50 logs
+ */
+const logBuffer = {
+  queue: [],
+  flushScheduled: false,
+  
+  add(level, message, metadata) {
+    this.queue.push({ level, message, metadata, timestamp: new Date() });
+    
+    // Flush si acumulamos 50 logs o si es un error crítico
+    if (this.queue.length >= 50 || level === 'error') {
+      this.flush();
+    } else if (!this.flushScheduled) {
+      // Schedule flush para los próximos 100ms
+      this.flushScheduled = true;
+      setImmediate(() => {
+        this.flush();
+        this.flushScheduled = false;
+      });
+    }
+  },
+  
+  flush() {
+    if (this.queue.length === 0) return;
+    
+    const logsToWrite = this.queue.splice(0);
+    
+    // Escribir logs de forma asincrónica sin bloquear
+    setImmediate(() => {
+      logsToWrite.forEach(({ level, message, metadata }) => {
+        logger.log(level, message, metadata);
+      });
+    });
+  }
+};
+
+// Flush remaining logs on exit
+process.on('exit', () => {
+  logBuffer.flush();
+});
+
+/**
  * ERROR - Errores críticos que requieren atención inmediata
  * @param {string} message - Mensaje de error
  * @param {object} metadata - Datos adicionales (usuario, telefono, etc)
  */
 const error = (message, metadata = {}) => {
-  logger.error(message, metadata);
+  logBuffer.add('error', message, metadata);
 };
 
 /**
@@ -87,7 +130,7 @@ const error = (message, metadata = {}) => {
  * @param {object} metadata - Datos adicionales
  */
 const warn = (message, metadata = {}) => {
-  logger.warn(message, metadata);
+  logBuffer.add('warn', message, metadata);
 };
 
 /**
@@ -96,7 +139,7 @@ const warn = (message, metadata = {}) => {
  * @param {object} metadata - Datos adicionales
  */
 const info = (message, metadata = {}) => {
-  logger.info(message, metadata);
+  logBuffer.add('info', message, metadata);
 };
 
 /**

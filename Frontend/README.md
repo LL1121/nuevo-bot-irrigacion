@@ -478,6 +478,73 @@ const result = checkColorContrast('#595959', '#FFFFFF');
 
 Ver [ACCESSIBILITY.md](ACCESSIBILITY.md) para guía completa de implementación, testing con screen readers, y ARIA patterns.
 
+## API Versioning & Documentation
+
+Manejo profesional de versiones de API con tipos compartidos, breaking change tracking, y documentación completa.
+
+### Structure
+
+```
+src/api/
+├── types/          # Tipos compartidos (User, Chat, Message)
+├── v1/             # API v1 (deprecated)
+├── v2/             # API v2 (current)
+└── client/         # Version manager
+```
+
+### Quick Start
+
+```typescript
+import * as api from '@/api/client'; // Always import from here
+
+// Login (v2)
+const { data: token } = await api.login(email, password);
+
+// Get chats with sorting (NEW in v2)
+const { data } = await api.getPaginatedChats(
+  token,
+  1,           // page
+  10,          // pageSize
+  'updatedAt', // sortBy (NEW)
+  'desc'       // order (NEW)
+);
+
+// Send message
+await api.sendMessage(chatId, token, 'Hello!');
+
+// Get control actions (NEW in v2)
+await api.getControlActions(deviceId, token);
+```
+
+### Breaking Changes (v1 → v2)
+
+| Change | v1 | v2 | Impact |
+|--------|----|----|--------|
+| Chat object | `chat.messageCount` | `chat.stats.messageCount` | HIGH |
+| Refresh token | `POST /auth/refresh` header | `POST /auth/token` body | HIGH |
+| Chat sorting | None | `sortBy`, `order` params | LOW |
+
+### Endpoints
+
+**Authentication**:
+- `login(email, password)`
+- `refreshToken(refreshToken)` — BREAKING: Changed from v1
+- `getCurrentUser(token)`
+
+**Chats**:
+- `getPaginatedChats(token, page, pageSize, sortBy, order)` — NEW: sortBy
+- `getChat(chatId, token)`
+- `createChat(token, data)`
+- `deleteChat(chatId, token)` — NEW in v2
+- `getChatMessages(chatId, token, page)`
+- `sendMessage(chatId, token, content)`
+
+**Controls** (NEW in v2):
+- `getControlActions(deviceId, token)` — NEW
+- `executeSensorRead(deviceId, token)` — NEW
+
+Ver [API_DOCS.md](API_DOCS.md) para guía completa de versioning, migration guide, ejemplos, y tipos.
+
 ## Offline & PWA
 
 App instalable como **Progressive Web App** con soporte offline completo.
