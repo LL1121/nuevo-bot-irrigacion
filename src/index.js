@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const compression = require('compression');
 // Optional Sentry for error monitoring
 let Sentry;
 if (process.env.SENTRY_DSN) {
@@ -48,7 +49,13 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 // 1) Helmet for secure HTTP headers
 app.use(helmet());
 
-// 2) Strict CORS whitelist
+// 2) Compression middleware - reduce response size by 3-4x
+app.use(compression({
+  level: 6, // Balance between speed and compression ratio
+  threshold: 1024 // Only compress responses > 1KB
+}));
+
+// 3) Strict CORS whitelist
 const corsWhitelist = [
   'http://localhost:5173',
   FRONTEND_URL
