@@ -1,0 +1,24 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: bot_redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
+  # Optional local MySQL for integration testing
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: irrigacion
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - '3306:3306'
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  redis_data:
+  mysql_data:
