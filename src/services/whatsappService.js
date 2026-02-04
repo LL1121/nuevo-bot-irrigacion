@@ -1,9 +1,28 @@
 require('dotenv').config();
 const axios = require('axios');
+const axiosRetry = require('axios-retry');
 const { validateFileIntegrity } = require('./fileValidator');
 const { withWhatsAppRetry } = require('./retryService');
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
+
+// Create axios instance with timeout and retry logic
+const axiosClient = axios.create({
+  timeout: 15000, // 15 seconds - prevent hanging requests
+  maxContentLength: 50 * 1024 * 1024, // 50MB max file size
+  maxBodyLength: 50 * 1024 * 1024
+});
+
+// Auto-retry on network errors or 5xx responses (3 retries with exponential backoff)
+axiosRetry(axiosClient, {
+  retries: 3,
+  retryDelay: (retryCount) => retryCount * 1000, // 1s, 2s, 3s
+  retryCondition: (error) => {
+    // Retry on network errors or server errors (5xx), but not client errors (4xx)
+    return axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+           (error.response?.status >= 500);
+  }
+});
 
 /**
  * Envía un mensaje de texto a través de WhatsApp Cloud API
@@ -35,7 +54,7 @@ const sendMessage = async (to, text) => {
       }
     };
 
-    const response = await axios.post(url, data, config);
+    const response = await axiosClient.post(url, data, config);
     console.log('✅ Mensaje enviado correctamente:', response.data);
     return response.data;
   }, `sendMessage to ${to}`);
@@ -79,7 +98,7 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
       }
     };
 
-    const response = await axios.post(url, data, config);
+    const response = await axiosClient.post(url, data, config);
     console.log('✅ Template enviado correctamente:', response.data);
     return response.data;
   }, `sendTemplate ${templateName} to ${to}`);
@@ -97,7 +116,7 @@ const getMediaInfo = async (mediaId) => {
     }
   };
   try {
-    const response = await axios.get(url, config);
+    const response = await axiosClient.get(url, config);
     return response.data; // { url, mime_type, ... }
   } catch (error) {
     console.error('❌ Error obteniendo media info:', error.response?.data || error.message);
@@ -164,7 +183,7 @@ const fetchMediaStream = async (mediaUrl) => {
     }
   };
   try {
-    const response = await axios.get(mediaUrl, config);
+    const response = await axiosClient.get(mediaUrl, config);
     return { stream: response.data, contentType: response.headers['content-type'] || 'application/octet-stream' };
   } catch (error) {
     console.error('❌ Error descargando media:', error.response?.data || error.message);
@@ -230,7 +249,7 @@ const sendInteractiveList = async (to, headerText, bodyText, buttonText, section
       }
     };
 
-    const response = await axios.post(url, data, config);
+    const response = await axiosClient.post(url, data, config);
     console.log('✅ Lista interactiva enviada correctamente:', response.data);
     return response.data;
   } catch (error) {
@@ -282,7 +301,7 @@ const sendInteractiveButtons = async (to, bodyText, buttons) => {
       }
     };
 
-    const response = await axios.post(url, data, config);
+    const response = await axiosClient.post(url, data, config);
     console.log('✅ Botones interactivos enviados correctamente:', response.data);
     return response.data;
   } catch (error) {
@@ -323,7 +342,7 @@ const sendImage = async (to, imageUrl, caption = '') => {
       }
     };
 
-    const response = await axios.post(url, data, config);
+    const response = await axiosClient.post(url, data, config);
     console.log('✅ Imagen enviada correctamente:', response.data);
     return response.data;
   } catch (error) {
@@ -388,7 +407,7 @@ const uploadMedia = async (filePath, mimeType) => {
       }
     };
     
-    const response = await axios.post(url, formData, config);
+    const response = await axiosClient.post(url, formData, config);
     console.log('📤 Media subido, ID:', response.data.id);
     return response.data.id;
     
@@ -432,7 +451,7 @@ const sendDocument = async (to, mediaId, fileName, caption = '') => {
       }
     };
     
-    await axios.post(url, data, config);
+    await axiosClient.post(url, data, config);
     console.log(`📄 Documento enviado a ${to}`);
     
   } catch (error) {
@@ -489,7 +508,7 @@ const sendButtonReply = async (to, text, buttons) => {
       }
     };
     
-    await axios.post(url, data, config);
+    await axiosClient.post(url, data, config);
     console.log(`🔘 Botones enviados a ${to}`);
     
   } catch (error) {

@@ -478,6 +478,86 @@ const result = checkColorContrast('#595959', '#FFFFFF');
 
 Ver [ACCESSIBILITY.md](ACCESSIBILITY.md) para guía completa de implementación, testing con screen readers, y ARIA patterns.
 
+## Offline & PWA
+
+App instalable como **Progressive Web App** con soporte offline completo.
+
+### Features
+
+- **Instalable** — Mobile y desktop (Android, iOS, Chrome, Edge)
+- **Offline Mode** — Cache inteligente con Service Worker
+- **Auto-updates** — Notificaciones de nuevas versiones
+- **Fast Load** — Assets cached, instant startup
+- **Network Detection** — Indicador visual de estado offline
+
+### Quick Usage
+
+```tsx
+import { InstallPrompt, UpdatePrompt, OfflineIndicator } from '@/components';
+import { isPWA, isOnline } from '@/utils/pwa';
+
+function App() {
+  return (
+    <>
+      <InstallPrompt />
+      <UpdatePrompt />
+      <OfflineIndicator />
+      {/* App content */}
+    </>
+  );
+}
+
+// Check if running as PWA
+if (isPWA()) {
+  console.log('Running as installed app');
+}
+
+// Check network status
+if (!isOnline()) {
+  console.log('Offline mode active');
+}
+```
+
+### Cache Strategies
+
+| Resource | Strategy | Cache Duration |
+|----------|----------|----------------|
+| **API calls** | NetworkFirst | 24 hours |
+| **Images** | CacheFirst | 30 days |
+| **JS/CSS** | CacheFirst | 1 year |
+
+### Installation
+
+**Android/Chrome:**
+- Banner automático después de 30 segundos
+- Click "Instalar" → App en home screen
+
+**iOS/Safari:**
+- Share button → Add to Home Screen
+- Manual (limitación de Apple)
+
+**Desktop:**
+- Ícono en barra de direcciones
+- Menu → Install
+
+### Testing PWA
+
+```bash
+# Build for production
+npm run build
+
+# Preview with Service Worker
+npm run preview
+
+# Test checklist
+# ✅ Install prompt appears
+# ✅ Offline mode works
+# ✅ Update notification shows
+# ✅ Lighthouse PWA score: 100/100
+```
+
+Ver [PWA.md](PWA.md) para guía completa de configuración, testing, troubleshooting, y platform-specific quirks.
+
 ## Performance Optimization
 
 ### Bundle Splitting (Vite)

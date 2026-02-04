@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
 import * as path from 'path'
 
 // https://vitejs.dev/config/
@@ -34,7 +35,89 @@ export default defineConfig({
     // Silent console in tests unless explicitly needed
     silent: false,
   },
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.ico', 'robots.txt', 'icons/*.png'],
+      manifest: {
+        name: 'Bot de Irrigación',
+        short_name: 'Irrigación',
+        description: 'Sistema de gestión de irrigación con chat y controles en tiempo real',
+        theme_color: '#10b981',
+        background_color: '#ffffff',
+        display: 'standalone',
+        scope: '/',
+        start_url: '/',
+        icons: [
+          {
+            src: '/icons/icon-192x192.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'any maskable'
+          },
+          {
+            src: '/icons/icon-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any maskable'
+          }
+        ]
+      },
+      workbox: {
+        // Cache strategies
+        runtimeCaching: [
+          {
+            // Cache API responses
+            urlPattern: /^https:\/\/.*\/api\/.*/i,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache',
+              expiration: {
+                maxEntries: 100,
+                maxAgeSeconds: 60 * 60 * 24, // 24 hours
+              },
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+            },
+          },
+          {
+            // Cache images
+            urlPattern: /\.(?:png|jpg|jpeg|svg|gif|webp)$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'images-cache',
+              expiration: {
+                maxEntries: 50,
+                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 days
+              },
+            },
+          },
+          {
+            // Cache static assets
+            urlPattern: /\.(?:js|css|woff|woff2|ttf|otf)$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'static-assets',
+              expiration: {
+                maxEntries: 100,
+                maxAgeSeconds: 60 * 60 * 24 * 365, // 1 year
+              },
+            },
+          },
+        ],
+        // Clean old caches
+        cleanupOutdatedCaches: true,
+        // Skip waiting for new service worker
+        skipWaiting: true,
+        clientsClaim: true,
+      },
+      devOptions: {
+        enabled: false, // Disable in dev for faster HMR
+      },
+    })
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
