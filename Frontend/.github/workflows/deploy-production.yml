@@ -1,0 +1,126 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.event.inputs.environment || 'production' }}
+      url: https://irrigacion.com.ar
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for Sentry release
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run tests (safety check)
+        run: npm run test -- --run
+      
+      - name: Build for production
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_SOCKET_URL: ${{ secrets.VITE_SOCKET_URL }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_ENABLE_SENTRY: 'true'
+          VITE_ENABLE_LOGGING: 'false'
+      
+      - name: Create Sentry release
+        if: success()
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          # Get release version from git tag or commit sha
+          RELEASE_VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA::7}"
+          echo "Creating Sentry release: $RELEASE_VERSION"
+          
+          export SENTRY_RELEASE=$RELEASE_VERSION
+          npm run sentry:upload-sourcemaps
+      
+      - name: Deploy to Server
+        run: |
+          echo "🚀 Deploying to ${{ github.event.inputs.environment || 'production' }}..."
+          # Add your deployment script here:
+          # - rsync to server
+          # - AWS S3 sync
+          # - Netlify/Vercel deploy
+          # - Custom deployment script
+          
+          # Example for rsync:
+          # rsync -avz --delete dist/ user@server:/var/www/irrigacion/
+          
+          # Example for AWS S3:
+          # aws s3 sync dist/ s3://your-bucket/ --delete
+          
+          echo "✅ Deployment completed!"
+      
+      - name: Health check
+        run: |
+          echo "Running health checks..."
+          sleep 10  # Wait for deployment to propagate
+          
+          # Check if site is accessible
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://irrigacion.com.ar)
+          if [ $RESPONSE != "200" ]; then
+            echo "❌ Health check failed: HTTP $RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Health check passed!"
+      
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Deployment successful!"
+          echo "Version: ${GITHUB_REF_NAME}-${GITHUB_SHA::7}"
+          echo "Environment: ${{ github.event.inputs.environment || 'production' }}"
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed!"
+          echo "Check logs for details"
+          # Add notification webhook here (Slack, Discord, email, etc.)
+
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: deploy
+    steps:
+      - name: Rollback deployment
+        run: |
+          echo "🔄 Rolling back to previous version..."
+          # Add rollback logic:
+          # - Restore previous S3 version
+          # - Revert git tag
+          # - Deploy previous commit
+          
+          echo "⚠️  Manual intervention may be required"
+          exit 1

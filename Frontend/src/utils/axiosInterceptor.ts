@@ -8,10 +8,38 @@ import { authConfig } from '../config/authConfig';
 import { auth } from '../config/auth';
 import { isTokenExpiringSoon, isTokenValid } from './jwt';
 import { env } from '../config/env';
+import { logger, captureException } from './logger';
 
 // Flag para evitar múltiples refresh requests simultáneos
 let isRefreshing = false;
 let refreshSubscribers: Array<(token: string) => void> = [];
+
+// Rate limiting: track request times per endpoint
+const requestTimestamps: Record<string, number[]> = {};
+const RATE_LIMIT_WINDOW_MS = 60000; // 60 segundos
+const RATE_LIMIT_MAX_REQUESTS = 10; // máximo 10 requests por ventana
+
+/**
+ * Check if request exceeds rate limit
+ */
+const isRateLimited = (endpoint: string): boolean => {
+  const now = Date.now();
+  if (!requestTimestamps[endpoint]) {
+    requestTimestamps[endpoint] = [];
+  }
+
+  // Limpiar timestamps viejos (fuera de la ventana)
+  requestTimestamps[endpoint] = requestTimestamps[endpoint].filter(
+    (ts) => now - ts < RATE_LIMIT_WINDOW_MS
+  );
+
+  if (requestTimestamps[endpoint].length >= RATE_LIMIT_MAX_REQUESTS) {
+    return true;
+  }
+
+  requestTimestamps[endpoint].push(now);
+  return false;
+};
 
 /**
  * Suscribirse a eventos de refresh completado
@@ -36,12 +64,12 @@ const refreshAccessToken = async (): Promise<string | null> => {
     const refreshToken = localStorage.getItem(authConfig.storage.refreshToken);
     
     if (!refreshToken) {
-      console.warn('⚠️ No hay refreshToken disponible');
+      logger.warn('⚠️ No hay refreshToken disponible');
       return null;
     }
 
     if (env.enableLogging) {
-      console.log('🔄 Intentando refrescar token...');
+      logger.info('🔄 Intentando refrescar token...');
     }
 
     const response = await axios.post(
@@ -54,18 +82,18 @@ const refreshAccessToken = async (): Promise<string | null> => {
     
     if (newToken) {
       auth.setToken(newToken);
-      
+
       // Actualizar expiración si viene en la respuesta
       if (response.data?.expiresIn) {
         const expiresAt = Date.now() + (response.data.expiresIn * 1000);
         localStorage.setItem(authConfig.storage.tokenExpiresAt, expiresAt.toString());
       }
 
-      console.log('✅ Token refrescado correctamente');
+      logger.info('✅ Token refrescado correctamente');
       return newToken;
     }
   } catch (error) {
-    console.error('❌ Error refrescando token:', error);
+    captureException(error, { phase: 'refreshAccessToken' });
     // Si refresh falla, logout forzado
     auth.clearSession();
   }
@@ -78,10 +106,18 @@ const refreshAccessToken = async (): Promise<string | null> => {
  */
 export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
   /**
-   * Interceptor de request: Agregar token + verificar expiración
+   * Interceptor de request: Agregar token + verificar expiración + rate limiting
    */
   axiosInstance.interceptors.request.use(
     async (config) => {
+      // Rate limiting check (skip para endpoint de refresh)
+      const endpoint = config.url || '';
+      if (!endpoint.includes('/refresh') && isRateLimited(endpoint)) {
+        const err = new Error('Rate limit exceeded. Too many requests to this endpoint.');
+        captureException(err, { phase: 'rateLimited', endpoint });
+        return Promise.reject(err);
+      }
+
       const token = auth.getToken();
 
       // Si el token expira pronto, refrescarlo ahora
@@ -131,6 +167,7 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
 
       // Si no hay config, no podemos reintentar
       if (!config) {
+        captureException(error, { phase: 'axiosResponse', note: 'no-config' });
         return Promise.reject(error);
       }
 
@@ -176,13 +213,14 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
         const delayMs = authConfig.retry.initialDelayMs * Math.pow(2, config._retryCount - 1);
 
         if (env.enableLogging) {
-          console.log(`🔄 Reintentando request (intento ${config._retryCount}/${authConfig.retry.maxAttempts}) en ${delayMs}ms`);
+          logger.info(`🔄 Reintentando request (intento ${config._retryCount}/${authConfig.retry.maxAttempts}) en ${delayMs}ms`);
         }
 
         await new Promise(resolve => setTimeout(resolve, delayMs));
         return axiosInstance(config);
       }
 
+      captureException(error, { phase: 'axiosResponse', retryCount: config._retryCount });
       return Promise.reject(error);
     }
   );

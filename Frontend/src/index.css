@@ -103,4 +103,81 @@ body {
   div::-webkit-scrollbar-thumb:hover {
     background: #9ca3af;
   }
+
+  /* Accessibility utilities */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Focus visible styles (only show focus ring for keyboard navigation) */
+  body:not(.keyboard-navigation) *:focus {
+    outline: none;
+  }
+
+  body.keyboard-navigation *:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* High contrast focus for critical interactive elements */
+  body.keyboard-navigation button:focus-visible,
+  body.keyboard-navigation a:focus-visible,
+  body.keyboard-navigation input:focus-visible,
+  body.keyboard-navigation textarea:focus-visible,
+  body.keyboard-navigation select:focus-visible {
+    outline: 3px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Skip link styles */
+  #skip-link {
+    transform: translateY(-100%);
+    transition: transform 0.2s;
+  }
+
+  #skip-link:focus {
+    transform: translateY(0);
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* High contrast mode support */
+  @media (prefers-contrast: high) {
+    * {
+      border-color: currentColor !important;
+    }
+
+    button,
+    a,
+    input,
+    select,
+    textarea {
+      border: 2px solid currentColor;
+    }
+  }
+
+  /* Dark mode adjustments for better contrast */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --focus-ring: hsl(210, 100%, 80%);
+    }
+  }
 }

@@ -3,6 +3,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import axios from 'axios';
 import { env } from '../config/env';
 import { auth } from '../config/auth';
+import SentryTest from './SentryTest';
 
 interface LoginProps {
   onLoginSuccess: () => void;
@@ -185,6 +186,7 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
         <div className="text-center mt-6 text-sm text-gray-500">
           v1.0.0 - Sistema de Mensajería WhatsApp
         </div>
+        <SentryTest />
       </div>
     </div>
   );
