@@ -14,7 +14,14 @@
     "test:coverage": "jest --coverage",
     "test:verbose": "jest --verbose",
     "db:index": "node scripts/createIndexes.js",
-    "perf:load": "node scripts/loadTest.js"
+    "perf:load": "node scripts/loadTest.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop bot-irrigacion",
+    "pm2:restart": "pm2 restart bot-irrigacion",
+    "pm2:logs": "pm2 logs bot-irrigacion",
+    "pm2:monit": "pm2 monit",
+    "pm2:status": "pm2 status",
+    "deploy": "bash scripts/deploy-hostinger.sh"
   },
   "keywords": [],
   "author": "",
