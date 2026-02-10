@@ -548,10 +548,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           // Actualizar conversación existente
           const updated = [...prev];
           const chat = updated[existingChatIndex];
+          const msgTimestamp = parseMessageDate(newMsg.timestamp);
           
           // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
-            const msgTimestamp = parseMessageDate(newMsg.timestamp);
             console.log('⏰ msgTimestamp parseado:', msgTimestamp.toISOString());
             // newMsg.mensaje ya está normalizado a string en handleNewMessage
             const incomingText = newMsg.mensaje;
@@ -912,14 +912,19 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               duration: msg.duracion
             };
           });
+          const sortedAllMessages = [...allMappedMessages].sort((a: any, b: any) =>
+            new Date(a.date).getTime() - new Date(b.date).getTime()
+          );
           
           // Guardar en caché de memoria
-          setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: allMappedMessages }));
-          setCurrentMessageIndex(prev => ({ ...prev, [currentChat.phone]: allMappedMessages.length - messagesLimit }));
-          console.log('💾 Guardados', allMappedMessages.length, 'mensajes en caché de memoria');
+          setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages }));
+          setCurrentMessageIndex(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages.length - messagesLimit }));
+          console.log('💾 Guardados', sortedAllMessages.length, 'mensajes en caché de memoria');
           
           // Solo mostrar los últimos N
-          const messagesToShow = allMappedMessages.slice(-messagesLimit);
+          const messagesToShow = sortedAllMessages.slice(-messagesLimit);
+          const lastMsg = sortedAllMessages.length > 0 ? sortedAllMessages[sortedAllMessages.length - 1] : null;
+          const lastMsgPreview = lastMsg ? normalizeMessageContent(lastMsg.text).preview : null;
           
           // Marcar que NO llegamos al final si hay más mensajes en caché o en BD
           if (allMappedMessages.length > messagesLimit || allMessages.length >= 100) {
@@ -935,7 +940,12 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             const updated = [...prev];
             updated[selectedChat] = {
               ...updated[selectedChat],
-              messages: messagesToShow
+              messages: messagesToShow,
+              ...(lastMsg ? {
+                lastMessage: lastMsgPreview || lastMsg.text || updated[selectedChat].lastMessage,
+                lastMessageDate: lastMsg.date || updated[selectedChat].lastMessageDate,
+                time: lastMsg.date ? formatTime(new Date(lastMsg.date)) : updated[selectedChat].time
+              } : {})
             };
             return updated;
           });
