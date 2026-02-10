@@ -75,17 +75,19 @@ const obtenerMensajes = async (telefono, limit = 50, offset = 0) => {
     const offsetNum = Math.max(parseInt(offset) || 0, 0);
     
     // OPTIMIZACIÓN: Campos específicos en lugar de SELECT *
+    // Obtener los últimos N mensajes (ORDER BY DESC) y luego invertir el array
     const [rows] = await pool.execute(
       `SELECT id, cliente_telefono, tipo, cuerpo, url_archivo, emisor, fecha 
        FROM mensajes 
        WHERE cliente_telefono = ? 
-       ORDER BY fecha ASC 
+       ORDER BY fecha DESC 
        LIMIT ${limitNum} OFFSET ${offsetNum}`,
       [telefono]
     );
 
     // OPTIMIZACIÓN: Sin console.log en cada request (reduce I/O)
-    return rows;
+    // Invertir el array para que el frontend los reciba del más viejo al más nuevo
+    return rows.reverse();
   } catch (error) {
     console.error('❌ Error obteniendo mensajes:', error);
     throw error;
