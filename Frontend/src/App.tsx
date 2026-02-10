@@ -142,7 +142,16 @@ export default function App() {
 
   // Determinar si la sesión (24h) está vencida según el último mensaje del usuario (cliente)
   const sessionExpired = useMemo(() => {
-    if (!currentChat || !currentChat.messages || currentChat.messages.length === 0) return false;
+    if (!currentChat) return false;
+
+    // Priorizar última interacción real del usuario (DB)
+    if (currentChat.lastUserInteraction) {
+      const lastUser = new Date(currentChat.lastUserInteraction);
+      const diffMs = Date.now() - lastUser.getTime();
+      return diffMs > 24 * 60 * 60 * 1000; // > 24 horas
+    }
+
+    if (!currentChat.messages || currentChat.messages.length === 0) return false;
     // Buscar el último mensaje del usuario (en nuestro mapeo, usuario => sent === false)
     for (let i = currentChat.messages.length - 1; i >= 0; i--) {
       const m = currentChat.messages[i];
@@ -153,7 +162,7 @@ export default function App() {
       }
     }
     return false;
-  }, [currentChat?.messages, selectedChat]);
+  }, [currentChat?.lastUserInteraction, currentChat?.messages, selectedChat]);
 
   // Cerrar menús que no aplican si está expirada la sesión
   useEffect(() => {
@@ -252,11 +261,102 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   return `${env.apiUrl}/api/media/${mediaId}`;
 };
 
+const safeJsonParse = (value: string) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeMessageContent = (input: any) => {
+  const raw = input ?? '';
+  const asString = typeof raw === 'string' ? raw : '';
+  const trimmed = asString.trim();
+  const parsed = trimmed && ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']')))
+    ? safeJsonParse(trimmed)
+    : null;
+  const obj = parsed && typeof parsed === 'object' ? parsed : (typeof raw === 'object' && raw !== null ? raw : null);
+
+  const isInteractiveList = !!obj && typeof obj === 'object' && (
+    (obj as any).type === 'interactive_list' ||
+    (obj as any).type === 'interactive' ||
+    (obj as any).sections ||
+    (obj as any).buttonText
+  );
+
+  if (isInteractiveList) {
+    const header = (obj as any).header || 'Menú interactivo';
+    const body = (obj as any).body || '';
+    const buttonText = (obj as any).buttonText || '';
+    const preview = [header, body || buttonText].filter(Boolean).join(' - ').trim();
+    return {
+      text: typeof raw === 'string' ? raw : JSON.stringify(obj),
+      preview,
+      type: 'interactive'
+    };
+  }
+
+  const fallbackText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
+  return {
+    text: fallbackText,
+    preview: fallbackText,
+    type: 'text'
+  };
+};
+
+const normalizeMessageType = (rawType: any, normalizedType: string) => {
+  if (rawType === 'interactive_list') return 'interactive';
+  return rawType || normalizedType || 'text';
+};
+
+const parseMessageDate = (value: any) => {
+  if (!value) return new Date();
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? new Date() : d;
+};
+
+const hashString = (value: string) => {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) + hash) + value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const buildStableMessageId = (params: {
+  phone?: string;
+  timestamp?: string | Date;
+  emisor?: string;
+  text?: string;
+  type?: string;
+}) => {
+  const ts = params.timestamp ? new Date(params.timestamp).toISOString() : '';
+  const key = [params.phone || '', params.emisor || '', params.type || '', ts, params.text || ''].join('|');
+  return `sock_${hashString(key)}`;
+};
+
 // Dedupe helper to avoid duplicated IDs in UI
 const dedupeMessages = (msgs: any[]) => {
   const seen = new Set<string | number>();
   return msgs.filter((m: any) => {
-    const key = m.id ?? `${m.text}-${m.date}`;
+    const ts = m.date ? new Date(m.date).getTime() : 0;
+    const bucket = ts ? Math.floor(ts / 5000) : 0;
+    const textKey = typeof m.text === 'string' ? m.text.trim() : JSON.stringify(m.text ?? '');
+    const key = m.id ?? `${textKey}-${m.sent ? 'sent' : 'recv'}-${bucket}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const dedupeDisplayMessages = (msgs: any[]) => {
+  const seen = new Set<string>();
+  return msgs.filter((m: any) => {
+    const ts = m.date ? new Date(m.date).getTime() : 0;
+    const bucket = ts ? Math.floor(ts / 5000) : 0;
+    const textKey = typeof m.text === 'string' ? m.text.trim() : JSON.stringify(m.text ?? '');
+    const key = `${textKey}-${m.sent ? 'sent' : 'recv'}-${bucket}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -336,19 +436,16 @@ const dedupeMessages = (msgs: any[]) => {
         
         // Mapear los datos del backend a la estructura esperada por la UI
         const mappedChats = chats.map((chat: any) => {
-          // Normalizar último mensaje: si es objeto JSON, extraer el texto
-          let lastMessage = chat.ultimo_mensaje || '';
-          if (typeof lastMessage === 'object') {
-            // Si es un objeto, intentar extraer el campo 'cuerpo' o convertir a JSON string
-            lastMessage = lastMessage.cuerpo || JSON.stringify(lastMessage);
-          }
+          const rawLastMessage = chat.ultimo_mensaje?.cuerpo ?? chat.ultimo_mensaje ?? '';
+          const normalizedLast = normalizeMessageContent(rawLastMessage);
           
           return {
             id: chat.id,
             name: chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono,
             phone: chat.telefono,
-            lastMessage: lastMessage,
+            lastMessage: normalizedLast.preview,
             lastMessageDate: chat.ultimo_mensaje_fecha || new Date().toISOString(),
+            lastUserInteraction: chat.ultima_interaccion || null,
             time: chat.ultimo_mensaje_fecha ? formatTime(new Date(chat.ultimo_mensaje_fecha)) : '',
             unread: chat.mensajes_no_leidos || 0,
             avatar: getInitials(chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono),
@@ -387,30 +484,16 @@ const dedupeMessages = (msgs: any[]) => {
     const handleNewMessage = (data: any) => {
       // Normalizar datos del socket: mapear campos de BD a campos esperados
       // IMPORTANTE: Asegurar que 'mensaje' siempre sea un string, no un objeto
-      let messageText = '';
-      if (typeof data.mensaje === 'string') {
-        messageText = data.mensaje;
-      } else if (data.mensaje && typeof data.mensaje === 'object') {
-        // Si es un objeto, intentar extraer cuerpo o usar el primer campo de texto que encuentre
-        const msg = data.mensaje as any;
-        messageText = msg.cuerpo || msg.text || msg.contenido || msg.body || '';
-        // Si aún no tiene texto, buscar en todos los valores del objeto
-        if (!messageText) {
-          for (const key in msg) {
-            if (typeof msg[key] === 'string' && msg[key].length > 0) {
-              messageText = msg[key];
-              break;
-            }
-          }
-        }
-      } else if (typeof data.cuerpo === 'string') {
-        messageText = data.cuerpo;
-      }
-      
-      // Si aún está vacío, usar el objeto como string (último recurso)
-      if (!messageText && data.mensaje) {
-        messageText = typeof data.mensaje === 'string' ? data.mensaje : JSON.stringify(data.mensaje);
-      }
+      const rawMessageContent =
+        data.cuerpo ??
+        (data.mensaje && typeof data.mensaje === 'object'
+          ? (data.mensaje.cuerpo || data.mensaje.text || data.mensaje.contenido || data.mensaje.body || data.mensaje)
+          : data.mensaje) ??
+        '';
+      const normalizedContent = normalizeMessageContent(rawMessageContent);
+      const messageText = normalizedContent.text;
+      const messagePreview = normalizedContent.preview;
+      const messageType = normalizeMessageType(data.tipo, normalizedContent.type);
       
       // Normalizar nombre: si es objeto JSON, convertir a string
       let nombre = data.nombre || '';
@@ -418,11 +501,18 @@ const dedupeMessages = (msgs: any[]) => {
         nombre = JSON.stringify(nombre);
       }
       
+      const stableId = data.id || buildStableMessageId({
+        phone: data.telefono || data.cliente_telefono,
+        timestamp: data.timestamp || data.fecha,
+        emisor: data.emisor,
+        text: messageText,
+        type: messageType
+      });
       const newMsg = {
-        id: data.id,
+        id: stableId,
         telefono: data.telefono || data.cliente_telefono,
         mensaje: messageText,  // Siempre un string normalizado
-        tipo: data.tipo || 'text',
+        tipo: messageType,
         emisor: data.emisor,
         timestamp: data.timestamp || data.fecha,
         url_archivo: data.url_archivo,
@@ -436,6 +526,13 @@ const dedupeMessages = (msgs: any[]) => {
       console.log('📨 Nuevo mensaje recibido del socket:', newMsg);
       console.log('📱 Teléfono del mensaje:', newMsg.telefono);
       console.log('💬 Contenido normalizado:', messageText);
+      console.log('⏰ Timestamp RAW:', data.timestamp, 'fecha:', data.fecha);
+      console.log('⏰ newMsg.timestamp:', newMsg.timestamp);
+      
+      // SAFEGUARD: Si no tiene ID real del backend, es probable que sea duplicado
+      if (!data.id) {
+        console.warn('⚠️ Mensaje sin ID del backend, usando ID estable:', stableId);
+      }
       
       setConversationsState(prev => {
         console.log('📋 Conversaciones actuales:', prev.length);
@@ -454,9 +551,13 @@ const dedupeMessages = (msgs: any[]) => {
           
           // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
-            const msgTimestamp = new Date(newMsg.timestamp || new Date());
+            const msgTimestamp = parseMessageDate(newMsg.timestamp);
+            console.log('⏰ msgTimestamp parseado:', msgTimestamp.toISOString());
             // newMsg.mensaje ya está normalizado a string en handleNewMessage
             const incomingText = newMsg.mensaje;
+            const incomingTextKey = typeof incomingText === 'string' ? incomingText.trim() : JSON.stringify(incomingText ?? '');
+            const incomingBucket = Math.floor(msgTimestamp.getTime() / 5000);
+            const incomingSent = newMsg.emisor !== 'usuario';
             
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
             const messageExists = chat.messages.some((m: any) => {
@@ -465,8 +566,9 @@ const dedupeMessages = (msgs: any[]) => {
               
               // Verificar por texto y timestamp cercano (mismo mensaje en los últimos 5 seg)
               const mTimestamp = new Date(m.date);
-              const diffSeconds = Math.abs((msgTimestamp.getTime() - mTimestamp.getTime()) / 1000);
-              return m.text === incomingText && diffSeconds < 5;
+              const mBucket = Math.floor(mTimestamp.getTime() / 5000);
+              const mTextKey = typeof m.text === 'string' ? m.text.trim() : JSON.stringify(m.text ?? '');
+              return mTextKey === incomingTextKey && mBucket === incomingBucket && m.sent === incomingSent;
             });
             
             if (!messageExists) {
@@ -480,16 +582,11 @@ const dedupeMessages = (msgs: any[]) => {
                 : null;
               
               if (existingOptimisticMsg) {
-                // Actualizar solo el ID, mantener el timestamp original (forzar nuevo estado)
+                // Actualizar solo el ID, mantener el timestamp original (crear nuevo array)
                 console.log('🔄 Actualizando ID del mensaje optimista:', existingOptimisticMsg.id, '→', newMsg.id);
-                const msgIndex = chat.messages.findIndex((m: any) => m === existingOptimisticMsg);
-                if (msgIndex !== -1) {
-                  chat.messages[msgIndex] = {
-                    ...existingOptimisticMsg,
-                    id: newMsg.id,
-                    read: true
-                  };
-                }
+                chat.messages = chat.messages.map((m: any) => 
+                  m === existingOptimisticMsg ? { ...existingOptimisticMsg, id: newMsg.id, read: true } : m
+                );
               } else {
                 // Agregar nuevo mensaje
                 const messageText = incomingText;
@@ -497,7 +594,7 @@ const dedupeMessages = (msgs: any[]) => {
                   id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
                   text: messageText || '',
                   time: formatTime(msgTimestamp),
-                  date: newMsg.timestamp || msgTimestamp.toISOString(),
+                  date: msgTimestamp.toISOString(),
                   sent: newMsg.emisor !== 'usuario',
                   read: true,
                   type: newMsg.tipo || 'text',
@@ -510,27 +607,35 @@ const dedupeMessages = (msgs: any[]) => {
                 console.log('➕ Agregando mensaje:', { id: mappedMessage.id, sent: mappedMessage.sent, emisor: newMsg.emisor, texto: previewText });
                 
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
-                chat.messages = dedupeMessages([...chat.messages, mappedMessage].sort((a: any, b: any) => 
-                  new Date(a.date).getTime() - new Date(b.date).getTime()
-                ));
-                console.log('📅 Mensajes ordenados por fecha');
-                
-                // También agregar al caché de memoria
-                setAllMessagesCache(prev => {
-                  const phoneCache = prev[chat.phone] || [];
-                  const updatedCache = dedupeMessages([...phoneCache, mappedMessage].sort((a: any, b: any) => 
+                const existingIds = new Set(chat.messages.map((m: any) => m.id));
+                if (!existingIds.has(mappedMessage.id)) {
+                  chat.messages = dedupeMessages([...chat.messages, mappedMessage].sort((a: any, b: any) => 
                     new Date(a.date).getTime() - new Date(b.date).getTime()
                   ));
-                  console.log('💾 Mensaje agregado al caché de memoria');
-                  return { ...prev, [chat.phone]: updatedCache };
-                });
-                
-                // Incrementar contador solo si es mensaje del usuario Y no es del operador
-                const emisorLimpio = (newMsg.emisor || '').trim().toLowerCase();
-                const isUserMessage = emisorLimpio === 'usuario';
-                if (isUserMessage) {
-                  chat.unread = (chat.unread || 0) + 1;
-                  console.log('📫 Contador incrementado:', chat.unread);
+                  console.log('📅 Mensaje agregado y ordenado por fecha, total:', chat.messages.length);
+                  
+                  // También agregar al caché de memoria
+                  setAllMessagesCache(prev => {
+                    const phoneCache = prev[chat.phone] || [];
+                    const cacheIds = new Set(phoneCache.map((m: any) => m.id));
+                    if (!cacheIds.has(mappedMessage.id)) {
+                      const updatedCache = dedupeMessages([...phoneCache, mappedMessage].sort((a: any, b: any) => 
+                        new Date(a.date).getTime() - new Date(b.date).getTime()
+                      ));
+                      console.log('💾 Mensaje agregado al caché de memoria');
+                      return { ...prev, [chat.phone]: updatedCache };
+                    }
+                    return prev;
+                  });
+                  
+                  // Incrementar contador solo si es mensaje del usuario Y no es del operador
+                  const isUserMessage = emisorLimpio === 'usuario';
+                  if (isUserMessage) {
+                    chat.unread = (chat.unread || 0) + 1;
+                    console.log('📫 Contador incrementado:', chat.unread);
+                  }
+                } else {
+                  console.log('⏭️ ID ya existe en mensajes, ignorando:', mappedMessage.id);
                 }
               }
             } else {
@@ -540,10 +645,10 @@ const dedupeMessages = (msgs: any[]) => {
           
           // Actualizar último mensaje y traer al frente
           // newMsg.mensaje ya está normalizado a string en la parte superior de handleNewMessage
-          chat.lastMessage = newMsg.mensaje || '[Mensaje sin contenido]';
+          chat.lastMessage = messagePreview || newMsg.mensaje || '[Mensaje sin contenido]';
           console.log('✉️ LastMessage actualizado:', { lastMessage: chat.lastMessage, tipo: typeof chat.lastMessage });
-          chat.lastMessageDate = newMsg.timestamp || new Date().toISOString();
-          chat.time = formatTime(new Date(newMsg.timestamp || new Date()));
+          chat.lastMessageDate = msgTimestamp.toISOString();
+          chat.time = formatTime(msgTimestamp);
           
           // Mover al inicio del array
           updated.splice(existingChatIndex, 1);
@@ -553,13 +658,15 @@ const dedupeMessages = (msgs: any[]) => {
         } else {
           // Crear nueva conversación
           const messageText = typeof newMsg.mensaje === 'string' ? newMsg.mensaje : JSON.stringify(newMsg.mensaje || '');
+          const messagePreview = normalizeMessageContent(messageText).preview;
+          const msgTimestamp = parseMessageDate(newMsg.timestamp);
           const newChat = {
             id: Date.now(),
             name: newMsg.nombre || newMsg.telefono,
             phone: newMsg.telefono,
-            lastMessage: messageText || '',
-            lastMessageDate: newMsg.timestamp || new Date().toISOString(),
-            time: formatTime(new Date(newMsg.timestamp || new Date())),
+            lastMessage: messagePreview || messageText || '',
+            lastMessageDate: msgTimestamp.toISOString(),
+            time: formatTime(msgTimestamp),
             unread: newMsg.emisor === 'usuario' ? 1 : 0,
             avatar: getInitials(newMsg.nombre || newMsg.telefono),
             profilePic: null, // Se actualizará con la foto de perfil cuando se recarguen los chats
@@ -571,8 +678,8 @@ const dedupeMessages = (msgs: any[]) => {
             messages: [{
               id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
               text: messageText || '',
-              time: formatTime(new Date(newMsg.timestamp || new Date())),
-              date: newMsg.timestamp || new Date().toISOString(),
+              time: formatTime(msgTimestamp),
+              date: msgTimestamp.toISOString(),
               sent: newMsg.emisor !== 'usuario',
               read: true,
               type: newMsg.tipo || 'text',
@@ -750,15 +857,25 @@ const dedupeMessages = (msgs: any[]) => {
             console.log('🔍 Mensaje:', { id: msg.id, emisor: emisor, cuerpo: msg.cuerpo?.substring(0, 30) });
             const sent = emisor !== 'usuario';
             console.log('📍 sent =', sent, '(emisor limpio:', emisor, ')');
+            const normalizedContent = normalizeMessageContent(msg.cuerpo ?? msg.mensaje ?? '');
+            const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
+            const msgDate = parseMessageDate(msg.fecha);
+            const stableId = msg.id || buildStableMessageId({
+              phone: currentChat.phone,
+              timestamp: msgDate.toISOString(),
+              emisor: msg.emisor,
+              text: normalizedContent.text,
+              type: normalizedType
+            });
             
             return {
-              id: msg.id,
-              text: msg.cuerpo || '',
-              time: formatTime(new Date(msg.fecha)),
-              date: msg.fecha,
+              id: stableId,
+              text: normalizedContent.text || '',
+              time: formatTime(msgDate),
+              date: msgDate.toISOString(),
               sent: sent,
               read: true,
-              type: msg.tipo || 'text',
+              type: normalizedType,
               fileUrl: msg.url_archivo,
               filename: msg.archivo_nombre,
               size: msg.archivo_tamanio,
@@ -771,14 +888,24 @@ const dedupeMessages = (msgs: any[]) => {
           // Guardar TODOS los mensajes mapeados en caché de memoria
           const allMappedMessages = allMessages.map((msg: any) => {
             const emisor = (msg.emisor || '').trim();
+            const normalizedContent = normalizeMessageContent(msg.cuerpo ?? msg.mensaje ?? '');
+            const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
+            const msgDate = parseMessageDate(msg.fecha);
+            const stableId = msg.id || buildStableMessageId({
+              phone: currentChat.phone,
+              timestamp: msgDate.toISOString(),
+              emisor: msg.emisor,
+              text: normalizedContent.text,
+              type: normalizedType
+            });
             return {
-              id: msg.id,
-              text: msg.cuerpo || '',
-              time: formatTime(new Date(msg.fecha)),
-              date: msg.fecha,
+              id: stableId,
+              text: normalizedContent.text || '',
+              time: formatTime(msgDate),
+              date: msgDate.toISOString(),
               sent: emisor !== 'usuario',
               read: true,
-              type: msg.tipo || 'text',
+              type: normalizedType,
               fileUrl: msg.url_archivo,
               filename: msg.archivo_nombre,
               size: msg.archivo_tamanio,
@@ -1418,10 +1545,12 @@ const dedupeMessages = (msgs: any[]) => {
   const getFilteredMessages = () => {
     if (selectedChat === null) return [];
     const chat = conversationsState[selectedChat];
-    if (!chatSearchText.trim()) return chat.messages;
-    return chat.messages.filter((msg: any) => 
-      msg.text.toLowerCase().includes(chatSearchText.toLowerCase())
-    );
+    const base = !chatSearchText.trim()
+      ? chat.messages
+      : chat.messages.filter((msg: any) =>
+          msg.text.toLowerCase().includes(chatSearchText.toLowerCase())
+        );
+    return dedupeDisplayMessages(base);
   };
 
   const updatePadronField = (field: 'number' | 'location' | 'debtStatus', value: string) => {
@@ -1587,6 +1716,11 @@ const dedupeMessages = (msgs: any[]) => {
           {filteredConversations.map((conv, idx) => {
             // Determinar si la sesión está vencida
             const sessionExpiredForChat = (() => {
+              if (conv.lastUserInteraction) {
+                const lastUser = new Date(conv.lastUserInteraction);
+                const diffMs = Date.now() - lastUser.getTime();
+                return diffMs > 24 * 60 * 60 * 1000;
+              }
               if (!conv.messages || conv.messages.length === 0) return false;
               for (let i = conv.messages.length - 1; i >= 0; i--) {
                 const m = conv.messages[i];
@@ -1601,7 +1735,7 @@ const dedupeMessages = (msgs: any[]) => {
 
             return (
             <div
-              key={conv.id}
+              key={conv.id ?? conv.phone ?? idx}
               onContextMenu={(e) => openContextMenu(e, 'chat', conv.id)}
               onClick={() => {
                 const originalIndex = conversationsState.findIndex((c) => c.id === conv.id);

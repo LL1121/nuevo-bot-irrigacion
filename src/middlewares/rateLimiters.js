@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 
 /**
  * Rate limiter general para API (por IP)
@@ -6,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // limit each IP to 100 requests per window
+  keyGenerator: ipKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -17,6 +19,7 @@ const authLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 5, // limit each IP to 5 login requests per window
   message: 'Too many login attempts, please try again later.',
+  keyGenerator: ipKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -30,7 +33,7 @@ const operatorRateLimiter = rateLimit({
   max: 10, // máximo 10 mensajes por minuto por operador
   keyGenerator: (req) => {
     // Usar ID del operador del JWT si está disponible
-    return req.user?.id ? `operator_${req.user.id}` : req.ip;
+    return req.user?.id ? `operator_${req.user.id}` : ipKeyGenerator(req);
   },
   message: 'Demasiados mensajes enviados. Por favor espera un momento.',
   standardHeaders: true,
