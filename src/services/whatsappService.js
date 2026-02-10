@@ -1,6 +1,7 @@
 require('dotenv').config();
 const axios = require('axios');
-const axiosRetry = require('axios-retry');
+const axiosRetry = require('axios-retry').default;
+const { isNetworkOrIdempotentRequestError } = require('axios-retry');
 const { validateFileIntegrity } = require('./fileValidator');
 const { withWhatsAppRetry } = require('./retryService');
 
@@ -19,7 +20,7 @@ axiosRetry(axiosClient, {
   retryDelay: (retryCount) => retryCount * 1000, // 1s, 2s, 3s
   retryCondition: (error) => {
     // Retry on network errors or server errors (5xx), but not client errors (4xx)
-    return axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+    return isNetworkOrIdempotentRequestError(error) ||
            (error.response?.status >= 500);
   }
 });

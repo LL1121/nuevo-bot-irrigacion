@@ -120,7 +120,7 @@ const receiveMessage = async (req, res) => {
 
         console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${tipoMensaje})`);
 
-        // Guardar mensaje del usuario en segundo plano (sin bloquear) y EMITIR inmediatamente
+        // Guardar mensaje del usuario en segundo plano (sin bloquear)
         const persistIncoming = async () => {
           try {
             let storedUrl = mediaUrl;
@@ -132,33 +132,29 @@ const receiveMessage = async (req, res) => {
               }
             }
 
-            await mensajeService.guardarMensaje({
+            const mensajeGuardado = await mensajeService.guardarMensaje({
               telefono: from,
               tipo: tipoMensaje,
               cuerpo: messageBody,
               url_archivo: storedUrl,
               emisor: 'usuario'
             });
+            
+            // ✅ Emitir al frontend CON el ID del mensaje guardado
+            if (global.io) {
+              global.io.emit('nuevo_mensaje', {
+                id: mensajeGuardado.id, // ✅ INCLUIR ID
+                telefono: from,
+                mensaje: messageBody,
+                emisor: 'usuario',
+                tipo: tipoMensaje,
+                timestamp: mensajeGuardado.fecha
+              });
+            }
           } catch (error) {
             console.error('❌ Error al guardar mensaje del cliente:', error);
           }
         };
-
-        // Emitir al frontend antes de responder (para mantener orden correcto)
-        if (global.io) {
-          global.io.emit('nuevo_mensaje', {
-            telefono: from,
-            mensaje: messageBody,
-            emisor: 'usuario',
-            tipo: tipoMensaje,
-            timestamp: new Date()
-          });
-        }
-
-        // Lanzar persistencia en segundo plano
-        persistIncoming().catch(error => {
-          console.error('❌ Error en persistIncoming background:', error);
-        });
 
         // ============================================
         // VERIFICAR ESTADO DEL BOT ANTES DE RESPONDER
@@ -181,6 +177,9 @@ const receiveMessage = async (req, res) => {
           return res.sendStatus(200);
         }
 
+        // ✅ Esperar a que se guarde el mensaje ANTES de procesar
+        await persistIncoming();
+
         // Inicializar estado del usuario si no existe
         if (!userStates[from]) {
           userStates[from] = { step: 'START', padron: null, nombreCliente: cliente?.nombre_whatsapp || pushName, esClienteNuevo };
@@ -188,8 +187,6 @@ const receiveMessage = async (req, res) => {
 
         // Procesar mensaje según el estado actual
         await handleUserMessage(from, messageBody);
-
-        // Persistencia lanzada antes, no repetir aquí
       }
 
       // Siempre responder con 200 OK
@@ -322,7 +319,7 @@ const sendMenuList = async (from) => {
   };
   
   // Guardar en BD y emitir a frontend SIN reenviar el JSON por WhatsApp
-  await mensajeService.guardarMensaje({
+  const mensajeGuardado = await mensajeService.guardarMensaje({
     telefono: from,
     tipo: 'interactive',
     cuerpo: JSON.stringify(menuData),
@@ -332,15 +329,16 @@ const sendMenuList = async (from) => {
   
   if (global.io) {
     global.io.emit('nuevo_mensaje', {
+      id: mensajeGuardado.id,
       telefono: from,
       mensaje: JSON.stringify(menuData),
       emisor: 'bot',
       tipo: 'interactive',
-      timestamp: new Date()
+      timestamp: mensajeGuardado.fecha
     });
   }
   
-  console.log(`📋 Lista de menú enviada a ${from}`);
+  console.log(`📋 Lista de menú enviada a ${from} (ID: ${mensajeGuardado.id})`);
 };
 
 /**
@@ -849,8 +847,8 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
     // 1. Enviar a WhatsApp
     await whatsappService.sendMessage(telefono, mensaje);
     
-    // 2. Guardar en BD
-    await mensajeService.guardarMensaje({
+    // 2. Guardar en BD (retorna el objeto con ID)
+    const mensajeGuardado = await mensajeService.guardarMensaje({
       telefono,
       tipo,
       cuerpo: mensaje,
@@ -858,18 +856,19 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
       url_archivo: null
     });
     
-    // 3. Emitir evento Socket.io
+    // 3. Emitir evento Socket.io CON EL ID DEL MENSAJE
     if (global.io) {
       global.io.emit('nuevo_mensaje', {
+        id: mensajeGuardado.id, // ✅ INCLUIR ID DEL MENSAJE
         telefono,
         mensaje,
         emisor: 'bot',
         tipo,
-        timestamp: new Date()
+        timestamp: mensajeGuardado.fecha
       });
     }
     
-    console.log(`✅ Mensaje enviado y guardado: ${telefono}`);
+    console.log(`✅ Mensaje enviado y guardado: ${telefono} (ID: ${mensajeGuardado.id})`);
     return true;
   } catch (error) {
     console.error('❌ Error en sendMessageAndSave:', error);
