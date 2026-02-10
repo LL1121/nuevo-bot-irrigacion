@@ -135,11 +135,15 @@ const enviarMensaje = async (req, res) => {
       emisor: 'operador'
     });
 
-    // Emitir evento en tiempo real
+    // Emitir evento en tiempo real CON ID
     if (global.io) {
       global.io.emit('nuevo_mensaje', {
+        id: mensajeGuardado.id,
         telefono,
-        mensaje: mensajeGuardado,
+        mensaje: mensajeGuardado.cuerpo,
+        emisor: 'operador',
+        tipo: 'text',
+        timestamp: mensajeGuardado.fecha,
         operador
       });
     }
