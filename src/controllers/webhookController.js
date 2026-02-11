@@ -391,6 +391,7 @@ const sendMenuList = async (from, isFollowUp = false) => {
         { id: 'boleto',          title: '📦 Pedir Boleto' },
         { id: 'vencimientos',    title: '📅 Consultar Vencimientos' },
         { id: 'pedido_agua',     title: '🚰 Pedido de Agua' },
+        { id: 'perforacion',     title: '🔧 Solicitar Perforación' },
         { id: 'renuncia',        title: '🧾 Tramitar Renuncia' },
         { id: 'turnos',          title: '🗓️ Consultar Turnos' },
         { id: 'operador',        title: '👤 Hablar con Operador' }
@@ -524,6 +525,11 @@ Presentate en nuestras oficinas con la documentación.`;
       break;
     }
 
+    case 'perforacion': {
+      await handleIniciarPerforacion(from);
+      break;
+    }
+
     case 'renuncia': {
       const renunciaText = `🧾 Tramitar Renuncia
 
@@ -563,6 +569,11 @@ Un operador humano te atenderá en breve.`;
         global.io.emit('bot_mode_changed', { telefono: from, bot_activo: false });
       }
       console.log(`👤 Derivado a operador y bot pausado para ${from}`);
+      break;
+    }
+
+    case 'iniciar_perforacion': {
+      await handleIniciarPerforacion(from);
       break;
     }
 
@@ -1761,6 +1772,36 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     const errorMsg = '❌ Ocurrió un error al generar el boleto. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
+  }
+};
+
+const handleIniciarPerforacion = async (from) => {
+  try {
+    const perforacionInfo = `🔧 *Solicitud de Perforación de Pozo*
+
+La extracción de aguas subterráneas está sujeta al control del Departamento General de Irrigación. Para obtener un permiso de perforación es necesario:
+
+✅ Ubicación de la propiedad
+✅ Presentar requisitos y formularios
+✅ Iniciar trámite en oficinas
+✅ Contratar profesional especializado
+✅ Determinar demanda hídrica
+
+*Plazo de construcción:* 6 meses máximo
+*Plazo de equipamiento:* 12 meses
+
+Para más información y requisitos, visitá:
+🔗 https://www.irrigacion.gov.ar/web/agua-subterranea-2/
+
+¿Necesitás ayuda con el trámite?`;
+    
+    await sendMessageAndSave(from, perforacionInfo);
+    await sendMenuList(from, true);
+    
+    console.log(`🔧 Info de perforación de subterránea enviada a ${from}`);
+  } catch (error) {
+    console.error('Error en handleIniciarPerforacion:', error);
+    await sendMessageAndSave(from, '❌ Error al mostrar información. Intenta de nuevo.');
   }
 };
 
