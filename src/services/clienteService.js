@@ -216,11 +216,104 @@ const esBotActivo = async (telefono) => {
   }
 };
 
+/**
+ * Obtener cliente con todos sus datos
+ * @param {string} telefono - Número de teléfono
+ * @returns {Object} Datos completos del cliente
+ */
+const obtenerCliente = async (telefono) => {
+  try {
+    const pool = getPool();
+    const [rows] = await pool.execute(
+      'SELECT * FROM clientes WHERE telefono = ?',
+      [telefono]
+    );
+    return rows.length > 0 ? rows[0] : null;
+  } catch (error) {
+    console.error('❌ Error obteniendo cliente:', error);
+    throw error;
+  }
+};
+
+/**
+ * Actualizar padrón superficial
+ * @param {string} telefono - Número de teléfono
+ * @param {string} codigoCauce - Código de cauce
+ * @param {string} numeroPadron - Número de padrón
+ */
+const actualizarPadronSuperficial = async (telefono, codigoCauce, numeroPadron) => {
+  try {
+    const pool = getPool();
+    const padronData = `${codigoCauce} ${numeroPadron}`;
+    
+    await pool.execute(
+      'UPDATE clientes SET padron_superficial = ?, tipo_consulta_preferido = ? WHERE telefono = ?',
+      [padronData, 'superficial', telefono]
+    );
+    
+    console.log(`✅ Padrón superficial actualizado para ${telefono}: ${padronData}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error actualizando padrón superficial:', error);
+    throw error;
+  }
+};
+
+/**
+ * Actualizar padrón subterráneo
+ * @param {string} telefono - Número de teléfono
+ * @param {string} codigoDepartamento - Código de departamento
+ * @param {string} numeroPozo - Número de pozo
+ */
+const actualizarPadronSubterraneo = async (telefono, codigoDepartamento, numeroPozo) => {
+  try {
+    const pool = getPool();
+    const padronData = `${codigoDepartamento} ${numeroPozo}`;
+    
+    await pool.execute(
+      'UPDATE clientes SET padron_subterraneo = ?, tipo_consulta_preferido = ? WHERE telefono = ?',
+      [padronData, 'subterraneo', telefono]
+    );
+    
+    console.log(`✅ Padrón subterráneo actualizado para ${telefono}: ${padronData}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error actualizando padrón subterráneo:', error);
+    throw error;
+  }
+};
+
+/**
+ * Actualizar padrón contaminación
+ * @param {string} telefono - Número de teléfono
+ * @param {string} numeroContaminacion - Número de contaminación
+ */
+const actualizarPadronContaminacion = async (telefono, numeroContaminacion) => {
+  try {
+    const pool = getPool();
+    
+    await pool.execute(
+      'UPDATE clientes SET padron_contaminacion = ?, tipo_consulta_preferido = ? WHERE telefono = ?',
+      [numeroContaminacion, 'contaminacion', telefono]
+    );
+    
+    console.log(`✅ Padrón contaminación actualizado para ${telefono}: ${numeroContaminacion}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error actualizando padrón contaminación:', error);
+    throw error;
+  }
+};
+
 module.exports = {
   obtenerOCrearCliente,
   obtenerTodosLosClientes,
   actualizarDni,
   obtenerDni,
   cambiarEstadoBot,
-  esBotActivo
+  esBotActivo,
+  obtenerCliente,
+  actualizarPadronSuperficial,
+  actualizarPadronSubterraneo,
+  actualizarPadronContaminacion
 };
