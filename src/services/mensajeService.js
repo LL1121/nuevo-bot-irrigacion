@@ -17,15 +17,37 @@ const guardarMensaje = async (data) => {
         tipo = 'text',
         cuerpo = '',
         url_archivo = null,
-        emisor = 'usuario'
+        emisor = 'usuario',
+        message_id = null
       } = data;
 
       console.log(`📨 Guardando mensaje + actualizando cliente en TRANSACCIÓN...`);
       
+      // DEDUP: Evitar guardar el mismo mensaje entrante dos veces
+      if (message_id) {
+        const [existing] = await connection.execute(
+          'SELECT id, cliente_telefono, tipo, cuerpo, url_archivo, emisor, fecha FROM mensajes WHERE message_id = ? LIMIT 1',
+          [message_id]
+        );
+        if (existing.length > 0) {
+          console.log(`   ⚠️ Mensaje duplicado ignorado (message_id: ${message_id})`);
+          const row = existing[0];
+          return {
+            id: row.id,
+            telefono: row.cliente_telefono,
+            tipo: row.tipo,
+            cuerpo: row.cuerpo,
+            url_archivo: row.url_archivo,
+            emisor: row.emisor,
+            fecha: row.fecha
+          };
+        }
+      }
+
       // OPERACIÓN 1: Guardar mensaje
       const [result] = await connection.execute(
-        'INSERT INTO mensajes (cliente_telefono, tipo, cuerpo, url_archivo, emisor) VALUES (?, ?, ?, ?, ?)',
-        [telefono, tipo, cuerpo, url_archivo, emisor]
+        'INSERT INTO mensajes (cliente_telefono, tipo, cuerpo, url_archivo, emisor, message_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [telefono, tipo, cuerpo, url_archivo, emisor, message_id]
       );
       console.log(`   ✅ Mensaje insertado - ID: ${result.insertId}`);
 

@@ -95,7 +95,7 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
     const config = {
       headers: {
         'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json; charset=utf-8'
       }
     };
 

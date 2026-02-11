@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX } from 'lucide-react';
+import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX, Clock } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
@@ -178,7 +178,7 @@ export default function App() {
     try {
       setReactivating(true);
       const token = localStorage.getItem(env.tokenKey);
-      await axios.post(`/api/chats/${currentChat.phone}/reactivate`, {}, {
+      await axios.post(`/api/chats/${currentChat.phone}/activate`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       // Marcar como enviada para este chat
@@ -314,6 +314,27 @@ const parseMessageDate = (value: any) => {
   if (!value) return new Date();
   const d = new Date(value);
   return isNaN(d.getTime()) ? new Date() : d;
+};
+
+// Formatear texto con estilos de WhatsApp: *negrita*, _cursiva_, ~tachado~, ```monospace```
+const formatWhatsAppText = (text: string): string => {
+  if (!text || typeof text !== 'string') return text;
+  
+  let formatted = text;
+  
+  // *negrita* → <strong>negrita</strong>
+  formatted = formatted.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
+  
+  // _cursiva_ → <em>cursiva</em>
+  formatted = formatted.replace(/_([^_]+)_/g, '<em>$1</em>');
+  
+  // ~tachado~ → <del>tachado</del>
+  formatted = formatted.replace(/~([^~]+)~/g, '<del>$1</del>');
+  
+  // ```monospace``` → <code>monospace</code>
+  formatted = formatted.replace(/```([^`]+)```/g, '<code class="bg-black/10 dark:bg-white/10 px-1 rounded">$1</code>');
+  
+  return formatted;
 };
 
 const hashString = (value: string) => {
@@ -609,9 +630,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
                 const existingIds = new Set(chat.messages.map((m: any) => m.id));
                 if (!existingIds.has(mappedMessage.id)) {
-                  chat.messages = dedupeMessages([...chat.messages, mappedMessage].sort((a: any, b: any) => 
-                    new Date(a.date).getTime() - new Date(b.date).getTime()
-                  ));
+                  const sortedMessages = dedupeMessages([...chat.messages, mappedMessage]).sort((a: any, b: any) => {
+                    const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+                    // Si las fechas son iguales, ordenar por ID como desempate
+                    return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
+                  });
+                  // Mantener solo los últimos messagesLimit mensajes en UI
+                  chat.messages = sortedMessages.slice(-messagesLimit);
                   console.log('📅 Mensaje agregado y ordenado por fecha, total:', chat.messages.length);
                   
                   // También agregar al caché de memoria
@@ -619,8 +644,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     const phoneCache = prev[chat.phone] || [];
                     const cacheIds = new Set(phoneCache.map((m: any) => m.id));
                     if (!cacheIds.has(mappedMessage.id)) {
-                      const updatedCache = dedupeMessages([...phoneCache, mappedMessage].sort((a: any, b: any) => 
-                        new Date(a.date).getTime() - new Date(b.date).getTime()
+                      const updatedCache = dedupeMessages([...phoneCache, mappedMessage].sort((a: any, b: any) => {
+                        const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+                        return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
+                      }
                       ));
                       console.log('💾 Mensaje agregado al caché de memoria');
                       return { ...prev, [chat.phone]: updatedCache };
@@ -785,13 +812,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       const timer = setTimeout(() => {
         const messagesEnd = document.getElementById('messages-end');
         if (messagesEnd) {
-          messagesEnd.scrollIntoView({ behavior: 'auto', block: 'end' });
+          messagesEnd.scrollIntoView({ behavior: 'smooth', block: 'end' });
           console.log('📜 Auto-scroll ejecutado');
         }
-      }, 100);
+      }, 50);
       return () => clearTimeout(timer);
     }
-  }, [currentChat?.messages?.length, selectedChat]);
+  }, [currentChat?.messages, selectedChat]);
 
   // Persist preferences to storage
   useEffect(() => {
@@ -912,9 +939,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               duration: msg.duracion
             };
           });
-          const sortedAllMessages = [...allMappedMessages].sort((a: any, b: any) =>
-            new Date(a.date).getTime() - new Date(b.date).getTime()
-          );
+          const sortedAllMessages = [...allMappedMessages].sort((a: any, b: any) => {
+            const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+            // Si las fechas son iguales, ordenar por ID como desempate
+            return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
+          });
           
           // Guardar en caché de memoria
           setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages }));
@@ -1047,6 +1076,18 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       setInfoPanelClosing(false);
     }, 300); // Duración de la animación slideOutRight
   };
+
+  // Mantener selectedChat válido cuando cambia la lista
+  useEffect(() => {
+    if (selectedChat === null) return;
+    if (!conversationsState.length) {
+      setSelectedChat(null);
+      return;
+    }
+    if (!conversationsState[selectedChat]) {
+      setSelectedChat(Math.max(0, conversationsState.length - 1));
+    }
+  }, [conversationsState, selectedChat]);
   
   // Funciones para control del bot
   const pauseBot = async (phone: string) => {
@@ -1162,7 +1203,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         
         // Enviar al backend
         try {
-          const response = await axios.post('/api/messages', {
+          const response = await axios.post('/api/send', {
             telefono: currentChat.phone,
             mensaje: messageText,
             operador: 'Panel Frontend'
@@ -1191,12 +1232,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 if (!msgAlreadyUpdated) {
                   // Solo actualizar si el socket aún no lo hizo
                   updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
-                    m.id === tempId ? { ...m, id: response.data.message.id, status: 'sent', read: true } : m
+                    m.id === tempId ? { ...m, id: response.data.message.id, status: undefined, read: true } : m
                   );
                   updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
                   console.log('🔄 ID actualizado por POST response:', tempId, '→', response.data.message.id);
                 } else {
-                  console.log('✅ ID ya fue actualizado por socket, ignorando POST response');
+                  // Limpiar el status del mensaje temporal si existe
+                  updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
+                    m.id === tempId ? { ...m, status: undefined } : m
+                  );
+                  console.log('✅ ID ya fue actualizado por socket, limpiando status temporal');
                 }
               }
               return updated;
@@ -1274,8 +1319,30 @@ const dedupeDisplayMessages = (msgs: any[]) => {
   };
 
   const deleteConversationById = (id: number) => {
-    setConversationsState(prev => prev.filter((c: any) => c.id !== id));
-    if (currentChat?.id === id) setSelectedChat(0);
+    setConversationsState(prev => {
+      const indexToDelete = prev.findIndex((c: any) => c.id === id);
+      const filtered = prev.filter((c: any) => c.id !== id);
+
+      setSelectedChat((currentIdx) => {
+        if (currentIdx === null) return null;
+        if (indexToDelete === -1) return currentIdx;
+
+        if (currentIdx === indexToDelete) {
+          if (filtered.length === 0) return null;
+          return Math.min(indexToDelete, filtered.length - 1);
+        }
+
+        if (currentIdx > indexToDelete) {
+          const shifted = currentIdx - 1;
+          return shifted < filtered.length ? shifted : filtered.length - 1;
+        }
+
+        return currentIdx < filtered.length ? currentIdx : filtered.length - 1;
+      });
+
+      return filtered;
+    });
+
     setContextMenu({ visible: false, x: 0, y: 0, type: null });
   };
 
@@ -1560,7 +1627,8 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       : chat.messages.filter((msg: any) =>
           msg.text.toLowerCase().includes(chatSearchText.toLowerCase())
         );
-    return dedupeDisplayMessages(base);
+    // No aplicar dedupe en display, ya se aplicó al agregar
+    return base;
   };
 
   const updatePadronField = (field: 'number' | 'location' | 'debtStatus', value: string) => {
@@ -1632,10 +1700,12 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     if (selectedChat === null) return;
     setConversationsState((prev) => {
       const next = prev.filter((_, idx) => idx !== selectedChat);
-      return next.length ? next : prev; // avoid empty for demo
+      return next;
     });
     setSelectedChat((idx) => {
       if (idx === null) return null;
+      // Si el índice eliminado era el último, ir al anterior
+      // Si no, mantener el mismo índice (que ahora apunta al siguiente chat)
       return Math.max(0, idx - 1);
     });
     setShowMenu(false);
@@ -1891,7 +1961,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   </div>
                   {(() => {
                     // Calcular tiempo para expiración
-                    const lastUserMsg = currentChat.messages?.reverse().find((m: any) => m.sent === false)?.date;
+                    const lastUserMsg = [...(currentChat.messages || [])].reverse().find((m: any) => m.sent === false)?.date;
                     if (!lastUserMsg) return null;
                     const lastUser = new Date(lastUserMsg);
                     const diffMs = Date.now() - lastUser.getTime();
@@ -1978,6 +2048,19 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   onClick={markResolved}
                 >
                   Marcar como atendida
+                </button>
+                <button
+                  className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700"
+                  onClick={async () => {
+                    if (currentChat?.phone) {
+                      await activateBot(currentChat.phone);
+                      setShowMenu(false);
+                      toast.success('Bot reactivado');
+                    }
+                  }}
+                  style={{ color: themeColors[theme].hex }}
+                >
+                  🤖 Reactivar Bot
                 </button>
                 <button
                   className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
@@ -2728,7 +2811,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         
                         return (
                           <>
-                            <p className="text-sm">{displayText}</p>
+                            <p 
+                              className="text-sm whitespace-pre-wrap" 
+                              dangerouslySetInnerHTML={{ __html: formatWhatsAppText(displayText) }}
+                            />
                             {isTruncated && (
                               <button
                                 onClick={(e) => {
@@ -2752,9 +2838,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         <span className="text-xs">{msg.time}</span>
                         {msg.sent && (() => {
                           if ((msg as any).status === 'sending') {
-                            return <span className="text-xs opacity-60 italic">Enviando...</span>;
+                            return <Check size={14} className="opacity-60" />;
                           }
-                          return msg.read ? <CheckCheck size={14} /> : <Check size={14} />;
+                          return <CheckCheck size={14} />;
                         })()}
                       </div>
                     </div>
