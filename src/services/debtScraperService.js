@@ -3,7 +3,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const puppeteer = require('puppeteer');
 
-const BASE_URL = 'https://www.irrigacion.gov.ar/';
+const BASE_URL = 'https://autogestion.cloud.irrigacion.gov.ar/dni';
 const DOWNLOAD_DIR = path.resolve(__dirname, '../../public/temp');
 const DOWNLOAD_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
@@ -79,10 +79,40 @@ function delay(ms) {
 }
 
 /**
- * Scrapea deuda e intenta descargar boleto PDF para un DNI/CUIT dado.
- * Retorna { success, data: { titular, cuit, hectareas, deuda, servicio }, pdfPath }
+ * Scrapea deuda del servicio desde el sistema de autogestión de Irrigación.
+ * Retorna { success, data: { titular, cuit, hectareas, capital, interes, apremio, eventuales, total, servicio }, pdfPath }
  */
 async function obtenerDeudaYBoleto(dni) {
+  const MAX_INTENTOS = 3;
+  
+  for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
+    try {
+      console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerDeudaYBoleto con DNI ${dni}`);
+      const resultado = await _scrapeDeudaYBoleto(dni);
+      return resultado;
+    } catch (error) {
+      console.error(`❌ Intento ${intento} falló:`, error.message);
+      
+      if (intento < MAX_INTENTOS) {
+        // Esperar antes de reintentar (aumentar tiempo con cada intento)
+        const espera = intento * 2000;
+        console.log(`⏳ Esperando ${espera}ms antes de reintentar...`);
+        await delay(espera);
+      } else {
+        // Último intento falló
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+    }
+  }
+}
+
+/**
+ * Función interna que hace el scraping real
+ */
+async function _scrapeDeudaYBoleto(dni) {
   let browser;
   const relativePdfPath = `/temp/${dni}.pdf`;
   const absolutePdfPath = path.join(DOWNLOAD_DIR, `${dni}.pdf`);
@@ -91,9 +121,12 @@ async function obtenerDeudaYBoleto(dni) {
     // Auto-limpieza de archivos antiguos
     await cleanOldFiles();
 
-    browser = await puppeteer.launch({ headless: 'new' });
+    browser = await puppeteer.launch({ 
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
     const page = await browser.newPage();
-    await page.setDefaultTimeout(15000);
+    await page.setDefaultTimeout(20000);
 
     // Stealth mode: User-Agent
     await page.setUserAgent(USER_AGENT);
@@ -108,63 +141,118 @@ async function obtenerDeudaYBoleto(dni) {
       downloadPath: DOWNLOAD_DIR
     });
 
-    // Ir al sitio
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
-
-    // Navegar por las opciones usando XPath por texto
-    await clickByText(page, ['Pagar', 'Descargar Boleto']);
-    await clickByText(page, ['Boleto Vigente']);
-    await clickByText(page, ['DNI', 'CUIT']);
-
-    // Completar DNI/CUIT (primer input de texto visible)
-    const inputXPath = "//input[not(@type) or @type='text']";
-    const [input] = await page.$x(inputXPath);
-    if (!input) throw new Error('No se encontró input de DNI/CUIT');
-    await input.click({ clickCount: 3 });
-    await input.type(String(dni));
-
-    // Click en Buscar
-    await clickByText(page, ['Buscar']);
-
-    // Esperar resultados con Promise.race (tabla vs error)
-    let monto = null;
-    const raceResult = await Promise.race([
-      page.waitForSelector('table', { timeout: 12000 }).then(() => 'success'),
-      page.waitForXPath("//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'no se encontraron') or contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verifique')]", { timeout: 12000 }).then(() => 'error')
-    ]).catch(() => 'timeout');
-
-    if (raceResult === 'error') {
-      return { success: false, error: 'DNI/CUIT no encontrado o inválido' };
-    }
-
-    if (raceResult === 'timeout') {
-      return { success: false, error: 'Timeout esperando resultados' };
-    }
+    console.log(`🔍 Navegando a ${BASE_URL}...`);
+    await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
 
     // ============================================
-    // EXTRACCIÓN DE DATOS COMPLETOS
+    // PASO 1: Buscar input con placeholder "Ingresar DNI/CUIT"
     // ============================================
+    console.log('📝 Buscando input de DNI/CUIT...');
+    await page.waitForSelector('input[placeholder*="Ingresar DNI"], input[placeholder*="DNI/CUIT"], input[type="text"]', { timeout: 10000 });
+    
+    const inputSelector = 'input[placeholder*="Ingresar DNI"], input[placeholder*="DNI/CUIT"], input[type="text"]';
+    await page.click(inputSelector, { clickCount: 3 });
+    await page.type(inputSelector, String(dni), { delay: 100 });
+    console.log(`✅ DNI ${dni} ingresado`);
+
+    // ============================================
+    // PASO 2: Click en "Buscar servicios asociados"
+    // ============================================
+    console.log('🔍 Buscando botón "Buscar servicios asociados"...');
+    await new Promise(r => setTimeout(r, 500));
+    
+    const buscarButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
+      return buttons.find(btn => 
+        /Buscar servicios asociados/i.test(btn.textContent || btn.value || '')
+      );
+    });
+    
+    if (!buscarButton || buscarButton.asElement() === null) {
+      throw new Error('No se encontró botón "Buscar servicios asociados"');
+    }
+    
+    await buscarButton.asElement().click();
+    console.log('✅ Click en "Buscar servicios asociados"');
+    
+    await new Promise(r => setTimeout(r, 2000));
+
+    // ============================================
+    // PASO 3: Verificar que aparecieron los recuadros (Cuota Anual/Bimestral)
+    // ============================================
+    console.log('🔍 Esperando resultados...');
+    
+    const tieneResultados = await page.evaluate(() => {
+      const bodyText = document.body.innerText.toLowerCase();
+      return bodyText.includes('cuota anual') || bodyText.includes('cuota bimestral');
+    });
+    
+    if (!tieneResultados) {
+      const noEncontrado = await page.evaluate(() => {
+        const bodyText = document.body.innerText.toLowerCase();
+        return bodyText.includes('no se encontr') || bodyText.includes('sin resultados');
+      });
+      
+      if (noEncontrado) {
+        return { success: false, error: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.' };
+      }
+      
+      throw new Error('No se encontraron servicios asociados al DNI');
+    }
+    
+    console.log('✅ Servicios encontrados');
+
+    // ============================================
+    // PASO 4: Click en "Consultar Deuda del Servicio"
+    // ============================================
+    console.log('🔍 Buscando botón "Consultar Deuda del Servicio"...');
+    await new Promise(r => setTimeout(r, 1000));
+    
+    const consultarButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, a'));
+      return buttons.find(btn => 
+        /Consultar Deuda del Servicio/i.test(btn.textContent || '')
+      );
+    });
+    
+    if (!consultarButton || consultarButton.asElement() === null) {
+      throw new Error('No se encontró botón "Consultar Deuda del Servicio"');
+    }
+    
+    // Click y esperar navegación
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
+      consultarButton.asElement().click()
+    ]);
+    
+    console.log('✅ Navegó a página de detalle de deuda');
+
+    // ============================================
+    // PASO 5: Extraer datos de la página de cuenta corriente
+    // ============================================
+    console.log('📋 Extrayendo datos de deuda...');
+    
+    // Esperar a que se cargue el contenido dinámico
+    await new Promise(r => setTimeout(r, 3000));
+    
     const datos = await page.evaluate(() => {
       const resultado = {
         titular: 'No disponible',
         cuit: 'No disponible',
         hectareas: 'No disponible',
-        deuda: 'No disponible',
-        servicio: 'No disponible'
+        capital: 'No disponible',
+        interes: 'No disponible',
+        apremio: 'No disponible',
+        eventuales: 'No disponible',
+        total: 'No disponible'
       };
       
       const bodyText = document.body.innerText || '';
       
-      // Extraer Titular (buscar label + valor)
-      const titularLabel = Array.from(document.querySelectorAll('*')).find(el => 
-        /Titular|Nombre|Propietario/i.test(el.textContent)
-      );
-      if (titularLabel) {
-        const parentElement = titularLabel.closest('div, tr, p');
-        if (parentElement) {
-          const text = parentElement.textContent.replace(/Titular|:|Nombre/gi, '').trim();
-          resultado.titular = text.split('\n')[0].trim();
-        }
+      // Extraer Titular (aparece en la línea siguiente a "Titular")
+      const titularMatch = bodyText.match(/Titular\s*\n\s*([^\n]+)/i);
+      if (titularMatch) {
+        resultado.titular = titularMatch[1].trim();
       }
       
       // Extraer CUIT
@@ -174,68 +262,316 @@ async function obtenerDeudaYBoleto(dni) {
       }
       
       // Extraer Hectáreas
-      const hectareasMatch = bodyText.match(/(\d+[,.]?\d*)\s*(ha|hectáreas|hectareas)/i);
+      const hectareasMatch = bodyText.match(/Hectáreas[:\s]*(\d+[,.]?\d*)/i);
       if (hectareasMatch) {
-        resultado.hectareas = `${hectareasMatch[1]} ha`;
+        resultado.hectareas = hectareasMatch[1];
       }
       
-      // Extraer Servicio/Nomenclatura
-      const servicioMatch = bodyText.match(/(?:Servicio|Nomenclatura|Padrón|Padron):\s*([A-Z0-9-]+)/i);
-      if (servicioMatch) {
-        resultado.servicio = servicioMatch[1];
-      }
+      // Extraer montos
+      const capitalMatch = bodyText.match(/Capital[:\s]*\$\s?([\d.,]+)/i);
+      if (capitalMatch) resultado.capital = `$ ${capitalMatch[1]}`;
       
-      // Extraer Monto de Deuda
-      const montoMatch = bodyText.match(/\$\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?/);
-      if (montoMatch) {
-        resultado.deuda = montoMatch[0];
-      }
+      const interesMatch = bodyText.match(/Interés[:\s]*\$\s?([\d.,]+)/i);
+      if (interesMatch) resultado.interes = `$ ${interesMatch[1]}`;
+      
+      const apremioMatch = bodyText.match(/Apremio[:\s]*\$\s?([\d.,]+)/i);
+      if (apremioMatch) resultado.apremio = `$ ${apremioMatch[1]}`;
+      
+      const eventualesMatch = bodyText.match(/Eventuales[:\s]*\$\s?([\d.,]+)/i);
+      if (eventualesMatch) resultado.eventuales = `$ ${eventualesMatch[1]}`;
+      
+      const totalMatch = bodyText.match(/Total[:\s]*\$\s?([\d.,]+)/i);
+      if (totalMatch) resultado.total = `$ ${totalMatch[1]}`;
       
       return resultado;
     });
     
-    monto = datos.deuda;
     console.log('📋 Datos extraídos:', datos);
 
-    // Disparar descarga del PDF (botón PDF/Imprimir)
-    await clickByText(page, ['PDF', 'Imprimir']);
+    // ============================================
+    // PASO 6: Intentar descargar PDF (botón "Imprimir")
+    // ============================================
+    try {
+      console.log('📄 Buscando botón de descarga/impresión...');
+      const imprimirButton = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        return buttons.find(btn => 
+          /Imprimir|PDF|Descargar/i.test(btn.textContent || '')
+        );
+      });
+      
+      if (imprimirButton && imprimirButton.asElement() !== null) {
+        await imprimirButton.asElement().click();
+        console.log('✅ Click en botón de descarga');
+        
+        // Esperar la descarga
+        const finalPath = await waitForDownload(DOWNLOAD_DIR, `${dni}.pdf`, DOWNLOAD_TIMEOUT_MS);
+        console.log('✅ PDF descargado:', finalPath);
+        
+        return {
+          success: true,
+          data: datos,
+          pdfPath: relativePdfPath,
+          absolutePdfPath: finalPath
+        };
+      }
+    } catch (pdfError) {
+      console.warn('⚠️ No se pudo descargar el PDF:', pdfError.message);
+    }
 
-    // Esperar la descarga y renombrar
-    const finalPath = await waitForDownload(DOWNLOAD_DIR, `${dni}.pdf`, DOWNLOAD_TIMEOUT_MS);
-
+    // Retornar sin PDF si no se pudo descargar
     return {
       success: true,
       data: datos,
-      pdfPath: relativePdfPath,
-      absolutePdfPath: finalPath
+      pdfPath: null,
+      absolutePdfPath: null
     };
+
   } catch (error) {
-    console.error('❌ Error en obtenerDeudaYBoleto:', error.message);
-    return { success: false, error: error.message };
-  } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch (_) {
-        // ignore
+    console.error('❌ Error en _scrapeDeudaYBoleto:', error.message);
+    console.error('Stack:', error.stack);
+    throw error; // Re-lanzar para que el wrapper maneje los reintentos
+  }
+}
+
+/**
+
+/**
+ * Click en el primer elemento que coincida con alguno de los textos indicados (case-insensitive)
+ */
+async function clickByText(page, texts) {
+  // Usar evaluate + XPath en lugar de $x (deprecated en versiones recientes)
+  const xpath = `//*[${texts
+    .map((t) => `contains(translate(normalize-space(text()), '${t.toUpperCase()}', '${t.toUpperCase()}'), '${t.toUpperCase()}')`)
+    .join(' or ')}]`;
+  
+  try {
+    // Usar document.evaluate para encontrar el elemento
+    const el = await page.evaluateHandle((xpathStr) => {
+      const result = document.evaluate(xpathStr, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return result.singleNodeValue;
+    }, xpath);
+    
+    if (!el || el.asElement() === null) {
+      throw new Error(`No se encontró elemento con texto: ${texts.join(' / ')}`);
+    }
+    
+    await el.asElement().click();
+    await new Promise(r => setTimeout(r, 500));
+  } catch (error) {
+    throw new Error(`Error al hacer click en texto "${texts.join(' / ')}": ${error.message}`);
+  }
+}
+
+/**
+ * Obtiene solo el boleto (sin navegar a página de deuda) - con reintentos
+ */
+async function obtenerSoloBoleto(dni, tipoCuota) {
+  const MAX_INTENTOS = 3;
+  
+  for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
+    try {
+      console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerSoloBoleto con DNI ${dni}, tipo ${tipoCuota}`);
+      const resultado = await _scrapeSoloBoleto(dni, tipoCuota);
+      return resultado;
+    } catch (error) {
+      console.error(`❌ Intento ${intento} falló:`, error.message);
+      
+      if (intento < MAX_INTENTOS) {
+        // Esperar antes de reintentar (aumentar tiempo con cada intento)
+        const espera = intento * 2000;
+        console.log(`⏳ Esperando ${espera}ms antes de reintentar...`);
+        await delay(espera);
+      } else {
+        // Último intento falló
+        return {
+          success: false,
+          error: error.message
+        };
       }
     }
   }
 }
 
 /**
- * Click en el primer elemento que coincida con alguno de los textos indicados (case-insensitive)
+ * Función interna que hace el scraping real de boleto
  */
-async function clickByText(page, texts) {
-  const xpath = `//*[${texts
-    .map((t, i) => `contains(translate(normalize-space(text()), '${t.toUpperCase()}', '${t.toUpperCase()}'), '${t.toUpperCase()}')`)
-    .join(' or ')}]`;
-  const [el] = await page.$x(xpath);
-  if (!el) throw new Error(`No se encontró elemento con texto: ${texts.join(' / ')}`);
-  await el.click();
-  await page.waitForTimeout(500);
+async function _scrapeSoloBoleto(dni, tipoCuota) {
+  let browser;
+  
+  try {
+    // Configuración de Puppeteer
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 720 });
+    
+    // ============================================
+    // PASO 1: Navegar e ingresar DNI
+    // ============================================
+    console.log('🔍 Navegando a https://autogestion.cloud.irrigacion.gov.ar/dni...');
+    await page.goto('https://autogestion.cloud.irrigacion.gov.ar/dni', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+    
+    console.log('📝 Buscando input de DNI/CUIT...');
+    await page.waitForSelector('input[placeholder*="Ingresar DNI"], input[placeholder*="DNI/CUIT"], input[type="text"]', { timeout: 15000 });
+    
+    const inputSelector = 'input[placeholder*="Ingresar DNI"], input[placeholder*="DNI/CUIT"], input[type="text"]';
+    await page.click(inputSelector, { clickCount: 3 });
+    await page.type(inputSelector, String(dni), { delay: 100 });
+    console.log(`✅ DNI ${dni} ingresado`);
+
+    // ============================================
+    // PASO 2: Click en "Buscar servicios asociados"
+    // ============================================
+    console.log('🔍 Buscando botón "Buscar servicios asociados"...');
+    await delay(500);
+    
+    const buscarButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
+      return buttons.find(btn => 
+        /Buscar servicios asociados/i.test(btn.textContent || btn.value || '')
+      );
+    });
+    
+    if (!buscarButton || buscarButton.asElement() === null) {
+      throw new Error('No se encontró botón "Buscar servicios asociados"');
+    }
+    
+    await buscarButton.asElement().click();
+    console.log('✅ Click en "Buscar servicios asociados"');
+    
+    await delay(3000);
+
+    // ============================================
+    // PASO 3: Verificar que aparecieron los recuadros
+    // ============================================
+    console.log('🔍 Esperando resultados...');
+    
+    const tieneResultados = await page.evaluate(() => {
+      const bodyText = document.body.innerText.toLowerCase();
+      return bodyText.includes('cuota anual') || bodyText.includes('cuota bimestral');
+    });
+    
+    if (!tieneResultados) {
+      const noEncontrado = await page.evaluate(() => {
+        const bodyText = document.body.innerText.toLowerCase();
+        return bodyText.includes('no se encontr') || bodyText.includes('sin resultados');
+      });
+      
+      if (noEncontrado) {
+        return { success: false, error: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.' };
+      }
+      
+      throw new Error('No se encontraron servicios asociados al DNI');
+    }
+    
+    console.log('✅ Servicios encontrados');
+
+    // ============================================
+    // PASO 4: Buscar y clickear botón "Imprimir" según tipo de cuota
+    // ============================================
+    console.log(`📄 Buscando botón "Imprimir" para ${tipoCuota}...`);
+    await delay(1000);
+    
+    // Buscar el botón Imprimir que está dentro del recuadro del tipo de cuota especificado
+    const imprimirButton = await page.evaluateHandle((tipo) => {
+      const bodyText = document.body.innerText;
+      const buttons = Array.from(document.querySelectorAll('button'));
+      
+      // Buscar el texto del tipo de cuota
+      const cuotaTexto = tipo === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
+      
+      // Encontrar todos los botones "Imprimir"
+      const imprimirButtons = buttons.filter(btn => 
+        /Imprimir/i.test(btn.textContent || '')
+      );
+      
+      // Si solo hay un botón imprimir, retornarlo
+      if (imprimirButtons.length === 1) {
+        return imprimirButtons[0];
+      }
+      
+      // Si hay varios, buscar el que está en el contexto del tipo de cuota
+      for (const btn of imprimirButtons) {
+        let parent = btn.parentElement;
+        let depth = 0;
+        
+        // Buscar en los padres hasta 5 niveles
+        while (parent && depth < 5) {
+          const parentText = parent.innerText || '';
+          if (parentText.includes(cuotaTexto)) {
+            return btn;
+          }
+          parent = parent.parentElement;
+          depth++;
+        }
+      }
+      
+      // Si no encontramos por contexto, devolver el primero
+      return imprimirButtons[0];
+    }, tipoCuota);
+    
+    if (!imprimirButton || imprimirButton.asElement() === null) {
+      throw new Error('No se encontró botón "Imprimir"');
+    }
+    
+    // Configurar descarga de PDF
+    const downloadPath = path.resolve(__dirname, '../../temp');
+    if (!fs.existsSync(downloadPath)) {
+      fs.mkdirSync(downloadPath, { recursive: true });
+    }
+    
+    await page._client().send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloadPath
+    });
+    
+    await imprimirButton.asElement().click();
+    console.log('✅ Click en "Imprimir"');
+    
+    // Esperar a que se descargue el PDF
+    await delay(5000);
+    
+    // Buscar el archivo PDF descargado
+    const files = fs.readdirSync(downloadPath);
+    const pdfFile = files.find(f => f.endsWith('.pdf'));
+    
+    let pdfPath = null;
+    if (pdfFile) {
+      const oldPath = path.join(downloadPath, pdfFile);
+      const newPath = path.join(downloadPath, `boleto_${tipoCuota}_${dni}.pdf`);
+      fs.renameSync(oldPath, newPath);
+      pdfPath = newPath;
+      console.log(`📄 PDF descargado: ${pdfPath}`);
+    }
+    
+    await browser.close();
+    
+    return {
+      success: true,
+      pdfPath: pdfPath
+    };
+    
+  } catch (error) {
+    console.error('❌ Error en _scrapeSoloBoleto:', error);
+    if (browser) await browser.close();
+    throw error; // Re-lanzar para que el wrapper maneje los reintentos
+  }
 }
 
 module.exports = {
-  obtenerDeudaYBoleto
+  obtenerDeudaYBoleto,
+  obtenerSoloBoleto
 };
+

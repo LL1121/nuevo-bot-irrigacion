@@ -77,6 +77,7 @@ const initializeDB = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mensajes (
       id INT AUTO_INCREMENT PRIMARY KEY,
+      message_id VARCHAR(100) NULL,
       cliente_telefono VARCHAR(20) NOT NULL,
       tipo VARCHAR(30) NOT NULL,
       cuerpo TEXT NOT NULL,
@@ -87,6 +88,31 @@ const initializeDB = async () => {
       CONSTRAINT fk_mensajes_cliente FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  // Agregar columna message_id si no existe (deduplicación de mensajes entrantes)
+  try {
+    await pool.query(`
+      ALTER TABLE mensajes
+      ADD COLUMN message_id VARCHAR(100) NULL AFTER id;
+    `);
+    console.log('✅ Columna message_id agregada');
+  } catch (error) {
+    if (!error.message.includes('Duplicate column')) {
+      console.log('⚠️ Migración message_id:', error.message);
+    }
+  }
+
+  // Índice único para evitar duplicados por reintentos de Meta
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX idx_message_id ON mensajes (message_id);
+    `);
+    console.log('✅ Índice único idx_message_id creado');
+  } catch (error) {
+    if (!error.message.includes('Duplicate key name')) {
+      console.log('⚠️ Migración idx_message_id:', error.message);
+    }
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS notas_internas (
