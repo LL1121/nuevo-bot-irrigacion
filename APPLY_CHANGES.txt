@@ -1,0 +1,64 @@
+// Cambios para webhookController.js
+
+// CAMBIO 1: Capturar título en lugar de ID (líneas 100-111)
+// Reemplazar desde:
+        } else if (message.type === 'interactive') {
+          // Puede ser list_reply o button_reply
+          if (message.interactive.type === 'list_reply') {
+            messageBody = message.interactive.list_reply.id;
+          } else if (message.interactive.type === 'button_reply') {
+            messageBody = message.interactive.button_reply.id;
+          }
+
+// Por:
+        } else if (message.type === 'interactive') {
+          // Capturar el TÍTULO completo (con emoji) para mostrar al operador
+          let selectedOptionId = '';
+          if (message.interactive.type === 'list_reply') {
+            messageBody = message.interactive.list_reply.title || message.interactive.list_reply.id;
+            selectedOptionId = message.interactive.list_reply.id;
+          } else if (message.interactive.type === 'button_reply') {
+            messageBody = message.interactive.button_reply.title || message.interactive.button_reply.id;
+            selectedOptionId = message.interactive.button_reply.id;
+          }
+          // Guardar el ID para usarlo en la lógica del bot
+          message._optionId = selectedOptionId;
+        }
+
+
+// CAMBIO 2: Pasar el ID a handleUserMessage (línea ~189)
+// Buscar:
+        await handleUserMessage(from, messageBody);
+
+// Reemplazar por:
+        const optionId = message._optionId || messageBody;
+        await handleUserMessage(from, messageBody, optionId);
+
+
+// CAMBIO 3: Modificar firma de handleUserMessage (línea ~208)
+// Buscar:
+const handleUserMessage = async (from, messageBody) => {
+  const currentState = userStates[from].step;
+
+  console.log(`🔄 Estado actual de ${from}: ${currentState}`);
+
+// Reemplazar por:
+const handleUserMessage = async (from, messageBody, optionId = null) => {
+  const currentState = userStates[from].step;
+  
+  // Usar optionId para la lógica del bot si está disponible (menú interactivo)
+  const optionToProcess = optionId || messageBody;
+
+  console.log(`🔄 Estado actual de ${from}: ${currentState}`);
+
+
+// CAMBIO 4: Usar optionToProcess en MAIN_MENU (línea ~245)
+// Buscar:
+    case 'MAIN_MENU':
+      await handleMainMenu(from, messageBody);
+      break;
+
+// Reemplazar por:
+    case 'MAIN_MENU':
+      await handleMainMenu(from, optionToProcess);
+      break;
