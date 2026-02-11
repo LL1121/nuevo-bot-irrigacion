@@ -570,8 +570,502 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
   }
 }
 
+/**
+ * Obtener deuda usando padrón (superficial, subterráneo o contaminación)
+ * @param {string} tipoPadron - 'superficial', 'subterraneo' o 'contaminacion'
+ * @param {object} datos - { codigoCauce, numeroPadron } | { codigoDepartamento, numeroPozo } | { numeroContaminacion }
+ * @returns {object} { success, data, pdfPath, absolutePdfPath }
+ */
+async function obtenerDeudaPadron(tipoPadron, datos) {
+  const MAX_INTENTOS = 3;
+  
+  for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
+    try {
+      console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerDeudaPadron ${tipoPadron}:`, datos);
+      const resultado = await _scrapeDeudaYBoletoPadron(tipoPadron, datos);
+      return resultado;
+    } catch (error) {
+      console.error(`❌ Intento ${intento} falló:`, error.message);
+      
+      if (intento < MAX_INTENTOS) {
+        const espera = intento * 2000;
+        console.log(`⏳ Esperando ${espera}ms antes de reintentar...`);
+        await delay(espera);
+      } else {
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+    }
+  }
+}
+
+/**
+ * Función interna que hace el scraping con padrón
+ */
+async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
+  let browser;
+  const idPadron = `${tipoPadron}_${Object.values(datos).join('_')}`;
+  const relativePdfPath = `/temp/${idPadron}.pdf`;
+  const absolutePdfPath = path.join(DOWNLOAD_DIR, `${idPadron}.pdf`);
+
+  try {
+    await cleanOldFiles();
+
+    browser = await puppeteer.launch({ 
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    const page = await browser.newPage();
+    await page.setDefaultTimeout(20000);
+    await page.setUserAgent(USER_AGENT);
+    await page.setViewport({ width: 1280, height: 800 });
+
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: DOWNLOAD_DIR
+    });
+
+    console.log(`🔍 Navegando a ${BASE_URL}...`);
+    await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
+
+    // ============================================
+    // PASO 1: Buscar y hacer clic en el menú desplegable de tipo de padrón
+    // ============================================
+    console.log('📝 Buscando selector de tipo de padrón (A/B/C)...');
+    
+    // El selector tiene opciones A, B, C
+    const tipoCodigo = tipoPadron === 'superficial' ? 'A' :
+                       tipoPadron === 'subterraneo' ? 'B' :
+                       tipoPadron === 'contaminacion' ? 'C' : 'A';
+    
+    // Buscar select o combo box
+    const selectFound = await page.evaluate((tipoCode) => {
+      // Buscar select directo
+      const selects = Array.from(document.querySelectorAll('select'));
+      const selectConOpcion = selects.find(sel => {
+        const opciones = Array.from(sel.querySelectorAll('option'));
+        return opciones.some(op => op.textContent.includes(tipoCode) || op.value.includes(tipoCode));
+      });
+      return selectConOpcion !== undefined;
+    }, tipoCodigo);
+
+    if (selectFound) {
+      // Es un select HTML
+      console.log(`✅ Encontrado select, seleccionando opción ${tipoCodigo}`);
+      await page.select('select', tipoCodigo);
+    } else {
+      // Podría ser un combo box personalizado - buscar y hacer clic
+      console.log(`✅ Buscando combo box personalizado para opción ${tipoCodigo}`);
+      const comboFound = await page.evaluateHandle((tipoCode) => {
+        const divs = Array.from(document.querySelectorAll('div, button, li'));
+        const opcion = divs.find(el => 
+          (el.textContent.includes(tipoCode) || el.textContent.includes(tipoPadron === 'superficial' ? 'Superficial' : tipoPadron === 'subterraneo' ? 'Subterráneo' : 'Contaminación')) &&
+          el.textContent.length < 50
+        );
+        return opcion;
+      }, tipoCodigo);
+
+      if (comboFound && comboFound.asElement()) {
+        await comboFound.asElement().click();
+        console.log(`✅ Click en opción ${tipoCodigo}`);
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    // ============================================
+    // PASO 2: Llenar campos según el tipo de padrón
+    // ============================================
+    console.log(`📝 Llenando campos para padrón tipo ${tipoPadron}...`);
+    
+    const inputs = await page.$$('input[type="text"]');
+    
+    if (tipoPadron === 'superficial') {
+      // Campos: código de cauce (izquierda), padrón parcial (derecha)
+      if (inputs.length >= 2) {
+        await inputs[0].click({ clickCount: 3 });
+        await inputs[0].type(datos.codigoCauce, { delay: 100 });
+        console.log(`✅ Código de cauce ingresado: ${datos.codigoCauce}`);
+        
+        await inputs[1].click({ clickCount: 3 });
+        await inputs[1].type(datos.numeroPadron, { delay: 100 });
+        console.log(`✅ Padrón parcial ingresado: ${datos.numeroPadron}`);
+      }
+    } else if (tipoPadron === 'subterraneo') {
+      // Campos: código de departamento (izquierda), N° de pozo (derecha)
+      if (inputs.length >= 2) {
+        await inputs[0].click({ clickCount: 3 });
+        await inputs[0].type(datos.codigoDepartamento, { delay: 100 });
+        console.log(`✅ Código de departamento ingresado: ${datos.codigoDepartamento}`);
+        
+        await inputs[1].click({ clickCount: 3 });
+        await inputs[1].type(datos.numeroPozo, { delay: 100 });
+        console.log(`✅ N° de pozo ingresado: ${datos.numeroPozo}`);
+      }
+    } else if (tipoPadron === 'contaminacion') {
+      // Campo: N° de contaminación (solo izquierda)
+      if (inputs.length >= 1) {
+        await inputs[0].click({ clickCount: 3 });
+        await inputs[0].type(datos.numeroContaminacion, { delay: 100 });
+        console.log(`✅ N° de contaminación ingresado: ${datos.numeroContaminacion}`);
+      }
+    }
+
+    // ============================================
+    // PASO 3: Buscar botón "Buscar" y hacer clic
+    // ============================================
+    console.log('🔍 Buscando botón "Buscar"...');
+    await new Promise(r => setTimeout(r, 500));
+    
+    const buscarButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
+      return buttons.find(btn => 
+        /Buscar/i.test(btn.textContent || btn.value || '')
+      );
+    });
+    
+    if (!buscarButton || buscarButton.asElement() === null) {
+      throw new Error('No se encontró botón "Buscar"');
+    }
+    
+    await buscarButton.asElement().click();
+    console.log('✅ Click en "Buscar"');
+    
+    await new Promise(r => setTimeout(r, 2000));
+
+    // ============================================
+    // PASO 4: Verificar que aparecieron los recuadros (Cuota Anual/Bimestral)
+    // ============================================
+    console.log('🔍 Esperando resultados...');
+    
+    const tieneResultados = await page.evaluate(() => {
+      const bodyText = document.body.innerText.toLowerCase();
+      return bodyText.includes('cuota anual') || bodyText.includes('cuota bimestral');
+    });
+    
+    if (!tieneResultados) {
+      const noEncontrado = await page.evaluate(() => {
+        const bodyText = document.body.innerText.toLowerCase();
+        return bodyText.includes('no se encontr') || bodyText.includes('sin resultados');
+      });
+      
+      if (noEncontrado) {
+        return { success: false, error: 'No encontramos ese padrón en nuestra base de datos. Por favor verifica los datos.' };
+      }
+      
+      throw new Error('No se encontraron servicios asociados al padrón');
+    }
+    
+    console.log('✅ Servicios encontrados');
+
+    // ============================================
+    // PASO 5: Click en "Calcular Deuda"
+    // ============================================
+    console.log('🔍 Buscando botón "Calcular Deuda"...');
+    await new Promise(r => setTimeout(r, 1000));
+    
+    const calcularButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, a'));
+      return buttons.find(btn => 
+        /Calcular Deuda|Consultar Deuda/i.test(btn.textContent || '')
+      );
+    });
+    
+    if (!calcularButton || calcularButton.asElement() === null) {
+      throw new Error('No se encontró botón "Calcular Deuda"');
+    }
+    
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
+      calcularButton.asElement().click()
+    ]);
+    
+    console.log('✅ Navegó a página de detalle de deuda');
+
+    // ============================================
+    // PASO 6: Extraer datos de la página de deuda
+    // ============================================
+    console.log('📋 Extrayendo datos de deuda...');
+    
+    await new Promise(r => setTimeout(r, 3000));
+    
+    const datos_deuda = await page.evaluate(() => {
+      const resultado = {
+        titular: 'No disponible',
+        cuit: 'No disponible',
+        hectareas: 'No disponible',
+        capital: 'No disponible',
+        interes: 'No disponible',
+        apremio: 'No disponible',
+        eventuales: 'No disponible',
+        total: 'No disponible'
+      };
+      
+      const bodyText = document.body.innerText || '';
+      
+      const titularMatch = bodyText.match(/Titular\s*\n\s*([^\n]+)/i);
+      if (titularMatch) {
+        resultado.titular = titularMatch[1].trim();
+      }
+      
+      const cuitMatch = bodyText.match(/CUIT[:\s]*(\d{2}-\d{8}-\d{1}|\d{11})/i);
+      if (cuitMatch) {
+        resultado.cuit = cuitMatch[1];
+      }
+      
+      const hectareasMatch = bodyText.match(/Hectáreas[:\s]*(\d+[,.]?\d*)/i);
+      if (hectareasMatch) {
+        resultado.hectareas = hectareasMatch[1];
+      }
+      
+      const capitalMatch = bodyText.match(/Capital[:\s]*\$\s?([\d.,]+)/i);
+      if (capitalMatch) resultado.capital = `$ ${capitalMatch[1]}`;
+      
+      const interesMatch = bodyText.match(/Interés[:\s]*\$\s?([\d.,]+)/i);
+      if (interesMatch) resultado.interes = `$ ${interesMatch[1]}`;
+      
+      const apremioMatch = bodyText.match(/Apremio[:\s]*\$\s?([\d.,]+)/i);
+      if (apremioMatch) resultado.apremio = `$ ${apremioMatch[1]}`;
+      
+      const eventualesMatch = bodyText.match(/Eventuales[:\s]*\$\s?([\d.,]+)/i);
+      if (eventualesMatch) resultado.eventuales = `$ ${eventualesMatch[1]}`;
+      
+      const totalMatch = bodyText.match(/Total[:\s]*\$\s?([\d.,]+)/i);
+      if (totalMatch) resultado.total = `$ ${totalMatch[1]}`;
+      
+      return resultado;
+    });
+    
+    console.log('📋 Datos extraídos:', datos_deuda);
+
+    // ============================================
+    // PASO 7: Intentar descargar PDF
+    // ============================================
+    try {
+      console.log('📄 Buscando botón de descarga/impresión...');
+      const imprimirButton = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        return buttons.find(btn => 
+          /Imprimir|PDF|Descargar/i.test(btn.textContent || '')
+        );
+      });
+      
+      if (imprimirButton && imprimirButton.asElement() !== null) {
+        await imprimirButton.asElement().click();
+        console.log('✅ Click en botón de descarga');
+        
+        const finalPath = await waitForDownload(DOWNLOAD_DIR, `${idPadron}.pdf`, DOWNLOAD_TIMEOUT_MS);
+        console.log('✅ PDF descargado:', finalPath);
+        
+        return {
+          success: true,
+          data: datos_deuda,
+          pdfPath: relativePdfPath,
+          absolutePdfPath: finalPath
+        };
+      }
+    } catch (pdfError) {
+      console.warn('⚠️ No se pudo descargar el PDF:', pdfError.message);
+    }
+
+    return {
+      success: true,
+      data: datos_deuda,
+      pdfPath: null,
+      absolutePdfPath: null
+    };
+
+  } catch (error) {
+    console.error('❌ Error en _scrapeDeudaYBoletoPadron:', error.message);
+    console.error('Stack:', error.stack);
+    if (browser) await browser.close();
+    throw error;
+  }
+}
+
+/**
+ * Obtener boleto usando padrón
+ * @param {string} tipoPadron - 'superficial', 'subterraneo' o 'contaminacion'
+ * @param {object} datos - Parámetros del padrón
+ * @param {string} tipoCuota - 'anual' o 'bimestral'
+ * @returns {object} { success, pdfPath }
+ */
+async function obtenerBoletoPadron(tipoPadron, datos, tipoCuota) {
+  const MAX_INTENTOS = 3;
+  
+  for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
+    try {
+      console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerBoletoPadron ${tipoPadron} - ${tipoCuota}`);
+      const resultado = await _scrapeBoletonPadron(tipoPadron, datos, tipoCuota);
+      return resultado;
+    } catch (error) {
+      console.error(`❌ Intento ${intento} falló:`, error.message);
+      
+      if (intento < MAX_INTENTOS) {
+        const espera = intento * 2000;
+        console.log(`⏳ Esperando ${espera}ms antes de reintentar...`);
+        await delay(espera);
+      } else {
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+    }
+  }
+}
+
+/**
+ * Scraping interno de boleto con padrón
+ */
+async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
+  let browser;
+  const idBoleto = `boleto_${tipoPadron}_${tipoCuota}_${Object.values(datos).join('_')}`;
+  const downloadPath = DOWNLOAD_DIR;
+
+  try {
+    await cleanOldFiles();
+
+    browser = await puppeteer.launch({ 
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    const page = await browser.newPage();
+    await page.setDefaultTimeout(20000);
+    await page.setUserAgent(USER_AGENT);
+    await page.setViewport({ width: 1280, height: 800 });
+
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloadPath
+    });
+
+    console.log(`🔍 Navegando a ${BASE_URL}...`);
+    await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
+
+    // Pasos 1-4: Seleccionar tipo, llenar campos, buscar, verificar resultados
+    // (Mismo que en _scrapeDeudaYBoletoPadron)
+    
+    const tipoCodigo = tipoPadron === 'superficial' ? 'A' :
+                       tipoPadron === 'subterraneo' ? 'B' :
+                       tipoPadron === 'contaminacion' ? 'C' : 'A';
+    
+    // Seleccionar tipo de padrón
+    const selectFound = await page.evaluate((tipoCode) => {
+      const selects = Array.from(document.querySelectorAll('select'));
+      const selectConOpcion = selects.find(sel => {
+        const opciones = Array.from(sel.querySelectorAll('option'));
+        return opciones.some(op => op.textContent.includes(tipoCode) || op.value.includes(tipoCode));
+      });
+      return selectConOpcion !== undefined;
+    }, tipoCodigo);
+
+    if (selectFound) {
+      await page.select('select', tipoCodigo);
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Llenar campos
+    const inputs = await page.$$('input[type="text"]');
+    
+    if (tipoPadron === 'superficial' && inputs.length >= 2) {
+      await inputs[0].click({ clickCount: 3 });
+      await inputs[0].type(datos.codigoCauce, { delay: 100 });
+      await inputs[1].click({ clickCount: 3 });
+      await inputs[1].type(datos.numeroPadron, { delay: 100 });
+    } else if (tipoPadron === 'subterraneo' && inputs.length >= 2) {
+      await inputs[0].click({ clickCount: 3 });
+      await inputs[0].type(datos.codigoDepartamento, { delay: 100 });
+      await inputs[1].click({ clickCount: 3 });
+      await inputs[1].type(datos.numeroPozo, { delay: 100 });
+    } else if (tipoPadron === 'contaminacion' && inputs.length >= 1) {
+      await inputs[0].click({ clickCount: 3 });
+      await inputs[0].type(datos.numeroContaminacion, { delay: 100 });
+    }
+
+    // Buscar
+    const buscarButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
+      return buttons.find(btn => /Buscar/i.test(btn.textContent || btn.value || ''));
+    });
+    
+    if (buscarButton && buscarButton.asElement()) {
+      await buscarButton.asElement().click();
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // ============================================
+    // PASO 5: Seleccionar cuota (Anual o Bimestral)
+    // ============================================
+    console.log(`📅 Seleccionando ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}...`);
+    
+    const tipoCuotaTexto = tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
+    
+    const cuotaButton = await page.evaluateHandle((textoB) => {
+      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
+      return buttons.find(btn => btn.textContent.includes(textoB));
+    }, tipoCuotaTexto);
+    
+    if (cuotaButton && cuotaButton.asElement()) {
+      await cuotaButton.asElement().click();
+      await new Promise(r => setTimeout(r, 1500));
+      console.log(`✅ Seleccionada: ${tipoCuotaTexto}`);
+    }
+
+    // ============================================
+    // PASO 6: Buscar y clickear botón "Imprimir"
+    // ============================================
+    console.log('📄 Buscando botón "Imprimir" para descargar PDF...');
+    
+    const imprimirButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button, a'));
+      return buttons.find(btn => /Imprimir|PDF|Descargar/i.test(btn.textContent || ''));
+    });
+    
+    if (imprimirButton && imprimirButton.asElement() !== null) {
+      await imprimirButton.asElement().click();
+      console.log('✅ Click en "Imprimir"');
+      
+      await delay(5000);
+      
+      const files = fs.readdirSync(downloadPath);
+      const pdfFile = files.find(f => f.endsWith('.pdf'));
+      
+      let pdfPath = null;
+      if (pdfFile) {
+        const oldPath = path.join(downloadPath, pdfFile);
+        const newPath = path.join(downloadPath, `${idBoleto}.pdf`);
+        fs.renameSync(oldPath, newPath);
+        pdfPath = newPath;
+        console.log(`📄 PDF descargado: ${pdfPath}`);
+      }
+      
+      await browser.close();
+      
+      return {
+        success: true,
+        pdfPath: pdfPath
+      };
+    }
+
+    throw new Error('No se encontró botón de descarga');
+
+  } catch (error) {
+    console.error('❌ Error en _scrapeBoletonPadron:', error);
+    if (browser) await browser.close();
+    throw error;
+  }
+}
+
 module.exports = {
   obtenerDeudaYBoleto,
-  obtenerSoloBoleto
+  obtenerSoloBoleto,
+  obtenerDeudaPadron,
+  obtenerBoletoPadron
 };
 

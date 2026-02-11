@@ -64,6 +64,22 @@ const initializeDB = async () => {
     }
   }
 
+  // Agregar columnas para padrón si no existen
+  try {
+    await pool.query(`
+      ALTER TABLE clientes 
+      ADD COLUMN padron_superficial VARCHAR(100),
+      ADD COLUMN padron_subterraneo VARCHAR(100),
+      ADD COLUMN padron_contaminacion VARCHAR(100),
+      ADD COLUMN tipo_consulta_preferido VARCHAR(20);
+    `);
+    console.log('✅ Columnas de padrón agregadas');
+  } catch (error) {
+    if (!error.message.includes('Duplicate column')) {
+      console.log('⚠️ Migración padrón:', error.message);
+    }
+  }
+
   // Tabla legacy para compatibilidad con flujos existentes
   await pool.query(`
     CREATE TABLE IF NOT EXISTS usuarios (
