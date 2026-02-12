@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/irrigacionmalargue/bot-irrigacion/discussions
+    about: Haz preguntas y discute ideas
+  - name: 📖 Documentación
+    url: https://github.com/irrigacionmalargue/bot-irrigacion/blob/main/README.md
+    about: Lee la documentación completa
+  - name: 🆘 Soporte
+    url: https://github.com/irrigacionmalargue/bot-irrigacion/discussions/categories/help
+    about: Obtén ayuda con problemas de uso

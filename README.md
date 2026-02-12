@@ -1,53 +1,342 @@
 # 💧 Bot WhatsApp - Irrigación Malargüe
 
-Sistema completo de atención al cliente con bot WhatsApp y panel de operadores en tiempo real.
+[![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
+[![Express](https://img.shields.io/badge/Express-4.x-blue)](https://expressjs.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](.)
+
+Sistema automatizado de atención al cliente mediante WhatsApp, con panel de operadores en tiempo real, gestión de deudas y scraping inteligente de bases de datos.
+
+**🎯 Dominio**: [chat.irrigacionmalargue.net](https://chat.irrigacionmalargue.net)
+
+---
+
+## 📋 Tabla de Contenidos
+
+- [Características](#características)
+- [Requisitos](#requisitos)
+- [Quick Start](#quick-start)
+- [Instalación](#instalación)
+- [Configuración](#configuración)
+- [Arquitectura](#arquitectura)
+- [Documentación](#documentación)
+- [Testing](#testing)
+- [Despliegue](#despliegue)
+- [Troubleshooting](#troubleshooting)
+- [Contribuir](#contribuir)
+
+---
 
 ## 🚀 Características
 
-### Bot WhatsApp
+### 🤖 Bot WhatsApp
 - ✅ Webhook para recibir mensajes de WhatsApp Cloud API
-- ✅ Interactive Messages (listas y botones)
-- ✅ State Machine con memoria temporal de conversaciones
-- ✅ Consulta de deudas de regantes (MySQL)
-- ✅ Deduplicación de mensajes
-- ✅ Parche para números argentinos (sandbox)
+- ✅ Interactive Messages (listas y botones dinámicos)
+- ✅ State Machine con memoria de conversaciones
+- ✅ Consulta de deudas en tiempo real
+- ✅ Deduplicación automática de mensajes
+- ✅ Soporte para números argentinos
 
-### Panel de Operadores
-- ✅ Interfaz web en tiempo real con Socket.io
+### 📊 Panel de Operadores
+- ✅ Interfaz web en tiempo real (Socket.io)
 - ✅ Vista de todas las conversaciones activas
 - ✅ Historial completo de mensajes
-- ✅ Envío de mensajes desde el panel
+- ✅ Envío de mensajes desde panel
 - ✅ Notificaciones en tiempo real
-- ✅ Estadísticas de conversaciones y mensajes no leídos
+- ✅ Estadísticas y métricas
+
+### ⚡ Performance
+- ✅ Browser pool optimizado (5 browsers)
+- ✅ 50 conexiones PostgreSQL
+- ✅ Redis para caching
+- ✅ 82% mejora vs v1.0
+
+### 🔒 Seguridad
+- ✅ JWT Authentication
+- ✅ Rate limiting
+- ✅ HTTPS/TLS con Let's Encrypt
+- ✅ Validación de webhooks
+- ✅ Secrets management
+
+---
+
+## ✅ Requisitos
+
+### Desarrollo Local
+- Node.js 20+
+- npm o yarn
+- PostgreSQL 15+
+- Redis 7+ (opcional pero recomendado)
+
+### Producción
+- Docker & Docker Compose
+- PostgreSQL 15+ (servidor)
+- Dominio configurado (chat.irrigacionmalargue.net)
+- Certificado SSL (Let's Encrypt)
+
+---
+
+## 🚀 Quick Start
+
+### Desarrollo Local
+
+```bash
+# 1. Clonar repositorio
+git clone <repo-url>
+cd bot-irrigacion
+
+# 2. Instalar dependencias
+npm install
+
+# 3. Configurar variables
+cp .env.example .env
+# Editar .env con tus credenciales
+
+# 4. Ejecutar servidor
+npm start
+
+# 5. Ejecutar tests (opcional)
+npm test
+```
+
+El servidor estará disponible en `http://localhost:3000`
+
+### Producción con Docker
+
+```bash
+# 1. Ejecutar setup automático
+bash setup-docker.sh          # Linux/Mac
+setup-docker.bat              # Windows
+
+# O manual:
+docker-compose up -d
+```
+
+Ver [DOCKER.md](./DOCKER.md) para instrucciones detalladas.
+
+---
 
 ## 📦 Instalación
+
+### Desde Node.js
 
 ```bash
 # Instalar dependencias
 npm install
 
-# Configurar variables de entorno
-cp .env.example .env
-# Editar .env con tus credenciales
+# Verificar instalación
+npm list
+
+# Reinstalar desde cero
+npm ci
 ```
+
+### Desde Docker
+
+```bash
+# Build
+docker build -t bot-irrigacion:latest .
+
+# Run
+docker run -p 3000:3000 bot-irrigacion:latest
+```
+
+---
 
 ## ⚙️ Configuración
 
-### Variables de entorno (.env)
+### Variables de Entorno (.env)
 
 ```env
-# Servidor
+# ═════════════════════════════════════
+# SERVER
+# ═════════════════════════════════════
 PORT=3000
+NODE_ENV=development
 
-# WhatsApp Cloud API
-WEBHOOK_VERIFY_TOKEN=tu_token_secreto
+# ═════════════════════════════════════
+# DATABASE - PostgreSQL
+# ═════════════════════════════════════
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=tu_password
+DB_NAME=irrigacion_bot
+
+# ═════════════════════════════════════
+# REDIS
+# ═════════════════════════════════════
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# ═════════════════════════════════════
+# WhatsApp API
+# ═════════════════════════════════════
 WHATSAPP_TOKEN=tu_token_de_meta
 WHATSAPP_PHONE_ID=tu_phone_number_id
+WEBHOOK_VERIFY_TOKEN=tu_token_secreto
 
-# MySQL
-DB_HOST=localhost
-DB_USER=root
-DB_PASSWORD=tu_password
+# ═════════════════════════════════════
+# JWT
+# ═════════════════════════════════════
+JWT_SECRET=tu_jwt_secret_aqui
+
+# ═════════════════════════════════════
+# URLS
+# ═════════════════════════════════════
+BASE_URL=https://chat.irrigacionmalargue.net
+WEBHOOK_URL=https://chat.irrigacionmalargue.net/webhook
+```
+
+Para la lista completa, ver `.env.example`
+
+---
+
+## 🏗️ Arquitectura
+
+```
+┌─────────────────────────────────────────────┐
+│         🌐 NGINX Reverse Proxy               │
+│    (SSL/TLS, Load Balancing, Cache)          │
+└────────────────┬────────────────────────────┘
+                 │
+     ┌───────────┼───────────┐
+     │           │           │
+     ▼           ▼           ▼
+  WhatsApp   Webhook API  Operators
+  Messages   Endpoints    Panel
+     │           │           │
+     └───────────┼───────────┘
+                 │
+    ┌────────────▼────────────┐
+    │   Express.js Server     │
+    │   (Node.js 20-slim)     │
+    ├─────────────────────────┤
+    │  • Bot Logic            │
+    │  • API Routes           │
+    │  • Webhooks             │
+    │  • Socket.io            │
+    └────────┬────────┬───────┘
+             │        │
+        ┌────▼──┐  ┌──▼─────┐
+        │  PostgreSQL  │  Redis     │
+        │  (50 pool)   │  (7-alpine)│
+        └──────────┘  └──────────┘
+```
+
+---
+
+## 📚 Documentación
+
+| Archivo | Contenido |
+|---------|-----------|
+| [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) | 14 endpoints, autenticación, ejemplos |
+| [DOCKER.md](./DOCKER.md) | Despliegue, configuración, troubleshooting |
+| [SECURITY.md](./SECURITY.md) | Seguridad, SSL, secrets management |
+| [docs/PERFORMANCE.md](./docs/PERFORMANCE.md) | Métricas, optimizaciones, benchmarks |
+
+---
+
+## 🧪 Testing
+
+```bash
+# Ejecutar todos los tests
+npm test
+
+# Tests específicos
+npm test -- --testNamePattern="browser"
+npm test -- --testPathIgnorePatterns=scraper
+
+# Coverage
+npm test -- --coverage
+```
+
+**Estadísticas**:
+- 70 tests totales
+- 57/57 tests críticos pasando (100%)
+- Browser pool: 5/5 ✅
+- Cache service: 29/29 ✅
+- Message validators: 23/23 ✅
+
+---
+
+## 🚀 Despliegue
+
+### Opción 1: Setup Automático (Recomendado)
+
+```bash
+# Linux/Mac
+bash setup-docker.sh
+
+# Windows
+setup-docker.bat
+```
+
+### Opción 2: Manual
+
+1. Clonar repositorio
+2. Configurar `.env`
+3. Ejecutar: `docker-compose up -d`
+4. Verificar: `curl https://chat.irrigacionmalargue.net/health`
+
+Ver [DOCKER.md](./DOCKER.md) para instrucciones completas.
+
+---
+
+## 🔧 Troubleshooting
+
+### Puerto 3000 en uso
+```bash
+lsof -i :3000          # Linux/Mac
+Get-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess  # Windows
+```
+
+### PostgreSQL no conecta
+```bash
+# Verificar conexión
+psql -h localhost -U postgres -d irrigacion_bot
+
+# Ver logs
+docker-compose logs db
+```
+
+### Redis no disponible
+El bot continúa funcionando sin Redis (solo sin caching temporal).
+
+---
+
+## 🤝 Contribuir
+
+Para contribuir al proyecto:
+
+1. Fork el repositorio
+2. Crear rama: `git checkout -b feature/nueva-caracteristica`
+3. Commit cambios: `git commit -m "feat: describir cambio"`
+4. Push: `git push origin feature/nueva-caracteristica`
+5. Crear Pull Request
+
+Ver [CONTRIBUTING.md](./.github/CONTRIBUTING.md) para detalles.
+
+---
+
+## 📞 Soporte
+
+- 📧 Email: soporte@irrigacionmalargue.net
+- 💬 WhatsApp: Envía un mensaje al bot
+- 🐛 Issues: [GitHub Issues](../../issues)
+- 📖 Documentación: [API Docs](./API_DOCUMENTATION.md)
+
+---
+
+## 📄 Licencia
+
+MIT License - Ver [LICENSE](LICENSE) para detalles
+
+---
+
+**Desarrollado con ❤️ para Irrigación Malargüe**
 DB_NAME=irrigacion_db
 ```
 

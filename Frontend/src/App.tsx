@@ -832,7 +832,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           
-          const allMessages = response.data.messages || [];
+          const allMessages = response.data.mensajes || response.data.messages || [];
           const totalMessages = response.data.total || allMessages.length;
           
           // Quedarnos solo con los últimos N mensajes
@@ -840,15 +840,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           
           // Mapear mensajes al formato esperado por la UI
           const mappedMessages = messages.map((msg: any) => {
-            const emisor = (msg.emisor || '').trim(); // Limpiar espacios en blanco
-            const sent = emisor !== 'usuario';
-            const normalizedContent = normalizeMessageContent(msg.cuerpo ?? msg.mensaje ?? '');
+            const tipo = (msg.tipo || msg.emisor || '').trim().toLowerCase();
+            const sent = tipo === 'bot' || tipo !== 'usuario';
+            const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
-            const msgDate = parseMessageDate(msg.fecha);
+            const msgDate = parseMessageDate(msg.created_at ?? msg.fecha);
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
               timestamp: msgDate.toISOString(),
-              emisor: msg.emisor,
+              emisor: tipo || msg.tipo || msg.emisor,
               text: normalizedContent.text,
               type: normalizedType
             });
@@ -870,14 +870,14 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           
           // Guardar TODOS los mensajes mapeados en caché de memoria
           const allMappedMessages = allMessages.map((msg: any) => {
-            const emisor = (msg.emisor || '').trim();
-            const normalizedContent = normalizeMessageContent(msg.cuerpo ?? msg.mensaje ?? '');
+            const tipo = (msg.tipo || msg.emisor || '').trim().toLowerCase();
+            const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
-            const msgDate = parseMessageDate(msg.fecha);
+            const msgDate = parseMessageDate(msg.created_at ?? msg.fecha);
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
               timestamp: msgDate.toISOString(),
-              emisor: msg.emisor,
+              emisor: msg.tipo || msg.emisor,
               text: normalizedContent.text,
               type: normalizedType
             });
@@ -886,7 +886,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               text: normalizedContent.text || '',
               time: formatTime(msgDate),
               date: msgDate.toISOString(),
-              sent: emisor !== 'usuario',
+              sent: tipo === 'bot' || tipo !== 'usuario',
               read: true,
               type: normalizedType,
               fileUrl: msg.url_archivo,
@@ -2111,22 +2111,22 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     
                     try {
                       const currentOffset = cachedMessages.length; // Offset basado en mensajes ya cargados
-                      const response = await axios.get(`/api/chats/${phone}/messages`, {
+                      const response = await axios.get(`/api/messages/${phone}`, {
                         params: { limit: 100, offset: currentOffset },
                         headers: {}
                       });
-                      const newMessages = response.data.messages || [];
+                      const newMessages = response.data.mensajes || response.data.messages || [];
                       
                       if (newMessages.length > 0) {
                         
                         const allMappedMessages = newMessages.map((msg: any) => {
-                          const emisor = (msg.emisor || '').trim();
+                          const tipo = (msg.tipo || msg.emisor || '').trim().toLowerCase();
                           return {
                             id: msg.id,
-                            text: msg.cuerpo || '',
-                            time: formatTime(new Date(msg.fecha)),
-                            date: msg.fecha,
-                            sent: emisor !== 'usuario',
+                            text: msg.contenido || msg.cuerpo || '',
+                            time: formatTime(new Date(msg.created_at || msg.fecha)),
+                            date: msg.created_at || msg.fecha,
+                            sent: tipo === 'bot' || tipo !== 'usuario',
                             read: true,
                             type: msg.tipo || 'text',
                             fileUrl: msg.url_archivo,
