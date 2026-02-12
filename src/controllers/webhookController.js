@@ -570,11 +570,11 @@ Por favor contactá a un operador para más información.`;
       await sendMessageAndSave(from, renunciaText);
       
       try {
-        const docPath = path.join(__dirname, '../../public/docs/formulario_renuncia.pdf');
+        const docPath = path.join(__dirname, '../../public/docs/formulario_renuncia.doc');
         
         // Verificar si existe el documento
         if (fs.existsSync(docPath)) {
-          await whatsappService.sendDocument(from, docPath, 'Formulario de Renuncia.pdf');
+          await whatsappService.sendDocument(from, docPath, 'Formulario de Renuncia.doc');
           console.log(`📎 Formulario de renuncia enviado a ${from}`);
         } else {
           const infoText = `📎 El formulario estará disponible en oficinas.`;
