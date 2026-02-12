@@ -11,7 +11,18 @@ Development: http://localhost:3000
 
 ## 🔑 Autenticación
 
-### Header Required
+### WhatsApp Webhook (X-Hub-Signature-256)
+
+Las solicitudes de webhooks de Meta usan firma HMAC-SHA256:
+
+```
+Header: X-Hub-Signature-256: sha256=<signature>
+```
+
+Verificación en el servidor usando `META_APP_SECRET`
+
+### API Requests - JWT Token
+
 ```
 Authorization: Bearer <JWT_TOKEN>
 ```
@@ -38,6 +49,19 @@ Authorization: Bearer <JWT_TOKEN>
     "email": "admin@example.com"
   }
 }
+```
+
+### ✅ Variables Requeridas para Autenticación
+
+```env
+# Para webhook de Meta (WhatsApp)
+META_ACCESS_TOKEN=EAAxxxxxxxxxxxxxxxxxxxxxx
+META_APP_SECRET=tu_meta_app_secret
+WEBHOOK_VERIFY_TOKEN=tu_webhook_verify_token
+
+# Para JWT (Panel de operadores)
+JWT_SECRET=tu_jwt_secret_aleatorio_32_chars
+JWT_EXPIRY=8h
 ```
 
 ---
