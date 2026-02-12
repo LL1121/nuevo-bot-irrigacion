@@ -79,36 +79,65 @@ DB_NAME=irrigacion_bot              # Nombre BD
 ### 📱 WhatsApp Cloud API (Meta)
 
 ```env
-WHATSAPP_TOKEN=tu_token_de_meta_aqui
+META_ACCESS_TOKEN=tu_token_de_meta_long_lived_aqui
 WHATSAPP_PHONE_NUMBER_ID=1234567890123456
 WHATSAPP_BUSINESS_ACCOUNT_ID=1234567890123456
-WEBHOOK_VERIFY_TOKEN=tu_token_de_verificacion_aqui
-WEBHOOK_APP_SECRET=tu_app_secret_aqui
+WEBHOOK_VERIFY_TOKEN=tu_webhook_verify_token_aqui
+META_APP_SECRET=tu_app_secret_aqui
 ```
 
-**¿Cómo obtener credenciales de WhatsApp?**
+**¿Cómo obtener credenciales de WhatsApp/Meta?**
 
-1. **Crear App en Facebook Developer**:
-   - Ir a: https://developers.facebook.com/
-   - Login con cuenta Meta Business
-   - Crear nueva app > "Business" type
+**✅ META_ACCESS_TOKEN (Token Long-Lived - NO EXPIRA)**
 
-2. **Obtener Token**:
-   - En app settings > Settings > Basic
-   - Copiar "App ID" y "App Secret"
-   - Generar token de acceso en: Tools > Access Token Tool
+Este es el cambio importante: usamos un token long-lived que NO EXPIRA cada 60 días como el token estándar.
 
-3. **Configurar WhatsApp Business Account**:
-   - Ir a: https://business.facebook.com/
-   - WhatsApp > Getting Started
-   - Obtener "Phone Number ID" y "Business Account ID"
+1. **Ir a Meta App Dashboard**: https://developers.facebook.com/docs/whatsapp/cloud-api/get-started
 
-4. **Configurar Webhook**:
-   - Apps > tu_app > WhatsApp > Configuration
-   - Webhook URL: `https://chat.irrigacionmalargue.net/webhook`
-   - Webhook Token: Tu valor personalizado (generar uno aleatorio)
-   - Verify Token: El mismo valor
-   - Subscribe a: messages, message_status
+2. **Crear System User**:
+   - Meta App Settings > Users and Roles > System Users
+   - Click "Create System User"
+   - Nombre: "Bot WhatsApp Irrigación"
+   - Role: Admin
+
+3. **Generar Long-Lived Token**:
+   - Click en el System User creado
+   - Click "Generate Token"
+   - Seleccionar app
+   - Permisos: whatsapp_business_messaging, whatsapp_business_management
+   - Este token NO EXPIRA ✅
+
+4. **Copiar token**:
+   ```env
+   META_ACCESS_TOKEN=EAAxxxxxxxxxxxxxxxxxxxxxx
+   ```
+
+**WHATSAPP_PHONE_NUMBER_ID**
+
+1. Meta App Dashboard > WhatsApp > Phone Numbers
+2. Copiar el "Phone Number ID" (número de 15-16 dígitos)
+3. Ejemplo: `1234567890123456`
+
+**WHATSAPP_BUSINESS_ACCOUNT_ID**
+
+1. Meta App Dashboard > WhatsApp > Getting Started
+2. Copiar "Business Account ID"
+3. O en: Settings > Business Information
+
+**WEBHOOK_VERIFY_TOKEN**
+
+Token personalizado que defines (no viene de Meta):
+```bash
+# Generar uno
+openssl rand -hex 16
+# Resultado: abc123def456ghi789jklm...
+```
+
+**META_APP_SECRET**
+
+1. Meta App Settings > Settings > Basic
+2. Copiar "App Secret"
+3. Usar para verificar firma X-Hub-Signature-256
 
 ---
 
