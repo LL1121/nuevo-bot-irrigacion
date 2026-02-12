@@ -1,24 +1,79 @@
 version: '3.8'
+
 services:
+  # Aplicación Node.js
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bot-irrigacion-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Node
+      NODE_ENV: production
+      PORT: 3000
+      
+      # Base de datos PostgreSQL (usar base existente en el servidor)
+      DB_HOST: ${DB_HOST:-localhost}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-irrigacion_bot}
+      
+      # WhatsApp API
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
+      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID}
+      WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
+      
+      # Redis
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      
+      # Optimizaciones
+      MAX_BROWSERS: 3
+      DB_CONNECTION_LIMIT: 50
+      
+      # Sentry (opcional)
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      
+      # Base URL
+      BASE_URL: https://chat.irrigacionmalargue.net
+    volumes:
+      # Persistir archivos temporales y logs
+      - ./public/images:/usr/src/app/public/images
+      - ./public/docs:/usr/src/app/public/docs
+      - ./public/temp:/usr/src/app/public/temp
+      - ./logs:/usr/src/app/logs
+    networks:
+      - bot-network
+    depends_on:
+      - redis
+    extra_hosts:
+      # Permite acceder a servicios en el host (PostgreSQL externo)
+      - "host.docker.internal:host-gateway"
+
+  # Redis para caching
   redis:
     image: redis:7-alpine
-    container_name: bot_redis
+    container_name: bot-irrigacion-redis
+    restart: unless-stopped
     ports:
-      - '6379:6379'
+      - "6379:6379"
+    command: redis-server --appendonly yes
     volumes:
-      - redis_data:/data
-
-  # Optional local MySQL for integration testing
-  mysql:
-    image: mysql:8
-    environment:
-      MYSQL_DATABASE: irrigacion
-      MYSQL_ROOT_PASSWORD: root
-    ports:
-      - '3306:3306'
-    volumes:
-      - mysql_data:/var/lib/mysql
+      - redis-data:/data
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
-  redis_data:
-  mysql_data:
+  redis-data:
+    driver: local

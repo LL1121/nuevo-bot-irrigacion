@@ -1,0 +1,54 @@
+# Dependencias
+node_modules
+npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Archivos de desarrollo
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+
+# Tests
+coverage
+*.test.js
+tests/
+jest.config.js
+
+# Documentación y archivos de desarrollo
+README.md
+OPTIMIZACIONES.md
+DEPLOY.md
+TESTING_SUMMARY.md
+*.md
+
+# Archivos temporales
+*.log
+logs/
+public/temp/*
+!public/temp/.gitkeep
+
+# PM2
+ecosystem.config.js
+.pm2
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Scripts de desarrollo
+scripts/loadTest.js
+scripts/createAdmin.js
