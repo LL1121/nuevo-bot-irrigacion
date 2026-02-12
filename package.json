@@ -46,6 +46,7 @@
     "mime-types": "^3.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.16.0",
+    "pg": "^8.11.3",
     "node-cron": "^4.2.1",
     "puppeteer": "^23.11.1",
     "react-toastify": "^11.0.5",
