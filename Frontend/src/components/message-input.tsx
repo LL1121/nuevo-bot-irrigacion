@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Send, Paperclip, Smile } from 'lucide-react';
 
 interface MessageInputProps {
   onSendMessage: (text: string) => void;
 }
 
-export function MessageInput({ onSendMessage }: MessageInputProps) {
+export const MessageInput = memo(function MessageInput({ onSendMessage }: MessageInputProps) {
   const [message, setMessage] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -51,4 +51,4 @@ export function MessageInput({ onSendMessage }: MessageInputProps) {
       </form>
     </div>
   );
-}
+});
