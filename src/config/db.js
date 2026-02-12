@@ -30,8 +30,13 @@ const initializeDB = async () => {
     password: process.env.DB_PASSWORD || '',
     database: DB_NAME,
     waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+    connectionLimit: 50, // Aumentado de 10 a 50 para múltiples usuarios
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+    maxIdle: 10, // Mantener 10 conexiones idle
+    idleTimeout: 60000, // 60 segundos timeout para conexiones idle
+    connectTimeout: 10000 // 10 segundos timeout para conectar
   });
 
   // Crear tablas necesarias

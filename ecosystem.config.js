@@ -20,11 +20,11 @@ module.exports = {
       // Argumentos (ninguno por ahora)
       args: '',
       
-      // Número de instancias (1 para hosting compartido)
-      instances: 1,
+      // Número de instancias (2 para balance de carga)
+      instances: 2,
       
-      // Tipo de ejecución
-      exec_mode: 'fork',
+      // Tipo de ejecución (cluster para aprovechar múltiples CPUs)
+      exec_mode: 'cluster',
       
       // Reiniciar si usa más de 500MB RAM
       max_memory_restart: '500M',
@@ -32,12 +32,16 @@ module.exports = {
       // Environment variables por environment
       env: {
         NODE_ENV: 'production',
-        PORT: 3000
+        PORT: 3000,
+        MAX_BROWSERS: '3',
+        DB_CONNECTION_LIMIT: '50'
       },
       
       env_development: {
         NODE_ENV: 'development',
-        PORT: 3000
+        PORT: 3000,
+        MAX_BROWSERS: '2',
+        DB_CONNECTION_LIMIT: '10'
       },
       
       // Logs

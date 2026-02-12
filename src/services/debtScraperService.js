@@ -2,6 +2,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const puppeteer = require('puppeteer');
+const browserPool = require('./browserPool');
 
 const BASE_URL = 'https://autogestion.cloud.irrigacion.gov.ar/dni';
 const DOWNLOAD_DIR = path.resolve(__dirname, '../../public/temp');
@@ -114,6 +115,7 @@ async function obtenerDeudaYBoleto(dni) {
  */
 async function _scrapeDeudaYBoleto(dni) {
   let browser;
+  let browserData;
   const relativePdfPath = `/temp/${dni}.pdf`;
   const absolutePdfPath = path.join(DOWNLOAD_DIR, `${dni}.pdf`);
 
@@ -121,10 +123,10 @@ async function _scrapeDeudaYBoleto(dni) {
     // Auto-limpieza de archivos antiguos
     await cleanOldFiles();
 
-    browser = await puppeteer.launch({ 
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    // Obtener browser del pool
+    browserData = await browserPool.getBrowser();
+    browser = browserData.browser;
+    
     const page = await browser.newPage();
     await page.setDefaultTimeout(20000);
 
@@ -331,6 +333,11 @@ async function _scrapeDeudaYBoleto(dni) {
     console.error('❌ Error en _scrapeDeudaYBoleto:', error.message);
     console.error('Stack:', error.stack);
     throw error; // Re-lanzar para que el wrapper maneje los reintentos
+  } finally {
+    // Devolver browser al pool
+    if (browser && browserData) {
+      await browserPool.releaseBrowser(browser);
+    }
   }
 }
 
@@ -398,18 +405,12 @@ async function obtenerSoloBoleto(dni, tipoCuota) {
  */
 async function _scrapeSoloBoleto(dni, tipoCuota) {
   let browser;
+  let browserData;
   
   try {
-    // Configuración de Puppeteer
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
-    });
+    // Obtener browser del pool
+    browserData = await browserPool.getBrowser();
+    browser = browserData.browser;
     
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
@@ -565,8 +566,12 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
     
   } catch (error) {
     console.error('❌ Error en _scrapeSoloBoleto:', error);
-    if (browser) await browser.close();
     throw error; // Re-lanzar para que el wrapper maneje los reintentos
+  } finally {
+    // Devolver browser al pool
+    if (browser && browserData) {
+      await browserPool.releaseBrowser(browser);
+    }
   }
 }
 
@@ -606,6 +611,7 @@ async function obtenerDeudaPadron(tipoPadron, datos) {
  */
 async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
   let browser;
+  let browserData;
   const idPadron = `${tipoPadron}_${Object.values(datos).join('_')}`;
   const relativePdfPath = `/temp/${idPadron}.pdf`;
   const absolutePdfPath = path.join(DOWNLOAD_DIR, `${idPadron}.pdf`);
@@ -613,10 +619,10 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
   try {
     await cleanOldFiles();
 
-    browser = await puppeteer.launch({ 
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    // Obtener browser del pool
+    browserData = await browserPool.getBrowser();
+    browser = browserData.browser;
+    
     const page = await browser.newPage();
     await page.setDefaultTimeout(20000);
     await page.setUserAgent(USER_AGENT);
@@ -881,8 +887,12 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
   } catch (error) {
     console.error('❌ Error en _scrapeDeudaYBoletoPadron:', error.message);
     console.error('Stack:', error.stack);
-    if (browser) await browser.close();
     throw error;
+  } finally {
+    // Devolver browser al pool
+    if (browser && browserData) {
+      await browserPool.releaseBrowser(browser);
+    }
   }
 }
 
@@ -923,16 +933,17 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoCuota) {
  */
 async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
   let browser;
+  let browserData;
   const idBoleto = `boleto_${tipoPadron}_${tipoCuota}_${Object.values(datos).join('_')}`;
   const downloadPath = DOWNLOAD_DIR;
 
   try {
     await cleanOldFiles();
 
-    browser = await puppeteer.launch({ 
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    // Obtener browser del pool
+    browserData = await browserPool.getBrowser();
+    browser = browserData.browser;
+    
     const page = await browser.newPage();
     await page.setDefaultTimeout(20000);
     await page.setUserAgent(USER_AGENT);
@@ -1057,8 +1068,12 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
 
   } catch (error) {
     console.error('❌ Error en _scrapeBoletonPadron:', error);
-    if (browser) await browser.close();
     throw error;
+  } finally {
+    // Devolver browser al pool
+    if (browser && browserData) {
+      await browserPool.releaseBrowser(browser);
+    }
   }
 }
 
