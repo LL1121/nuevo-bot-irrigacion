@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, memo } from 'react';
 import { Check, CheckCheck } from 'lucide-react';
 import type { Message } from '../types';
 
@@ -6,7 +6,7 @@ interface MessageListProps {
   messages: Message[];
 }
 
-export function MessageList({ messages }: MessageListProps) {
+export const MessageList = memo(function MessageList({ messages }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -46,4 +46,4 @@ export function MessageList({ messages }: MessageListProps) {
       <div ref={messagesEndRef} />
     </div>
   );
-}
+});

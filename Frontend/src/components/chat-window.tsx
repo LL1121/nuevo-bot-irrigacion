@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { MessageCircle } from 'lucide-react';
 import type { Contact, Message } from '../types';
 import { ChatHeader } from './chat-header';
@@ -10,7 +11,7 @@ interface ChatWindowProps {
   onSendMessage: (text: string) => void;
 }
 
-export function ChatWindow({ contact, messages, onSendMessage }: ChatWindowProps) {
+export const ChatWindow = memo(function ChatWindow({ contact, messages, onSendMessage }: ChatWindowProps) {
   if (!contact) {
     return (
       <div className="hidden md:flex flex-1 items-center justify-center bg-gray-50">
@@ -29,4 +30,4 @@ export function ChatWindow({ contact, messages, onSendMessage }: ChatWindowProps
       <MessageInput onSendMessage={onSendMessage} />
     </div>
   );
-}
+});
