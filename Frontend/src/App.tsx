@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX, Clock } from 'lucide-react';
+import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
@@ -26,11 +26,11 @@ const socket: Socket = io(env.socketUrl, {
 
 // Log de conexión del socket
 socket.on('connect', () => {
-  console.log('✅ Socket conectado con ID:', socket.id);
+  // Socket conectado
 });
 
 socket.on('disconnect', () => {
-  console.log('❌ Socket desconectado');
+  // Socket desconectado
 });
 
 socket.on('connect_error', (error) => {
@@ -183,7 +183,7 @@ export default function App() {
       });
       // Marcar como enviada para este chat
       setReactivationSent(prev => ({ ...prev, [currentChat.phone]: true }));
-      console.log('✅ Plantilla de reactivación enviada');
+      // Plantilla de reactivación enviada
       toast.success('Plantilla de reactivación enviada');
     } catch (err) {
       console.error('❌ Error enviando plantilla de reactivación:', err);
@@ -439,21 +439,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       try {
         const token = localStorage.getItem(env.tokenKey);
         if (!token) {
-          console.warn('⚠️ No hay token en localStorage, retornando a login');
           handleLogout();
           return;
         }
-        console.log('🔄 Cargando chats desde la API... Token:', token.slice(0, 16) + '...');
         const response = await axios.get('/api/chats', {
           headers: { Authorization: `Bearer ${token}` }
         });
-        console.log('📦 Respuesta completa del backend:', response.data);
-        console.log('📦 Tipo de response.data:', typeof response.data);
-        console.log('📦 Es array?', Array.isArray(response.data));
         
         // El backend devuelve { success: true, data: [...], total: N }
         const chats = Array.isArray(response.data) ? response.data : (response.data.data || response.data.chats || []);
-        console.log('✅ Chats extraídos:', chats.length, chats);
         
         // Mapear los datos del backend a la estructura esperada por la UI
         const mappedChats = chats.map((chat: any) => {
@@ -484,16 +478,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           };
         });
         
-        console.log('✅ Chats mapeados y listos:', mappedChats);
         setConversationsState(mappedChats);
       } catch (error: any) {
         const status = error?.response?.status;
-        const data = error?.response?.data;
-        const token = localStorage.getItem(env.tokenKey);
-        console.warn('🔑 Token usado:', token ? token.slice(0, 24) + '...' : 'sin token');
         // Si el token es inválido/expirado, forzar logout para reautenticar
         if (status === 401 || status === 403) {
-          console.warn('🔒 Token inválido o expirado. Cerrando sesión.');
           handleLogout();
         }
       }
@@ -544,27 +533,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         nombre: nombre  // Siempre un string normalizado
       };
       
-      console.log('📨 Nuevo mensaje recibido del socket:', newMsg);
-      console.log('📱 Teléfono del mensaje:', newMsg.telefono);
-      console.log('💬 Contenido normalizado:', messageText);
-      console.log('⏰ Timestamp RAW:', data.timestamp, 'fecha:', data.fecha);
-      console.log('⏰ newMsg.timestamp:', newMsg.timestamp);
-      
-      // SAFEGUARD: Si no tiene ID real del backend, es probable que sea duplicado
-      if (!data.id) {
-        console.warn('⚠️ Mensaje sin ID del backend, usando ID estable:', stableId);
-      }
+      // SAFEGUARD: Si no tiene ID real del backend, usar ID estable
+      const finalId = data.id || stableId;
       
       setConversationsState(prev => {
-        console.log('📋 Conversaciones actuales:', prev.length);
         const existingChatIndex = prev.findIndex(c => c.phone === newMsg.telefono);
-        console.log('🔍 Índice de chat encontrado:', existingChatIndex);
         
         if (existingChatIndex !== -1) {
           // Invalidar caché para este chat
           const cacheKey = `messages_${newMsg.telefono}`;
           localStorage.removeItem(cacheKey);
-          console.log('🗑️ Caché invalidado para:', newMsg.telefono);
           
           // Actualizar conversación existente
           const updated = [...prev];
@@ -573,7 +551,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           
           // Agregar mensaje al array de mensajes si ya están cargados (al FINAL por orden ASC)
           if (chat.messages && Array.isArray(chat.messages)) {
-            console.log('⏰ msgTimestamp parseado:', msgTimestamp.toISOString());
             // newMsg.mensaje ya está normalizado a string en handleNewMessage
             const incomingText = newMsg.mensaje;
             const incomingTextKey = typeof incomingText === 'string' ? incomingText.trim() : JSON.stringify(incomingText ?? '');
@@ -604,7 +581,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               
               if (existingOptimisticMsg) {
                 // Actualizar solo el ID, mantener el timestamp original (crear nuevo array)
-                console.log('🔄 Actualizando ID del mensaje optimista:', existingOptimisticMsg.id, '→', newMsg.id);
                 chat.messages = chat.messages.map((m: any) => 
                   m === existingOptimisticMsg ? { ...existingOptimisticMsg, id: newMsg.id, read: true } : m
                 );
@@ -624,8 +600,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   size: newMsg.archivo_tamanio,
                   duration: newMsg.duracion
                 };
-                const previewText = typeof messageText === 'string' ? messageText.substring(0, 30) : '[Mensaje interactivo]';
-                console.log('➕ Agregando mensaje:', { id: mappedMessage.id, sent: mappedMessage.sent, emisor: newMsg.emisor, texto: previewText });
                 
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
                 const existingIds = new Set(chat.messages.map((m: any) => m.id));
@@ -637,7 +611,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   });
                   // Mantener solo los últimos messagesLimit mensajes en UI
                   chat.messages = sortedMessages.slice(-messagesLimit);
-                  console.log('📅 Mensaje agregado y ordenado por fecha, total:', chat.messages.length);
                   
                   // También agregar al caché de memoria
                   setAllMessagesCache(prev => {
@@ -649,7 +622,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
                       }
                       ));
-                      console.log('💾 Mensaje agregado al caché de memoria');
                       return { ...prev, [chat.phone]: updatedCache };
                     }
                     return prev;
@@ -659,21 +631,19 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   const isUserMessage = emisorLimpio === 'usuario';
                   if (isUserMessage) {
                     chat.unread = (chat.unread || 0) + 1;
-                    console.log('📫 Contador incrementado:', chat.unread);
                   }
                 } else {
-                  console.log('⏭️ ID ya existe en mensajes, ignorando:', mappedMessage.id);
+                  // ID ya existe, ignorar
                 }
               }
             } else {
-              console.log('⏭️ Mensaje ya existe, no se duplica:', typeof newMsg.mensaje === 'string' ? newMsg.mensaje?.substring(0, 30) : '[Objeto JSON]');
+              // Mensaje ya existe, no duplicar
             }
           }
           
           // Actualizar último mensaje y traer al frente
           // newMsg.mensaje ya está normalizado a string en la parte superior de handleNewMessage
           chat.lastMessage = messagePreview || newMsg.mensaje || '[Mensaje sin contenido]';
-          console.log('✉️ LastMessage actualizado:', { lastMessage: chat.lastMessage, tipo: typeof chat.lastMessage });
           chat.lastMessageDate = msgTimestamp.toISOString();
           chat.time = formatTime(msgTimestamp);
           
@@ -719,7 +689,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     };
 
     const handleBotModeChanged = (data: { telefono: string; bot_activo: boolean }) => {
-      console.log('🤖 Cambio en modo del bot:', data);
       setConversationsState(prev => {
         const chatIndex = prev.findIndex(c => c.phone === data.telefono);
         if (chatIndex !== -1) {
@@ -732,7 +701,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     };
 
     const handleTyping = (data: { telefono: string; typing: boolean }) => {
-      console.log('⌨️ Usuario escribiendo:', data.telefono, '- Typing:', data.typing);
       setTypingUsers(prev => {
         const updated = { ...prev };
         if (data.typing) {
@@ -813,7 +781,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         const messagesEnd = document.getElementById('messages-end');
         if (messagesEnd) {
           messagesEnd.scrollIntoView({ behavior: 'smooth', block: 'end' });
-          console.log('📜 Auto-scroll ejecutado');
         }
       }, 50);
       return () => clearTimeout(timer);
@@ -854,36 +821,27 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     if (shouldLoadMessages || cacheExpired) {
       const loadMessages = async () => {
         try {
-          // DESARROLLO: Eliminar caché viejo para forzar recarga desde API
+          // Eliminar caché viejo para forzar recarga desde API
           const cacheKey = `messages_${currentChat.phone}`;
           localStorage.removeItem(cacheKey);
-          console.log('🗑️ Caché eliminado, cargando desde API');
           
-          console.log('📨 Cargando mensajes para:', currentChat.phone);
           const token = localStorage.getItem(env.tokenKey);
           
           // Traer hasta 100 mensajes para optimizar y quedarnos con los últimos 20
           const response = await axios.get(`/api/messages/${currentChat.phone}?limit=100&offset=0`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
-          console.log('📦 Respuesta de mensajes:', response.data);
           
           const allMessages = response.data.messages || [];
           const totalMessages = response.data.total || allMessages.length;
-          console.log('📊 Total de mensajes recibidos:', allMessages.length, 'de', totalMessages);
           
           // Quedarnos solo con los últimos N mensajes
           const messages = allMessages.slice(-messagesLimit);
-          console.log('✅ Mensajes filtrados (últimos', messagesLimit, '):', messages.length);
-          console.log('📋 Primer mensaje completo:', messages[0]);
-          console.log('📋 Campos del primer mensaje:', Object.keys(messages[0] || {}));
           
           // Mapear mensajes al formato esperado por la UI
           const mappedMessages = messages.map((msg: any) => {
             const emisor = (msg.emisor || '').trim(); // Limpiar espacios en blanco
-            console.log('🔍 Mensaje:', { id: msg.id, emisor: emisor, cuerpo: msg.cuerpo?.substring(0, 30) });
             const sent = emisor !== 'usuario';
-            console.log('📍 sent =', sent, '(emisor limpio:', emisor, ')');
             const normalizedContent = normalizeMessageContent(msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
             const msgDate = parseMessageDate(msg.fecha);
@@ -909,8 +867,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               duration: msg.duracion
             };
           });
-          
-          console.log('✅ Mensajes mapeados:', mappedMessages);
           
           // Guardar TODOS los mensajes mapeados en caché de memoria
           const allMappedMessages = allMessages.map((msg: any) => {
@@ -948,7 +904,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           // Guardar en caché de memoria
           setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages }));
           setCurrentMessageIndex(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages.length - messagesLimit }));
-          console.log('💾 Guardados', sortedAllMessages.length, 'mensajes en caché de memoria');
           
           // Solo mostrar los últimos N
           const messagesToShow = sortedAllMessages.slice(-messagesLimit);
@@ -958,10 +913,8 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           // Marcar que NO llegamos al final si hay más mensajes en caché o en BD
           if (allMappedMessages.length > messagesLimit || allMessages.length >= 100) {
             setMessagesEndReached(prev => ({ ...prev, [currentChat.phone]: false }));
-            console.log('📄 Hay más mensajes disponibles');
           } else {
             setMessagesEndReached(prev => ({ ...prev, [currentChat.phone]: true }));
-            console.log('✅ Todos los mensajes cargados');
           }
           
           // Actualizar el chat con los mensajes a mostrar
@@ -1095,7 +1048,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       await axios.post(`/api/chats/${phone}/pause`, {}, {
         headers: {}
       });
-      console.log('✅ Bot pausado para:', phone);
+      // Bot pausado
     } catch (error) {
       console.error('❌ Error pausando bot:', error);
     }
@@ -1107,7 +1060,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       await axios.post(`/api/chats/${phone}/activate`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      console.log('✅ Bot activado para:', phone);
+      // Bot activado
     } catch (error) {
       console.error('❌ Error activando bot:', error);
     }
@@ -1189,7 +1142,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         setAllMessagesCache(prev => {
           const phoneCache = prev[currentChat.phone] || [];
           const updatedCache = dedupeMessages([...phoneCache, tempMessage]);
-          console.log('💾 Mensaje enviado agregado al caché de memoria');
           return { ...prev, [currentChat.phone]: updatedCache };
         });
         
@@ -1210,8 +1162,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           }, {
             headers: {}
           });
-          
-          console.log('✅ Mensaje enviado:', response.data);
           
           // Scroll al final después de enviar
           setTimeout(() => {
@@ -1235,13 +1185,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     m.id === tempId ? { ...m, id: response.data.message.id, status: undefined, read: true } : m
                   );
                   updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
-                  console.log('🔄 ID actualizado por POST response:', tempId, '→', response.data.message.id);
                 } else {
                   // Limpiar el status del mensaje temporal si existe
                   updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
                     m.id === tempId ? { ...m, status: undefined } : m
                   );
-                  console.log('✅ ID ya fue actualizado por socket, limpiando status temporal');
                 }
               }
               return updated;
@@ -1256,10 +1204,8 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 const updatedCache = dedupeMessages(phoneCache.map(msg => 
                   msg.id === tempId ? { ...msg, id: response.data.message.id } : msg
                 ));
-                console.log('💾 ID actualizado en caché de memoria:', tempId, '→', response.data.message.id);
                 return { ...prev, [currentChat.phone]: updatedCache };
               } else {
-                console.log('✅ Caché de memoria ya fue actualizado por socket, ignorando');
                 return prev;
               }
             });
@@ -2092,7 +2038,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             setDragOverChat(false);
             const files = e.dataTransfer.files;
             if (files.length > 0) {
-              console.log('Archivos soltados:', Array.from(files).map(f => f.name));
+              // Archivos soltados
             }
           }}
           style={{
@@ -2127,7 +2073,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   
                   if (cachedMessages.length > 0 && currentIndex > 0) {
                     // Hay mensajes en caché para mostrar
-                    console.log('📦 Cargando desde caché de memoria. Index actual:', currentIndex);
                     
                     // Calcular cuántos mensajes cargar
                     const messagesToLoad = Math.min(messagesLimit, currentIndex);
@@ -2135,7 +2080,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     
                     // Obtener mensajes del caché
                     const messagesFromCache = cachedMessages.slice(startIndex, currentIndex);
-                    console.log('📤 Mostrando', messagesFromCache.length, 'mensajes del caché (desde index', startIndex, 'hasta', currentIndex, ')');
                     
                     // Añadir al principio de los mensajes actuales
                     setConversationsState(prev => {
@@ -2152,18 +2096,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     
                     // Si llegamos al inicio del caché, marcar que no hay más en memoria
                     if (startIndex === 0) {
-                      console.log('✅ Caché de memoria agotado');
+                      // Caché de memoria agotado
                       // Verificar si hay más en la BD
                       if (cachedMessages.length >= 100) {
-                        console.log('🔄 Puede haber más mensajes en BD, el botón seguirá disponible');
+                        // Puede haber más mensajes en BD
                       } else {
                         setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
-                        console.log('✅ No hay más mensajes para cargar');
                       }
                     }
                   } else {
                     // No hay más en caché, hacer llamada a la API
-                    console.log('🌐 Caché agotado, cargando desde API');
                     
                     setMessagesLoading(prev => ({ ...prev, [phone]: true }));
                     
@@ -2176,7 +2118,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       const newMessages = response.data.messages || [];
                       
                       if (newMessages.length > 0) {
-                        console.log('📥 Recibidos', newMessages.length, 'mensajes nuevos de la API');
                         
                         const allMappedMessages = newMessages.map((msg: any) => {
                           const emisor = (msg.emisor || '').trim();
@@ -2219,11 +2160,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         
                         if (newMessages.length < 100) {
                           setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
-                          console.log('✅ No hay más mensajes en BD');
                         }
                       } else {
                         setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
-                        console.log('✅ No hay más mensajes para cargar');
                       }
                     } catch (error) {
                       console.error('❌ Error al cargar más mensajes:', error);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Search, MessageCircle } from 'lucide-react';
 import type { Contact } from '../types';
 
@@ -8,7 +8,7 @@ interface SidebarProps {
   onSelectContact: (contact: Contact) => void;
 }
 
-export function Sidebar({ contacts, selectedContact, onSelectContact }: SidebarProps) {
+export const Sidebar = memo(function Sidebar({ contacts, selectedContact, onSelectContact }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
   const filteredContacts = contacts.filter(contact =>
@@ -120,4 +120,4 @@ export function Sidebar({ contacts, selectedContact, onSelectContact }: SidebarP
       </div>
     </div>
   );
-}
+});

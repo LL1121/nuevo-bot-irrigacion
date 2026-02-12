@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { MoreVertical, Phone, Video } from 'lucide-react';
 import type { Contact } from '../types';
 
@@ -5,7 +6,7 @@ interface ChatHeaderProps {
   contact: Contact;
 }
 
-export function ChatHeader({ contact }: ChatHeaderProps) {
+export const ChatHeader = memo(function ChatHeader({ contact }: ChatHeaderProps) {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active':
@@ -68,4 +69,4 @@ export function ChatHeader({ contact }: ChatHeaderProps) {
       </div>
     </div>
   );
-}
+});
