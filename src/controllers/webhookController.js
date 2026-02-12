@@ -3,6 +3,7 @@ const debtScraperService = require('../services/debtScraperService');
 const mensajeService = require('../services/mensajeService');
 const clienteService = require('../services/clienteService');
 const fs = require('fs');
+const path = require('path');
 
 // Memoria temporal para estados de usuarios
 const userStates = {};
@@ -390,7 +391,6 @@ const sendMenuList = async (from, isFollowUp = false) => {
         { id: 'deuda',           title: '💳 Consultar Deuda' },
         { id: 'boleto',          title: '📦 Pedir Boleto' },
         { id: 'vencimientos',    title: '📅 Consultar Vencimientos' },
-        { id: 'pedido_agua',     title: '🚰 Pedido de Agua' },
         { id: 'perforacion',     title: '🔧 Solicitar Perforación' },
         { id: 'renuncia',        title: '🧾 Tramitar Renuncia' },
         { id: 'turnos',          title: '🗓️ Consultar Turnos' },
@@ -451,15 +451,14 @@ const handleMainMenu = async (from, option) => {
     case '1':
     case 'option_1':
     case 'ubicacion':
-      const locationText = `📍 Nuestras Oficinas
+      const locationText = `📍 Ubicación y Horarios
 
-🏛️ Dirección: Av. San Martín 123, Malargüe (Mendoza)
+Nos encontramos en:
+🏢 Av. San Martín 258, Malargüe, Mendoza
 
-🕒 Horarios de Atención:
-• Lunes a Viernes: 08:00 a 13:00 hs
-• Sábados y Domingos: Cerrado
-
-🗺️ Te esperamos para resolver tus consultas presenciales.`;
+⏰ Horarios de atención:
+📅 Lunes a Viernes: 8:00 a 13:30 hs
+🚫 Fines de semana: Cerrado`;
       
       await sendMessageAndSave(from, locationText);
       // Reenviar la lista con mensaje de seguimiento
@@ -470,15 +469,26 @@ const handleMainMenu = async (from, option) => {
     case '2':
     case 'option_2':
     case 'empadronamiento':
-      const infoText = `📋 Requisitos de Empadronamiento
+      const infoText = `� Empadronamiento / Pedido de Agua
 
-Para darte de alta como usuario del sistema hídrico, acercate con:
+*REQUISITOS:*
 
-✅ DNI del Titular (Original y Copia)
-✅ Escritura de la Propiedad (Copia certificada)
-✅ Plano de Mensura (Si posee)
+a) Nombre, DNI, domicilio del solicitante
+b) Firma del propietario del inmueble
+c) Identificación del predio a beneficiar
+d) Uso al que se destinará el recurso
+e) Tipo de cultivo o actividad
+f) Sistema de riego que utilizará
+g) Elementos para cuantificar demanda
+h) Acreditación de titularidad (Nomenclatura Catastral)
+i) Certificado de libre deuda del DGI
 
-ℹ️ El trámite es personal y presencial.`;
+*SOLICITUD DE PERMISO PRECARIO:*
+Mismos requisitos (a-i)
+
+📧 Presentación:
+• Presencial en oficinas
+• Email: entradasmalargue@irrigacion.gov.ar`;
       
       await sendMessageAndSave(from, infoText);
       // Reenviar la lista con mensaje de seguimiento
@@ -499,29 +509,37 @@ Para darte de alta como usuario del sistema hídrico, acercate con:
       break;
 
     case 'vencimientos': {
-      const vencimientosText = `📅 Consultar Vencimientos
+      try {
+        const imagePath = path.join(__dirname, '../../public/images/vencimientos.jpg');
+        
+        // Verificar si existe la imagen
+        if (fs.existsSync(imagePath)) {
+          const vencimientosText = `📅 Consultar Vencimientos
 
-Esta opción estará disponible próximamente.
+Aquí están las fechas de vencimiento actualizadas:`;
+          await sendMessageAndSave(from, vencimientosText);
+          
+          // Enviar imagen
+          await whatsappService.sendImage(from, imagePath, '📅 Calendario de vencimientos');
+          
+          await sendMenuList(from, true);
+          console.log(`📅 Imagen de vencimientos enviada a ${from}`);
+        } else {
+          const errorText = `📅 Consultar Vencimientos
 
-Mientras tanto, puedes consultar deuda o pedir el boleto.`;
-      await sendMessageAndSave(from, vencimientosText);
-      await sendMenuList(from, true);
-      console.log(`📅 Info de vencimientos enviada a ${from}`);
-      break;
-    }
+La imagen de vencimientos no está disponible en este momento.
 
-    case 'pedido_agua': {
-      const aguaText = `🚰 Pedido de Agua
-
-Requisitos para solicitar agua:
-• Nota firmada del titular
-• Croquis de riego (trazado y puntos)
-• Canon al día
-
-Presentate en nuestras oficinas con la documentación.`;
-      await sendMessageAndSave(from, aguaText);
-      await sendMenuList(from, true);
-      console.log(`🚰 Info de pedido de agua enviada a ${from}`);
+Por favor contactá a un operador para más información.`;
+          await sendMessageAndSave(from, errorText);
+          await sendMenuList(from, true);
+          console.log(`⚠️ Imagen de vencimientos no encontrada para ${from}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error enviando vencimientos a ${from}:`, error);
+        const errorText = `❌ Error al cargar la información de vencimientos. Intenta de nuevo más tarde.`;
+        await sendMessageAndSave(from, errorText);
+        await sendMenuList(from, true);
+      }
       break;
     }
 
@@ -533,14 +551,40 @@ Presentate en nuestras oficinas con la documentación.`;
     case 'renuncia': {
       const renunciaText = `🧾 Tramitar Renuncia
 
-Requisitos:
-• Libre deuda
-• Escritura o instrumento que acredite titularidad
-• DNI del titular
-• Nota de baja firmada
+*REQUISITOS:*
 
-Trámite presencial en oficinas.`;
+1. Constancia de Libre Deuda (tributos de riego)
+2. Constancia de pago Obras Reembolsables
+3. Constancia de pago de Aranceles (Acordadas)
+4. Constancia conexión Red Pública Agua Potable
+5. Sistema de Micromedición (opcional)
+6. Apoderados: instrumento público
+7. Fallecimiento: declaratoria de herederos
+8. Copia Escritura Traslativa de Dominio
+9. Copia Plano de Mensura (DPC)
+10. Otra documentación requerida
+
+📋 Además deberás completar un formulario.
+
+📧 Presentación presencial en oficinas.`;
       await sendMessageAndSave(from, renunciaText);
+      
+      try {
+        const docPath = path.join(__dirname, '../../public/docs/formulario_renuncia.pdf');
+        
+        // Verificar si existe el documento
+        if (fs.existsSync(docPath)) {
+          await whatsappService.sendDocument(from, docPath, 'Formulario de Renuncia.pdf');
+          console.log(`📎 Formulario de renuncia enviado a ${from}`);
+        } else {
+          const infoText = `📎 El formulario estará disponible en oficinas.`;
+          await sendMessageAndSave(from, infoText);
+          console.log(`⚠️ Formulario de renuncia no encontrado para ${from}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error enviando formulario a ${from}:`, error);
+      }
+      
       await sendMenuList(from, true);
       console.log(`🧾 Info de renuncia enviada a ${from}`);
       break;
