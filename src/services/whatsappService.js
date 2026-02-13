@@ -37,7 +37,7 @@ const sendMessage = async (to, text) => {
   }
 
   return withWhatsAppRetry(async () => {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const data = {
       messaging_product: 'whatsapp',
@@ -50,7 +50,7 @@ const sendMessage = async (to, text) => {
 
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
@@ -75,7 +75,7 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
   }
 
   return withWhatsAppRetry(async () => {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
     const templatePayload = {
       name: templateName,
@@ -94,7 +94,7 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
 
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json; charset=utf-8'
       }
     };
@@ -113,7 +113,7 @@ const getMediaInfo = async (mediaId) => {
   const url = `${WHATSAPP_API_URL}/${mediaId}`;
   const config = {
     headers: {
-      'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`
+      'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`
     }
   };
   try {
@@ -180,7 +180,7 @@ const fetchMediaStream = async (mediaUrl) => {
   const config = {
     responseType: 'stream',
     headers: {
-      'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`
+      'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`
     }
   };
   try {
@@ -208,7 +208,7 @@ const sendInteractiveList = async (to, headerText, bodyText, buttonText, section
   }
 
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     // Construir el header según si hay imagen o no
     let header;
@@ -245,7 +245,7 @@ const sendInteractiveList = async (to, headerText, bodyText, buttonText, section
 
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
@@ -272,7 +272,7 @@ const sendInteractiveButtons = async (to, bodyText, buttons) => {
   }
 
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const data = {
       messaging_product: 'whatsapp',
@@ -297,7 +297,7 @@ const sendInteractiveButtons = async (to, bodyText, buttons) => {
 
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
@@ -324,7 +324,7 @@ const sendImage = async (to, imageUrl, caption = '') => {
   }
 
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const data = {
       messaging_product: 'whatsapp',
@@ -338,7 +338,7 @@ const sendImage = async (to, imageUrl, caption = '') => {
 
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
@@ -358,7 +358,7 @@ const sendImage = async (to, imageUrl, caption = '') => {
  */
 const markAsRead = async (messageId) => {
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const data = {
       messaging_product: 'whatsapp',
@@ -368,7 +368,7 @@ const markAsRead = async (messageId) => {
 
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
@@ -393,7 +393,7 @@ const uploadMedia = async (filePath, mimeType) => {
   const FormData = require('form-data');
   
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/media`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/media`;
     
     const formData = new FormData();
     formData.append('messaging_product', 'whatsapp');
@@ -403,7 +403,7 @@ const uploadMedia = async (filePath, mimeType) => {
     
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         ...formData.getHeaders()
       }
     };
@@ -432,7 +432,7 @@ const sendDocument = async (to, mediaId, fileName, caption = '') => {
   }
   
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const data = {
       messaging_product: 'whatsapp',
@@ -447,7 +447,7 @@ const sendDocument = async (to, mediaId, fileName, caption = '') => {
     
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
@@ -479,7 +479,7 @@ const sendButtonReply = async (to, text, buttons) => {
   }
   
   try {
-    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`;
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const data = {
       messaging_product: 'whatsapp',
@@ -504,7 +504,7 @@ const sendButtonReply = async (to, text, buttons) => {
     
     const config = {
       headers: {
-        'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     };
