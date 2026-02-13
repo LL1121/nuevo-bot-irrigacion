@@ -1,15 +1,28 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CRÍTICO: Excluir carpeta Frontend del contenedor Backend
+# ═══════════════════════════════════════════════════════════════════════════════
+Frontend/
+Frontend
+
 # Dependencias
 node_modules
+node_modules/
+**/node_modules/
 npm-debug.log
 yarn-error.log
 package-lock.json
+yarn.lock
 
 # Archivos de desarrollo
 .git
+.git/
 .gitignore
+.gitattributes
 .env
+.env.*
 .env.local
 .env.*.local
+.env.production.example
 
 # Tests
 coverage
