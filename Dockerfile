@@ -1,49 +1,33 @@
-# Usar imagen base de Node.js LTS
-FROM node:20-slim
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile para BACKEND (Node.js 18-alpine)
+# Contexto de build: raíz del proyecto
+# .dockerignore se encarga de excluir la carpeta Frontend/
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Instalar dependencias del sistema necesarias para Puppeteer
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
+FROM node:18-alpine
+
+# Metadatos
+LABEL maintainer="Lautaro <lautaro@irrigacionmalargue.net>"
+LABEL description="Backend Irrigación Bot - Node.js 18 Alpine"
+
+# Instalar dependencias del sistema necesarias para Puppeteer y aplicaciones
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
     ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgbm1 \
-    libgcc1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    lsb-release \
-    xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+    ttf-freefont \
+    python3 \
+    make \
+    g++
 
-# Crear directorio de la aplicación
-WORKDIR /usr/src/app
+# Establecer Chromium path para Puppeteer
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+# Crear directorio de trabajo
+WORKDIR /app
 
 # Copiar archivos de dependencias
 COPY package*.json ./
@@ -51,35 +35,32 @@ COPY package*.json ./
 # Instalar dependencias de producción
 RUN npm ci --only=production
 
-# Instalar Puppeteer y descargar Chromium
-RUN npm install puppeteer
-
-# Copiar el resto del código
+# Copiar el resto del código del Backend
+# .dockerignore excluye automáticamente Frontend/, node_modules/, .git, etc
 COPY . .
 
-# Crear directorios necesarios
-RUN mkdir -p public/temp public/images public/docs logs
+# Crear carpetas necesarias con permisos
+RUN mkdir -p temp uploads tokens logs && \
+    chmod 755 temp uploads tokens logs
 
-# Configurar permisos
-RUN chmod -R 755 public logs
+# Crear usuario no-root para seguridad
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 && \
+    chown -R nodejs:nodejs /app
+
+# Cambiar al usuario nodejs
+USER nodejs
 
 # Exponer puerto
 EXPOSE 3000
 
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+
 # Variables de entorno por defecto
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV MAX_BROWSERS=3
-ENV DB_CONNECTION_LIMIT=50
-
-# Usuario no-root para seguridad
-RUN groupadd -r nodeuser && useradd -r -g nodeuser nodeuser
-RUN chown -R nodeuser:nodeuser /usr/src/app
-USER nodeuser
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
 # Comando de inicio
 CMD ["node", "src/index.js"]
