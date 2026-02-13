@@ -1,4 +1,4 @@
-const { getPool } = require('../config/db');
+const { query, run, get } = require('../config/db');
 const { withTransaction } = require('./transactionService');
 const { registrarCambio } = require('./auditService');
 
@@ -16,43 +16,42 @@ const { registrarCambio } = require('./auditService');
 const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil = null) => {
   try {
     // Buscar cliente existente
-    const pool = getPool();
-    const [rows] = await pool.execute(
+    const rows = await query(
       'SELECT * FROM clientes WHERE telefono = ?',
       [telefono]
     );
 
-    if (rows.length > 0) {
+    if (rows && rows.length > 0) {
       // Cliente existe - actualizar ultima_interaccion, nombre y foto si están vacíos
-      await pool.execute(
-        'UPDATE clientes SET ultima_interaccion = NOW(), nombre_whatsapp = COALESCE(nombre_whatsapp, ?), foto_perfil = COALESCE(foto_perfil, ?) WHERE telefono = ?',
+      await run(
+        'UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP, nombre_whatsapp = COALESCE(nombre_whatsapp, ?), foto_perfil = COALESCE(foto_perfil, ?) WHERE telefono = ?',
         [nombre, fotoPerfil, telefono]
       );
       
       console.log(`👤 Cliente existente: ${telefono} - ${nombre}`);
       // Retornar cliente actualizado
-      const [updatedClient] = await pool.execute(
+      const updatedClient = await get(
         'SELECT * FROM clientes WHERE telefono = ?',
         [telefono]
       );
-      return updatedClient[0];
+      return updatedClient;
     }
 
     // Cliente nuevo - crear registro
-    await pool.execute(
-      'INSERT INTO clientes (telefono, nombre_whatsapp, foto_perfil, bot_activo, fecha_registro, ultima_interaccion) VALUES (?, ?, ?, TRUE, NOW(), NOW())',
+    await run(
+      'INSERT INTO clientes (telefono, nombre_whatsapp, foto_perfil, bot_activo, fecha_registro, ultima_interaccion) VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
       [telefono, nombre, fotoPerfil]
     );
 
     console.log(`✨ Nuevo cliente registrado: ${telefono} - ${nombre}`);
 
     // Retornar el cliente recién creado
-    const [newClient] = await pool.execute(
+    const newClient = await get(
       'SELECT * FROM clientes WHERE telefono = ?',
       [telefono]
     );
 
-    return newClient[0];
+    return newClient;
   } catch (error) {
     console.error('❌ Error en obtenerOCrearCliente:', error);
     throw error;
@@ -65,8 +64,7 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
  */
 const obtenerTodosLosClientes = async () => {
   try {
-    const pool = getPool();
-    const [rows] = await pool.execute(`
+    const rows = await query(`
       SELECT 
         c.telefono,
         c.nombre_whatsapp,
@@ -84,8 +82,8 @@ const obtenerTodosLosClientes = async () => {
       ORDER BY c.ultima_interaccion DESC
     `);
 
-    console.log(`📋 ${rows.length} clientes obtenidos`);
-    return rows;
+    console.log(`📋 ${rows && rows.length ? rows.length : 0} clientes obtenidos`);
+    return rows || [];
   } catch (error) {
     console.error('❌ Error en obtenerTodosLosClientes:', error);
     throw error;
@@ -101,20 +99,20 @@ const obtenerTodosLosClientes = async () => {
  * @param {string} usuario - Usuario que realizó el cambio (para auditoría)
  */
 const actualizarDni = async (telefono, dni, usuario = 'SYSTEM') => {
-  return withTransaction(async (connection) => {
+  return withTransaction(async () => {
     try {
       console.log(`📝 Actualizando DNI en TRANSACCIÓN...`);
       
       // Obtener valor anterior para auditoría
-      const [clienteActual] = await connection.execute(
+      const clienteActual = await get(
         'SELECT padron FROM clientes WHERE telefono = ?',
         [telefono]
       );
-      const valoresAnteriores = clienteActual.length > 0 ? { padron: clienteActual[0].padron } : null;
+      const valoresAnteriores = clienteActual ? { padron: clienteActual.padron } : null;
 
       // OPERACIÓN 1: Actualizar DNI
-      const [result] = await connection.execute(
-        'UPDATE clientes SET padron = ?, ultima_interaccion = NOW() WHERE telefono = ?',
+      const result = await run(
+        'UPDATE clientes SET padron = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
         [dni, telefono]
       );
       console.log(`   ✅ DNI ${dni} actualizado para ${telefono}`);
@@ -129,7 +127,7 @@ const actualizarDni = async (telefono, dni, usuario = 'SYSTEM') => {
         { padron: dni }
       );
 
-      return result.affectedRows > 0;
+      return result.changes > 0;
     } catch (error) {
       console.error('❌ Error en transacción de DNI:', error.message);
       throw error;
@@ -144,12 +142,11 @@ const actualizarDni = async (telefono, dni, usuario = 'SYSTEM') => {
  */
 const obtenerDni = async (telefono) => {
   try {
-    const pool = getPool();
-    const [rows] = await pool.execute(
+    const row = await get(
       'SELECT padron FROM clientes WHERE telefono = ?',
       [telefono]
     );
-    return rows.length > 0 && rows[0].padron ? rows[0].padron : null;
+    return row && row.padron ? row.padron : null;
   } catch (error) {
     console.error('❌ Error obteniendo DNI:', error);
     return null;
@@ -165,18 +162,16 @@ const obtenerDni = async (telefono) => {
  */
 const cambiarEstadoBot = async (telefono, activo, usuario = 'SYSTEM') => {
   try {
-    const pool = getPool();
-
     // Obtener estado anterior para auditoría
-    const [clienteActual] = await pool.execute(
+    const clienteActual = await get(
       'SELECT bot_activo FROM clientes WHERE telefono = ?',
       [telefono]
     );
-    const valoresAnteriores = clienteActual.length > 0 ? { bot_activo: clienteActual[0].bot_activo } : null;
+    const valoresAnteriores = clienteActual ? { bot_activo: clienteActual.bot_activo } : null;
 
-    await pool.execute(
+    await run(
       'UPDATE clientes SET bot_activo = ? WHERE telefono = ?',
-      [activo, telefono]
+      [activo ? 1 : 0, telefono]
     );
 
     // AUDITORÍA: Registrar el cambio
@@ -204,12 +199,11 @@ const cambiarEstadoBot = async (telefono, activo, usuario = 'SYSTEM') => {
  */
 const esBotActivo = async (telefono) => {
   try {
-    const pool = getPool();
-    const [rows] = await pool.execute(
+    const row = await get(
       'SELECT bot_activo FROM clientes WHERE telefono = ?',
       [telefono]
     );
-    return rows.length > 0 ? Boolean(rows[0].bot_activo) : true;
+    return row ? Boolean(row.bot_activo) : true;
   } catch (error) {
     console.error('❌ Error verificando estado bot:', error);
     return true; // Por defecto activo
@@ -223,12 +217,11 @@ const esBotActivo = async (telefono) => {
  */
 const obtenerCliente = async (telefono) => {
   try {
-    const pool = getPool();
-    const [rows] = await pool.execute(
+    const row = await get(
       'SELECT * FROM clientes WHERE telefono = ?',
       [telefono]
     );
-    return rows.length > 0 ? rows[0] : null;
+    return row || null;
   } catch (error) {
     console.error('❌ Error obteniendo cliente:', error);
     throw error;
@@ -243,10 +236,9 @@ const obtenerCliente = async (telefono) => {
  */
 const actualizarPadronSuperficial = async (telefono, codigoCauce, numeroPadron) => {
   try {
-    const pool = getPool();
     const padronData = `${codigoCauce} ${numeroPadron}`;
     
-    await pool.execute(
+    await run(
       'UPDATE clientes SET padron_superficial = ?, tipo_consulta_preferido = ? WHERE telefono = ?',
       [padronData, 'superficial', telefono]
     );
@@ -267,10 +259,9 @@ const actualizarPadronSuperficial = async (telefono, codigoCauce, numeroPadron) 
  */
 const actualizarPadronSubterraneo = async (telefono, codigoDepartamento, numeroPozo) => {
   try {
-    const pool = getPool();
     const padronData = `${codigoDepartamento} ${numeroPozo}`;
     
-    await pool.execute(
+    await run(
       'UPDATE clientes SET padron_subterraneo = ?, tipo_consulta_preferido = ? WHERE telefono = ?',
       [padronData, 'subterraneo', telefono]
     );
@@ -290,9 +281,7 @@ const actualizarPadronSubterraneo = async (telefono, codigoDepartamento, numeroP
  */
 const actualizarPadronContaminacion = async (telefono, numeroContaminacion) => {
   try {
-    const pool = getPool();
-    
-    await pool.execute(
+    await run(
       'UPDATE clientes SET padron_contaminacion = ?, tipo_consulta_preferido = ? WHERE telefono = ?',
       [numeroContaminacion, 'contaminacion', telefono]
     );

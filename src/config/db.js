@@ -1,197 +1,215 @@
 require('dotenv').config();
-const mysql = require('mysql2/promise');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
-// Nombre de la base de datos objetivo
-const DB_NAME = process.env.DB_NAME || 'irrigacion_bot';
+// Ruta del archivo SQLite
+const DB_PATH = process.env.DB_FILENAME || path.join(__dirname, '../../data/irrigacion.db');
 
-let pool = null;
+let db = null;
 
 /**
- * Inicializa la base de datos y crea tablas si no existen
+ * Inicializa la base de datos SQLite y crea tablas si no existen
  */
 const initializeDB = async () => {
-  if (pool) return pool;
+  if (db) return db;
 
-  // Conexión sin base seleccionada para poder crearla
-  const tempConnection = await mysql.createConnection({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || ''
+  return new Promise((resolve, reject) => {
+    db = new sqlite3.Database(DB_PATH, (err) => {
+      if (err) {
+        console.error('❌ Error al conectar a SQLite:', err);
+        reject(err);
+      } else {
+        console.log(`✅ Base de datos SQLite "${DB_PATH}" inicializada`);
+        
+        // Habilitar foreign keys
+        db.run('PRAGMA foreign_keys = ON', async (err) => {
+          if (err) {
+            console.error('Error al habilitar foreign keys:', err);
+            reject(err);
+          } else {
+            try {
+              await createTables();
+              resolve(db);
+            } catch (error) {
+              reject(error);
+            }
+          }
+        });
+      }
+    });
   });
+};
 
-  // Crear base de datos si no existe
-  await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\``);
-  console.log(`✅ Base de datos "${DB_NAME}" verificada/creada`);
+/**
+ * Crea las tablas necesarias
+ */
+const createTables = async () => {
+  const queries = [
+    // Tabla clientes
+    `CREATE TABLE IF NOT EXISTS clientes (
+      telefono TEXT PRIMARY KEY,
+      nombre_whatsapp TEXT DEFAULT 'Sin Nombre',
+      nombre_asignado TEXT,
+      foto_perfil TEXT,
+      padron TEXT,
+      padron_superficial TEXT,
+      padron_subterraneo TEXT,
+      padron_contaminacion TEXT,
+      tipo_consulta_preferido TEXT,
+      estado_deuda TEXT,
+      bot_activo INTEGER DEFAULT 1,
+      ultima_interaccion DATETIME DEFAULT CURRENT_TIMESTAMP,
+      fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
 
-  // Crear pool apuntando a la base ya existente
-  pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: DB_NAME,
-    waitForConnections: true,
-    connectionLimit: 50, // Aumentado de 10 a 50 para múltiples usuarios
-    queueLimit: 0,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0,
-    maxIdle: 10, // Mantener 10 conexiones idle
-    idleTimeout: 60000, // 60 segundos timeout para conexiones idle
-    connectTimeout: 10000 // 10 segundos timeout para conectar
-  });
+    // Crear índice para clientes
+    `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
 
-  // Crear tablas necesarias
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS clientes (
-      telefono VARCHAR(20) PRIMARY KEY,
-      nombre_whatsapp VARCHAR(255) DEFAULT 'Sin Nombre',
-      nombre_asignado VARCHAR(255),
-      foto_perfil VARCHAR(500),
-      padron VARCHAR(50),
-      estado_deuda VARCHAR(50),
-      bot_activo BOOLEAN DEFAULT TRUE,
-      ultima_interaccion DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_ultima_interaccion (ultima_interaccion)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-  `);
+    // Tabla usuarios (legacy)
+    `CREATE TABLE IF NOT EXISTS usuarios (
+      telefono TEXT PRIMARY KEY,
+      dni TEXT,
+      bot_mode TEXT DEFAULT 'active',
+      last_update DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
 
-  // Agregar columna foto_perfil si no existe (migración compatible con MySQL)
-  try {
-    await pool.query(`
-      ALTER TABLE clientes 
-      ADD COLUMN foto_perfil VARCHAR(500) AFTER nombre_asignado;
-    `);
-    console.log('✅ Columna foto_perfil agregada');
-  } catch (error) {
-    // Columna ya existe o error - ignorar silenciosamente
-    if (!error.message.includes('Duplicate column')) {
-      console.log('⚠️ Migración foto_perfil:', error.message);
-    }
-  }
-
-  // Agregar columnas para padrón si no existen
-  try {
-    await pool.query(`
-      ALTER TABLE clientes 
-      ADD COLUMN padron_superficial VARCHAR(100),
-      ADD COLUMN padron_subterraneo VARCHAR(100),
-      ADD COLUMN padron_contaminacion VARCHAR(100),
-      ADD COLUMN tipo_consulta_preferido VARCHAR(20);
-    `);
-    console.log('✅ Columnas de padrón agregadas');
-  } catch (error) {
-    if (!error.message.includes('Duplicate column')) {
-      console.log('⚠️ Migración padrón:', error.message);
-    }
-  }
-
-  // Tabla legacy para compatibilidad con flujos existentes
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS usuarios (
-      telefono VARCHAR(20) PRIMARY KEY,
-      dni VARCHAR(20),
-      bot_mode ENUM('active','paused') DEFAULT 'active',
-      last_update DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS mensajes (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      message_id VARCHAR(100) NULL,
-      cliente_telefono VARCHAR(20) NOT NULL,
-      tipo VARCHAR(30) NOT NULL,
+    // Tabla mensajes
+    `CREATE TABLE IF NOT EXISTS mensajes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT UNIQUE,
+      cliente_telefono TEXT NOT NULL,
+      tipo TEXT NOT NULL,
       cuerpo TEXT NOT NULL,
-      url_archivo VARCHAR(500),
-      emisor ENUM('bot', 'usuario', 'operador') DEFAULT 'usuario',
+      url_archivo TEXT,
+      emisor TEXT DEFAULT 'usuario',
       fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_cliente_fecha (cliente_telefono, fecha),
-      CONSTRAINT fk_mensajes_cliente FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-  `);
+      FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
+    )`,
 
-  // Agregar columna message_id si no existe (deduplicación de mensajes entrantes)
-  try {
-    await pool.query(`
-      ALTER TABLE mensajes
-      ADD COLUMN message_id VARCHAR(100) NULL AFTER id;
-    `);
-    console.log('✅ Columna message_id agregada');
-  } catch (error) {
-    if (!error.message.includes('Duplicate column')) {
-      console.log('⚠️ Migración message_id:', error.message);
-    }
-  }
+    // Índices para mensajes
+    `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
+    `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
 
-  // Índice único para evitar duplicados por reintentos de Meta
-  try {
-    await pool.query(`
-      CREATE UNIQUE INDEX idx_message_id ON mensajes (message_id);
-    `);
-    console.log('✅ Índice único idx_message_id creado');
-  } catch (error) {
-    if (!error.message.includes('Duplicate key name')) {
-      console.log('⚠️ Migración idx_message_id:', error.message);
-    }
-  }
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS notas_internas (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      cliente_telefono VARCHAR(20) NOT NULL,
+    // Tabla notas_internas
+    `CREATE TABLE IF NOT EXISTS notas_internas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cliente_telefono TEXT NOT NULL,
       texto TEXT NOT NULL,
-      autor VARCHAR(100),
+      autor TEXT,
       fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_cliente_fecha_notas (cliente_telefono, fecha),
-      CONSTRAINT fk_notas_cliente FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-  `);
+      FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
+    )`,
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS operadores (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      username VARCHAR(100) NOT NULL UNIQUE,
-      email VARCHAR(255) NOT NULL UNIQUE,
-      password_hash VARCHAR(255) NOT NULL,
-      role ENUM('admin', 'operador') DEFAULT 'operador',
+    // Índice para notas
+    `CREATE INDEX IF NOT EXISTS idx_cliente_fecha_notas ON notas_internas(cliente_telefono, fecha)`,
+
+    // Tabla operadores
+    `CREATE TABLE IF NOT EXISTS operadores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT DEFAULT 'operador',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_username (username),
-      INDEX idx_email (email)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-  `);
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS audit_log (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      usuario VARCHAR(255) NOT NULL,
-      accion VARCHAR(50) NOT NULL,
-      tabla VARCHAR(50) NOT NULL,
-      id_registro VARCHAR(255) NOT NULL,
-      valores_anteriores JSON,
-      valores_nuevos JSON,
-      ip_address VARCHAR(45),
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_usuario_timestamp (usuario, timestamp),
-      INDEX idx_tabla_id (tabla, id_registro),
-      INDEX idx_accion (accion),
-      INDEX idx_timestamp (timestamp)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-  `);
+    // Índices para operadores
+    `CREATE INDEX IF NOT EXISTS idx_username ON operadores(username)`,
+    `CREATE INDEX IF NOT EXISTS idx_email ON operadores(email)`,
+
+    // Tabla audit_log
+    `CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario TEXT NOT NULL,
+      accion TEXT NOT NULL,
+      tabla TEXT NOT NULL,
+      id_registro TEXT NOT NULL,
+      valores_anteriores TEXT,
+      valores_nuevos TEXT,
+      ip_address TEXT,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    // Índices para audit_log
+    `CREATE INDEX IF NOT EXISTS idx_usuario_timestamp ON audit_log(usuario, timestamp)`,
+    `CREATE INDEX IF NOT EXISTS idx_tabla_id ON audit_log(tabla, id_registro)`,
+    `CREATE INDEX IF NOT EXISTS idx_accion ON audit_log(accion)`,
+    `CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp)`
+  ];
+
+  for (const query of queries) {
+    await new Promise((resolve, reject) => {
+      db.run(query, (err) => {
+        if (err && !err.message.includes('already exists')) {
+          console.error('❌ Error en query:', query);
+          console.error(err);
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
 
   console.log('✅ Tablas clientes, mensajes, notas_internas, operadores y audit_log listas');
+};
 
-  await tempConnection.end();
-  return pool;
+/**
+ * Ejecuta una query de lectura (SELECT)
+ */
+const query = async (sql, params = []) => {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+};
+
+/**
+ * Ejecuta una query de escritura (INSERT, UPDATE, DELETE)
+ */
+const run = async (sql, params = []) => {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve({ lastID: this.lastID, changes: this.changes });
+    });
+  });
+};
+
+/**
+ * Obtiene una única fila
+ */
+const get = async (sql, params = []) => {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+};
+
+const getDB = () => {
+  if (!db) throw new Error('Base de datos no inicializada. Llama a initializeDB() primero.');
+  return db;
 };
 
 const getPool = () => {
-  if (!pool) throw new Error('Pool no inicializado. Llama a initializeDB() primero.');
-  return pool;
+  // Compatibilidad con código existente que usa getPool()
+  return {
+    query: (sql) => query(sql),
+    execute: (sql, params) => run(sql, params)
+  };
 };
 
-// Exportar manteniendo compatibilidad: pool (luego de init) y helpers
+// Exportar
 module.exports = {
   initializeDB,
+  query,
+  run,
+  get,
+  getDB,
   getPool
 };

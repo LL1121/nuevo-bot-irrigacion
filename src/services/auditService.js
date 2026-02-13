@@ -1,4 +1,4 @@
-const { getPool } = require('../config/db');
+const { run, query } = require('../config/db');
 
 /**
  * Servicio de Auditoría - Registra cambios en tablas críticas
@@ -26,18 +26,16 @@ const registrarCambio = async (
   ipAddress = 'SYSTEM'
 ) => {
   try {
-    const pool = getPool();
-    
-    const query = `
+    const queryStr = `
       INSERT INTO audit_log (usuario, accion, tabla, id_registro, valores_anteriores, valores_nuevos, ip_address, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `;
 
     // Serializar objetos a JSON
     const valoresAnterioresJSON = valoresAnteriores ? JSON.stringify(valoresAnteriores) : null;
     const valoresNuevosJSON = valoresNuevos ? JSON.stringify(valoresNuevos) : null;
 
-    const [result] = await pool.query(query, [
+    const result = await run(queryStr, [
       usuario,
       accion,
       tabla,
@@ -51,7 +49,7 @@ const registrarCambio = async (
 
     return {
       success: true,
-      id: result.insertId
+      id: result.lastID
     };
   } catch (error) {
     console.error('❌ Error registrando auditoría:', error);
@@ -70,17 +68,15 @@ const registrarCambio = async (
  */
 const obtenerHistorial = async (tabla, idRegistro) => {
   try {
-    const pool = getPool();
-
-    const query = `
+    const queryStr = `
       SELECT 
         id,
         usuario,
         accion,
         tabla,
         id_registro,
-        JSON_UNQUOTE(valores_anteriores) as valores_anteriores,
-        JSON_UNQUOTE(valores_nuevos) as valores_nuevos,
+        valores_anteriores,
+        valores_nuevos,
         ip_address,
         timestamp
       FROM audit_log
@@ -89,7 +85,7 @@ const obtenerHistorial = async (tabla, idRegistro) => {
       LIMIT 50
     `;
 
-    const [rows] = await pool.query(query, [tabla, idRegistro]);
+    const rows = await query(queryStr, [tabla, idRegistro]);
     
     return rows.map(row => ({
       ...row,
@@ -109,9 +105,7 @@ const obtenerHistorial = async (tabla, idRegistro) => {
  */
 const obtenerLog = async (filtros = {}) => {
   try {
-    const pool = getPool();
-    
-    let query = `
+    let queryStr = `
       SELECT 
         id,
         usuario,
@@ -127,41 +121,41 @@ const obtenerLog = async (filtros = {}) => {
     const params = [];
 
     if (filtros.usuario) {
-      query += ` AND usuario = ?`;
+      queryStr += ` AND usuario = ?`;
       params.push(filtros.usuario);
     }
 
     if (filtros.tabla) {
-      query += ` AND tabla = ?`;
+      queryStr += ` AND tabla = ?`;
       params.push(filtros.tabla);
     }
 
     if (filtros.accion) {
-      query += ` AND accion = ?`;
+      queryStr += ` AND accion = ?`;
       params.push(filtros.accion);
     }
 
     if (filtros.fechaDesde) {
-      query += ` AND timestamp >= ?`;
+      queryStr += ` AND timestamp >= ?`;
       params.push(filtros.fechaDesde);
     }
 
     if (filtros.fechaHasta) {
-      query += ` AND timestamp <= ?`;
+      queryStr += ` AND timestamp <= ?`;
       params.push(filtros.fechaHasta);
     }
 
-    query += ` ORDER BY timestamp DESC`;
+    queryStr += ` ORDER BY timestamp DESC`;
 
     if (filtros.limite) {
-      query += ` LIMIT ?`;
+      queryStr += ` LIMIT ?`;
       params.push(filtros.limite);
     } else {
-      query += ` LIMIT 100`; // Default limit
+      queryStr += ` LIMIT 100`; // Default limit
     }
 
-    const [rows] = await pool.query(query, params);
-    return rows;
+    const rows = await query(queryStr, params);
+    return rows || [];
   } catch (error) {
     console.error('❌ Error obteniendo log de auditoría:', error);
     return [];
@@ -176,25 +170,23 @@ const obtenerLog = async (filtros = {}) => {
  */
 const obtenerResumenUsuario = async (usuario, dias = 7) => {
   try {
-    const pool = getPool();
-
-    const query = `
+    const queryStr = `
       SELECT 
         accion,
         tabla,
         COUNT(*) as cantidad
       FROM audit_log
-      WHERE usuario = ? AND timestamp >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE usuario = ? AND timestamp >= datetime('now', '-' || ? || ' days')
       GROUP BY accion, tabla
       ORDER BY cantidad DESC
     `;
 
-    const [rows] = await pool.query(query, [usuario, dias]);
+    const rows = await query(queryStr, [usuario, dias]);
     
     return {
       usuario,
       periodo: `Últimos ${dias} días`,
-      actividades: rows
+      actividades: rows || []
     };
   } catch (error) {
     console.error('❌ Error obteniendo resumen:', error);
@@ -209,20 +201,18 @@ const obtenerResumenUsuario = async (usuario, dias = 7) => {
  */
 const limpiarLogAntiguos = async (dias = 90) => {
   try {
-    const pool = getPool();
-
-    const query = `
+    const queryStr = `
       DELETE FROM audit_log
-      WHERE timestamp < DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE timestamp < datetime('now', '-' || ? || ' days')
     `;
 
-    const [result] = await pool.query(query, [dias]);
+    const result = await run(queryStr, [dias]);
 
-    console.log(`🧹 Auditoría: Limpiados ${result.affectedRows} registros antiguos (> ${dias} días)`);
+    console.log(`🧹 Auditoría: Limpiados ${result.changes} registros antiguos (> ${dias} días)`);
 
     return {
       success: true,
-      eliminados: result.affectedRows
+      eliminados: result.changes
     };
   } catch (error) {
     console.error('❌ Error limpiando log:', error);

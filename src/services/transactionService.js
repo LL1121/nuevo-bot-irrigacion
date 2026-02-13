@@ -1,4 +1,4 @@
-const { getPool } = require('../config/db');
+const { getDB, run } = require('../config/db');
 
 /**
  * Servicio de Transacciones - Garantiza ACID en operaciones críticas
@@ -11,52 +11,63 @@ const { getPool } = require('../config/db');
  */
 
 /**
- * Ejecutar una función dentro de una transacción
+ * Ejecutar una función dentro de una transacción SQLite
  * Si algo falla, todo se revierte automáticamente
  * 
  * @param {Function} callback - Función que contiene las operaciones
  * @returns {Promise<any>} Resultado del callback
  * 
  * @example
- * const resultado = await withTransaction(async (connection) => {
- *   await connection.execute('INSERT INTO mensajes ...');
- *   await connection.execute('UPDATE clientes SET ...');
+ * const resultado = await withTransaction(async () => {
+ *   await run('INSERT INTO mensajes ...', params);
+ *   await run('UPDATE clientes SET ...', params);
  *   return { success: true };
  * });
  */
 const withTransaction = async (callback) => {
-  const pool = getPool();
-  const connection = await pool.getConnection();
+  const db = getDB();
 
-  try {
-    console.log('🔄 INICIANDO TRANSACCIÓN');
-    
-    // Comenzar transacción
-    await connection.beginTransaction();
+  return new Promise((resolve, reject) => {
+    // SQLite3 no maneja transacciones con async/await directamente
+    // Así que lo hacemos con callbacks
+    db.serialize(() => {
+      // Iniciar transacción
+      db.run('BEGIN TRANSACTION', async (err) => {
+        if (err) {
+          console.error('❌ Error iniciando transacción:', err);
+          return reject(err);
+        }
 
-    // Ejecutar operaciones
-    const result = await callback(connection);
+        console.log('🔄 INICIANDO TRANSACCIÓN');
 
-    // Si llegó acá, confirmar todo
-    await connection.commit();
-    console.log('✅ TRANSACCIÓN COMPLETADA (COMMIT)');
+        try {
+          // Ejecutar operaciones del callback
+          const result = await callback();
 
-    return result;
-  } catch (error) {
-    // Si falla algo, revertir TODO
-    try {
-      await connection.rollback();
-      console.error('⏮️  TRANSACCIÓN REVERTIDA (ROLLBACK):', error.message);
-    } catch (rollbackError) {
-      console.error('❌ Error durante rollback:', rollbackError.message);
-    }
-    
-    // Re-throw el error original
-    throw error;
-  } finally {
-    // Liberar la conexión siempre
-    connection.release();
-  }
+          // Si llegó acá sin errores, confirmar todo
+          db.run('COMMIT', (commitErr) => {
+            if (commitErr) {
+              console.error('❌ Error en COMMIT:', commitErr);
+              return reject(commitErr);
+            }
+            console.log('✅ TRANSACCIÓN COMPLETADA (COMMIT)');
+            resolve(result);
+          });
+        } catch (error) {
+          // Si falla algo, revertir TODO
+          console.error('⏮️  Error en transacción:', error.message);
+          db.run('ROLLBACK', (rollbackErr) => {
+            if (rollbackErr) {
+              console.error('❌ Error durante ROLLBACK:', rollbackErr);
+            } else {
+              console.error('⏮️  TRANSACCIÓN REVERTIDA (ROLLBACK)');
+            }
+            reject(error);
+          });
+        }
+      });
+    });
+  });
 };
 
 /**
@@ -70,18 +81,18 @@ const withTransaction = async (callback) => {
  * await executeTransaction([
  *   { query: 'INSERT INTO mensajes (cliente_telefono, cuerpo) VALUES (?, ?)', 
  *     params: ['5491234567890', 'Hola'] },
- *   { query: 'UPDATE clientes SET ultima_interaccion = NOW() WHERE telefono = ?',
+ *   { query: 'UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
  *     params: ['5491234567890'] }
  * ]);
  */
 const executeTransaction = async (operations) => {
-  return withTransaction(async (connection) => {
+  return withTransaction(async () => {
     const results = [];
 
     for (const operation of operations) {
       try {
         console.log(`   ▶ Ejecutando: ${operation.query.substring(0, 50)}...`);
-        const result = await connection.execute(operation.query, operation.params);
+        const result = await run(operation.query, operation.params);
         results.push(result);
       } catch (error) {
         console.error(`   ❌ Error en operación: ${error.message}`);

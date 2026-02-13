@@ -1,79 +1,163 @@
 version: '3.8'
 
 services:
-  # Aplicación Node.js
-  app:
+  # ═════════════════════════════════════════════════════════════════════════════
+  # Backend Node.js (Build desde raíz - .dockerignore excluye Frontend/)
+  # ═════════════════════════════════════════════════════════════════════════════
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: bot-irrigacion-app
+    container_name: irrigacion_backend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
-      # Node
       NODE_ENV: production
       PORT: 3000
       
-      # Base de datos PostgreSQL (usar base existente en el servidor)
-      DB_HOST: ${DB_HOST:-localhost}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_NAME: ${DB_NAME:-irrigacion_bot}
+      # PostgreSQL
+      DB_CLIENT: pg
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-irrigacion_secret}
+      DB_NAME: irrigacion_db
+      DB_POOL_MIN: 5
+      DB_POOL_MAX: 20
       
-      # WhatsApp API
-      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN}
+      # Meta/WhatsApp
+      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
-      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID}
+      META_APP_SECRET: ${META_APP_SECRET}
       WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
       
+      # JWT
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRY: 8h
+      
       # Redis
-      REDIS_HOST: ${REDIS_HOST:-redis}
-      REDIS_PORT: ${REDIS_PORT:-6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
       
-      # Optimizaciones
-      MAX_BROWSERS: 3
-      DB_CONNECTION_LIMIT: 50
-      
-      # Sentry (opcional)
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      
-      # Base URL
-      BASE_URL: https://chat.irrigacionmalargue.net
+      # URLs
+      API_URL: https://chat.irrigacionmalargue.net/api
+      WEBHOOK_URL: https://chat.irrigacionmalargue.net/webhook
     volumes:
-      # Persistir archivos temporales y logs
-      - ./public/images:/usr/src/app/public/images
-      - ./public/docs:/usr/src/app/public/docs
-      - ./public/temp:/usr/src/app/public/temp
-      - ./logs:/usr/src/app/logs
-    networks:
-      - bot-network
-    depends_on:
-      - redis
-    extra_hosts:
-      # Permite acceder a servicios en el host (PostgreSQL externo)
-      - "host.docker.internal:host-gateway"
-
-  # Redis para caching
-  redis:
-    image: redis:7-alpine
-    container_name: bot-irrigacion-redis
-    restart: unless-stopped
+      - backend_temp:/app/temp
+      - backend_uploads:/app/uploads
+      - backend_tokens:/app/tokens
+      - backend_logs:/app/logs
     ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
-    volumes:
-      - redis-data:/data
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
-      - bot-network
+      - irrigacion_network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health')"]
+      interval: 30s
       timeout: 3s
       retries: 3
 
+  # ═════════════════════════════════════════════════════════════════════════════
+  # PostgreSQL 15-alpine (Base de datos)
+  # ═════════════════════════════════════════════════════════════════════════════
+  db:
+    image: postgres:15-alpine
+    container_name: irrigacion_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-irrigacion_secret}
+      POSTGRES_DB: irrigacion_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - irrigacion_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  # Redis 7-alpine (Cache y sesiones)
+  # ═════════════════════════════════════════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    container_name: irrigacion_redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret} --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - irrigacion_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  # Nginx + Frontend (Build desde ./Frontend)
+  # ═════════════════════════════════════════════════════════════════════════════
+  nginx:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    container_name: irrigacion_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Frontend/nginx.conf:/etc/nginx/nginx.conf:ro
+      - frontend_cache:/var/cache/nginx
+    depends_on:
+      - backend
+    networks:
+      - irrigacion_network
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  # Cloudflare Tunnel
+  # ═════════════════════════════════════════════════════════════════════════════
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: irrigacion_tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - nginx
+    networks:
+      - irrigacion_network
+
+networks:
+  irrigacion_network:
+    driver: bridge
+
 volumes:
-  redis-data:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_temp:
+    driver: local
+  backend_uploads:
+    driver: local
+  backend_tokens:
+    driver: local
+  backend_logs:
+    driver: local
+  frontend_cache:
     driver: local
