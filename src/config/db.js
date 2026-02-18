@@ -199,7 +199,7 @@ const getDB = () => {
 const getPool = () => {
   // Compatibilidad con código existente que usa getPool()
   return {
-    query: (sql) => query(sql),
+    query: (sql, params) => query(sql, params),
     execute: (sql, params) => run(sql, params)
   };
 };
