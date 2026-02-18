@@ -212,17 +212,28 @@ const sendInteractiveList = async (to, headerText, bodyText, buttonText, section
     
     // Construir el header según si hay imagen o no
     let header;
-    if (headerImageUrl) {
+    const safeHeaderText = headerText || 'Menú';
+    const normalizedHeaderImageUrl = headerImageUrl ? encodeURI(headerImageUrl) : null;
+    const canUseImageHeader = Boolean(
+      normalizedHeaderImageUrl &&
+      /^https:\/\//i.test(normalizedHeaderImageUrl) &&
+      !/localhost|127\.0\.0\.1/i.test(normalizedHeaderImageUrl)
+    );
+
+    if (canUseImageHeader) {
       header = {
         type: 'image',
         image: {
-          link: headerImageUrl
+          link: normalizedHeaderImageUrl
         }
       };
     } else {
+      if (normalizedHeaderImageUrl && !canUseImageHeader) {
+        console.warn('⚠️ MENU_HEADER_IMAGE_URL no es pública/HTTPS. Enviando header de texto.');
+      }
       header = {
         type: 'text',
-        text: headerText
+        text: safeHeaderText
       };
     }
     
@@ -348,6 +359,51 @@ const sendImage = async (to, imageUrl, caption = '') => {
     return response.data;
   } catch (error) {
     console.error('❌ Error enviando imagen:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * Envía una ubicación a través de WhatsApp Cloud API
+ * @param {string} to - Número de teléfono del destinatario
+ * @param {number} latitude - Latitud
+ * @param {number} longitude - Longitud
+ * @param {string} name - Nombre del lugar (opcional)
+ * @param {string} address - Dirección del lugar (opcional)
+ */
+const sendLocation = async (to, latitude, longitude, name = '', address = '') => {
+  // Parche para Argentina en Sandbox (quita el 9 después del 54)
+  if (to.includes('549')) {
+    to = to.replace('549', '54');
+  }
+
+  try {
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+    const data = {
+      messaging_product: 'whatsapp',
+      to: to,
+      type: 'location',
+      location: {
+        latitude,
+        longitude,
+        name,
+        address
+      }
+    };
+
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    };
+
+    const response = await axiosClient.post(url, data, config);
+    console.log('✅ Ubicación enviada correctamente:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error enviando ubicación:', error.response?.data || error.message);
     throw error;
   }
 };
@@ -528,6 +584,7 @@ module.exports = {
   uploadMedia,
   sendDocument,
   sendButtonReply,
+  sendLocation,
   getMediaInfo,
   fetchMediaStream,
   downloadMedia

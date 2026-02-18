@@ -21,7 +21,8 @@ const socket: Socket = io(env.socketUrl, {
   transports: ['websocket', 'polling'],
   reconnection: true,
   reconnectionDelay: env.socketReconnectDelayMs,
-  reconnectionAttempts: env.socketReconnectAttempts
+  reconnectionAttempts: env.socketReconnectAttempts,
+  autoConnect: false
 });
 
 // Log de conexión del socket
@@ -113,6 +114,8 @@ export default function App() {
   const [allMessagesCache, setAllMessagesCache] = useState<Record<string, any[]>>({}); // Caché en memoria de todos los mensajes
   const [currentMessageIndex, setCurrentMessageIndex] = useState<Record<string, number>>({}); // Índice del último mensaje mostrado
   const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({}); // Track quien está escribiendo por teléfono
+  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false); // Flag para evitar auto-scroll al cargar más mensajes
+  const previousMessageCountRef = useRef<number>(0); // Para detectar si se agregó al final
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatMenuRef = useRef<HTMLDivElement>(null);
@@ -178,8 +181,34 @@ export default function App() {
     try {
       setReactivating(true);
       const token = localStorage.getItem(env.tokenKey);
-      await axios.post(`/api/chats/${currentChat.phone}/activate`, {}, {
+      await axios.post(`/api/chats/${currentChat.phone}/reactivate`, {
+        templateName: 'reactivacion_tramite',
+        languageCode: 'es_AR'
+      }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      const templateText = getTemplateDisplayText('reactivacion_tramite');
+      const now = new Date();
+      setConversationsState(prev => {
+        const updated = [...prev];
+        const chatIndex = updated.findIndex(c => phonesMatch(c.phone, currentChat.phone));
+        if (chatIndex !== -1) {
+          const chat = updated[chatIndex];
+          const newMessage = {
+            id: `template_${Date.now()}`,
+            text: templateText,
+            time: formatTime(now),
+            date: now.toISOString(),
+            sent: true,
+            read: true,
+            type: 'text'
+          };
+          chat.messages = dedupeMessages([...(chat.messages || []), newMessage]).slice(-messagesLimit);
+          chat.lastMessage = templateText;
+          chat.lastMessageDate = now.toISOString();
+          chat.time = formatTime(now);
+        }
+        return updated;
       });
       // Marcar como enviada para este chat
       setReactivationSent(prev => ({ ...prev, [currentChat.phone]: true }));
@@ -195,18 +224,34 @@ export default function App() {
 
   // Funciones auxiliares para formateo (definidas ANTES de los useEffect)
   const formatTime = (date: Date): string => {
+    // Siempre mostrar HH:MM para mensajes del mismo día, solo fecha para días anteriores
     const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
+    const messageDate = new Date(date);
+    
+    // Comparar solo día/mes/año (ignorar horas)
+    const isToday = 
+      messageDate.getDate() === now.getDate() &&
+      messageDate.getMonth() === now.getMonth() &&
+      messageDate.getFullYear() === now.getFullYear();
+    
+    if (isToday) {
+      // Mensajes de hoy: mostrar hora (HH:MM)
+      return messageDate.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    // Calcular diferencia en días
+    const diffMs = now.getTime() - messageDate.getTime();
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
     
-    if (diffDays === 0) {
-      return date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
-    } else if (diffDays === 1) {
+    if (diffDays === 1) {
+      // Ayer
       return 'Ayer';
     } else if (diffDays < 7) {
-      return date.toLocaleDateString('es-AR', { weekday: 'short' });
+      // Esta semana: mostrar día de la semana
+      return messageDate.toLocaleDateString('es-AR', { weekday: 'short' });
     } else {
-      return date.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
+      // Más de una semana: mostrar fecha DD/MM
+      return messageDate.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
     }
   };
   
@@ -269,6 +314,44 @@ const safeJsonParse = (value: string) => {
   }
 };
 
+const templateTextMap: Record<string, string> = {
+  reactivacion_tramite: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.',
+  reactivaciontramite: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.'
+};
+
+const getTemplateDisplayText = (templateName?: string) => {
+  if (!templateName) return '';
+  const key = templateName.replace(/(es[-_]?ar|esAr|esAR)/i, '').trim();
+  return templateTextMap[key] || `Plantilla: ${templateName}`;
+};
+
+const normalizeSenderType = (value?: string) => (value || '').trim().toLowerCase();
+const isUserSender = (value?: string) => {
+  const v = normalizeSenderType(value);
+  return [
+    'usuario',
+    'cliente',
+    'user',
+    'customer',
+    'contacto',
+    'contact',
+    'incoming',
+    'inbound',
+    'received',
+    'recibido',
+    'from_user',
+    'fromuser',
+    'wa_in'
+  ].includes(v);
+};
+
+const phonesMatch = (a?: string, b?: string) => {
+  const norm = (v?: string) => (v || '').replace(/\D/g, '');
+  const na = norm(a);
+  const nb = norm(b);
+  return !!na && !!nb && na === nb;
+};
+
 const normalizeMessageContent = (input: any) => {
   const raw = input ?? '';
   const asString = typeof raw === 'string' ? raw : '';
@@ -277,6 +360,23 @@ const normalizeMessageContent = (input: any) => {
     ? safeJsonParse(trimmed)
     : null;
   const obj = parsed && typeof parsed === 'object' ? parsed : (typeof raw === 'object' && raw !== null ? raw : null);
+
+  if (typeof raw === 'string') {
+    const templateMatch = raw.match(/Template:\s*([^()]+)\s*(?:\(([^)]+)\))?/i);
+    if (templateMatch) {
+      const templateName = templateMatch[1]?.trim();
+      const displayText = getTemplateDisplayText(templateName);
+      return { text: displayText, preview: displayText, type: 'text' };
+    }
+  }
+
+  if (obj && typeof obj === 'object') {
+    const templateName = (obj as any).templateName || (obj as any).template || (obj as any).name;
+    if (templateName) {
+      const displayText = getTemplateDisplayText(String(templateName));
+      return { text: displayText, preview: displayText, type: 'text' };
+    }
+  }
 
   const isInteractiveList = !!obj && typeof obj === 'object' && (
     (obj as any).type === 'interactive_list' ||
@@ -297,7 +397,15 @@ const normalizeMessageContent = (input: any) => {
     };
   }
 
-  const fallbackText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
+  let fallbackText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
+  if (obj && typeof obj === 'object') {
+    fallbackText =
+      (obj as any).cuerpo ||
+      (obj as any).contenido ||
+      (obj as any).text ||
+      (obj as any).body ||
+      fallbackText;
+  }
   return {
     text: fallbackText,
     preview: fallbackText,
@@ -389,6 +497,8 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     setIsAuthenticated(true);
     // Reconectar socket después del login
     if (!socket.connected) {
+      const token = localStorage.getItem(env.tokenKey);
+      if (token) socket.auth = { token };
       socket.connect();
     }
   };
@@ -453,15 +563,17 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         const mappedChats = chats.map((chat: any) => {
           const rawLastMessage = chat.ultimo_mensaje?.cuerpo ?? chat.ultimo_mensaje ?? '';
           const normalizedLast = normalizeMessageContent(rawLastMessage);
+          const lastDateRaw = chat.ultimo_mensaje_fecha || chat.ultimo_mensaje?.created_at || chat.ultimo_mensaje?.fecha || null;
+          const lastDate = lastDateRaw ? parseMessageDate(lastDateRaw) : new Date();
           
           return {
             id: chat.id,
             name: chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono,
             phone: chat.telefono,
             lastMessage: normalizedLast.preview,
-            lastMessageDate: chat.ultimo_mensaje_fecha || new Date().toISOString(),
+            lastMessageDate: lastDate.toISOString(),
             lastUserInteraction: chat.ultima_interaccion || null,
-            time: chat.ultimo_mensaje_fecha ? formatTime(new Date(chat.ultimo_mensaje_fecha)) : '',
+            time: lastDateRaw ? formatTime(lastDate) : '',
             unread: chat.mensajes_no_leidos || 0,
             avatar: getInitials(chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono),
             profilePic: chat.foto_perfil || null,
@@ -492,6 +604,17 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     
     // Escuchar mensajes en tiempo real
     const handleNewMessage = (data: any) => {
+      // 🔍 DEBUG: Log del mensaje entrante para ver estructura real
+      console.log('🔍 DEBUG - Mensaje recibido del socket:', {
+        raw_data: data,
+        emisor: data.emisor,
+        tipo: data.tipo,
+        telefono: data.telefono || data.cliente_telefono,
+        mensaje: data.mensaje,
+        cuerpo: data.cuerpo,
+        timestamp: data.timestamp || data.created_at || data.createdAt || data.fecha
+      });
+      
       // Normalizar datos del socket: mapear campos de BD a campos esperados
       // IMPORTANTE: Asegurar que 'mensaje' siempre sea un string, no un objeto
       const rawMessageContent =
@@ -511,10 +634,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         nombre = JSON.stringify(nombre);
       }
       
+      const rawTimestamp = data.timestamp || data.created_at || data.createdAt || data.fecha;
       const stableId = data.id || buildStableMessageId({
         phone: data.telefono || data.cliente_telefono,
-        timestamp: data.timestamp || data.fecha,
-        emisor: data.emisor,
+        timestamp: rawTimestamp,
+        emisor: data.emisor || data.tipo,
         text: messageText,
         type: messageType
       });
@@ -524,7 +648,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         mensaje: messageText,  // Siempre un string normalizado
         tipo: messageType,
         emisor: data.emisor,
-        timestamp: data.timestamp || data.fecha,
+        timestamp: rawTimestamp,
         url_archivo: data.url_archivo,
         archivo_nombre: data.archivo_nombre,
         archivo_tamanio: data.archivo_tamanio,
@@ -537,7 +661,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       const finalId = data.id || stableId;
       
       setConversationsState(prev => {
-        const existingChatIndex = prev.findIndex(c => c.phone === newMsg.telefono);
+        const existingChatIndex = prev.findIndex(c => phonesMatch(c.phone, newMsg.telefono));
         
         if (existingChatIndex !== -1) {
           // Invalidar caché para este chat
@@ -555,7 +679,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             const incomingText = newMsg.mensaje;
             const incomingTextKey = typeof incomingText === 'string' ? incomingText.trim() : JSON.stringify(incomingText ?? '');
             const incomingBucket = Math.floor(msgTimestamp.getTime() / 5000);
-            const incomingSent = newMsg.emisor !== 'usuario';
+            const incomingSent = !isUserSender(newMsg.emisor || newMsg.tipo);
+            
+            // 🔍 DEBUG: Log del sender detection
+            console.log('🔍 DEBUG - Detección de emisor:', {
+              emisor: newMsg.emisor,
+              tipo: newMsg.tipo,
+              isUserSender_result: isUserSender(newMsg.emisor || newMsg.tipo),
+              incomingSent: incomingSent,
+              expected: 'sent=true significa operador (verde), sent=false significa usuario (blanco)'
+            });
             
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
             const messageExists = chat.messages.some((m: any) => {
@@ -570,11 +703,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             });
             
             if (!messageExists) {
-              const emisorLimpio = (newMsg.emisor || '').trim().toLowerCase();
+              const emisorLimpio = normalizeSenderType(newMsg.emisor || newMsg.tipo);
               
               // Si es un mensaje del operador, buscar si ya existe como optimistic update
               // y NO reemplazarlo, para mantener el timestamp original
-              const isOperatorMessage = emisorLimpio === 'operador' || emisorLimpio === 'operadora';
+              const isOperatorMessage = ['operador', 'operadora', 'agent', 'agente'].includes(emisorLimpio);
               const existingOptimisticMsg = isOperatorMessage 
                 ? chat.messages.find((m: any) => m.text === incomingText && m.sent === true)
                 : null;
@@ -592,7 +725,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   text: messageText || '',
                   time: formatTime(msgTimestamp),
                   date: msgTimestamp.toISOString(),
-                  sent: newMsg.emisor !== 'usuario',
+                  sent: !isUserSender(newMsg.emisor || newMsg.tipo),
                   read: true,
                   type: newMsg.tipo || 'text',
                   fileUrl: newMsg.url_archivo,
@@ -628,7 +761,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   });
                   
                   // Incrementar contador solo si es mensaje del usuario Y no es del operador
-                  const isUserMessage = emisorLimpio === 'usuario';
+                  const isUserMessage = isUserSender(emisorLimpio);
                   if (isUserMessage) {
                     chat.unread = (chat.unread || 0) + 1;
                   }
@@ -664,7 +797,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             lastMessage: messagePreview || messageText || '',
             lastMessageDate: msgTimestamp.toISOString(),
             time: formatTime(msgTimestamp),
-            unread: newMsg.emisor === 'usuario' ? 1 : 0,
+            unread: isUserSender(newMsg.emisor || newMsg.tipo) ? 1 : 0,
             avatar: getInitials(newMsg.nombre || newMsg.telefono),
             profilePic: null, // Se actualizará con la foto de perfil cuando se recarguen los chats
             operator: null,
@@ -677,7 +810,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               text: messageText || '',
               time: formatTime(msgTimestamp),
               date: msgTimestamp.toISOString(),
-              sent: newMsg.emisor !== 'usuario',
+              sent: !isUserSender(newMsg.emisor || newMsg.tipo),
               read: true,
               type: newMsg.tipo || 'text',
               fileUrl: newMsg.url_archivo
@@ -733,6 +866,31 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     };
   }, [isAuthenticated]);
 
+  // Conectar/desconectar socket según autenticación
+  useEffect(() => {
+    if (isAuthenticated) {
+      if (!socket.connected) {
+        const token = localStorage.getItem(env.tokenKey);
+        if (token) socket.auth = { token };
+        
+        console.log('🔌 DEBUG - Conectando socket con auth token:', token ? 'Token presente' : 'Sin token');
+        socket.connect();
+        
+        // Verificar conexión después de intentar conectar
+        setTimeout(() => {
+          console.log('🔌 DEBUG - Estado del socket:', {
+            connected: socket.connected,
+            id: socket.id,
+            disconnected: socket.disconnected
+          });
+        }, 1000);
+      }
+    } else if (socket.connected) {
+      console.log('🔌 DEBUG - Desconectando socket (no autenticado)');
+      socket.disconnect();
+    }
+  }, [isAuthenticated]);
+
   // Cerrar menús al hacer click fuera
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -773,19 +931,50 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     if (storedSound !== null) setSoundEnabled(storedSound === 'true');
   }, []);
 
-  // Auto-scroll cuando cambian los mensajes del chat actual
+  // Auto-scroll solo cuando llegan mensajes NUEVOS al final (no al cargar más antiguos)
   useEffect(() => {
-    if (currentChat && currentChat.messages && currentChat.messages.length > 0) {
-      // Pequeño delay para asegurar que el DOM se haya actualizado
+    if (!currentChat || !currentChat.messages || currentChat.messages.length === 0) return;
+    
+    const currentCount = currentChat.messages.length;
+    const previousCount = previousMessageCountRef.current;
+    
+    // Si estamos cargando más mensajes antiguos, NO hacer scroll
+    if (isLoadingMoreMessages) {
+      previousMessageCountRef.current = currentCount;
+      return;
+    }
+    
+    // Si es la primera carga (previousCount === 0), hacer scroll instantáneo sin animación
+    if (previousCount === 0) {
+      const messagesEnd = document.getElementById('messages-end');
+      if (messagesEnd) {
+        messagesEnd.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+      previousMessageCountRef.current = currentCount;
+      return;
+    }
+    
+    // Si hay más mensajes que antes, significa que se agregó al FINAL (mensaje nuevo)
+    // Solo hacer scroll si aumentó la cantidad (mensaje nuevo al final)
+    if (currentCount > previousCount) {
       const timer = setTimeout(() => {
         const messagesEnd = document.getElementById('messages-end');
         if (messagesEnd) {
           messagesEnd.scrollIntoView({ behavior: 'smooth', block: 'end' });
         }
       }, 50);
+      previousMessageCountRef.current = currentCount;
       return () => clearTimeout(timer);
     }
-  }, [currentChat?.messages, selectedChat]);
+    
+    // Actualizar el contador sin hacer scroll
+    previousMessageCountRef.current = currentCount;
+  }, [currentChat?.messages, selectedChat, isLoadingMoreMessages]);
+  
+  // Resetear el contador cuando cambia de chat
+  useEffect(() => {
+    previousMessageCountRef.current = 0;
+  }, [selectedChat]);
 
   // Persist preferences to storage
   useEffect(() => {
@@ -840,11 +1029,23 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           
           // Mapear mensajes al formato esperado por la UI
           const mappedMessages = messages.map((msg: any) => {
-            const tipo = (msg.tipo || msg.emisor || '').trim().toLowerCase();
-            const sent = tipo === 'bot' || tipo !== 'usuario';
+            const tipo = normalizeSenderType(msg.emisor || msg.tipo || '');
+            const sent = !isUserSender(tipo);
+            
+            // 🔍 DEBUG: Log de detección de emisor al cargar mensajes
+            console.log('🔍 DEBUG - Mensaje cargado:', {
+              msg_id: msg.id,
+              tipo_raw: msg.tipo,
+              emisor_raw: msg.emisor,
+              tipo_normalizado: tipo,
+              isUserSender_result: isUserSender(tipo),
+              sent_final: sent,
+              contenido: (msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '').substring(0, 50)
+            });
+            
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
-            const msgDate = parseMessageDate(msg.created_at ?? msg.fecha);
+            const msgDate = parseMessageDate(msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp);
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
               timestamp: msgDate.toISOString(),
@@ -870,10 +1071,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           
           // Guardar TODOS los mensajes mapeados en caché de memoria
           const allMappedMessages = allMessages.map((msg: any) => {
-            const tipo = (msg.tipo || msg.emisor || '').trim().toLowerCase();
+            const tipo = normalizeSenderType(msg.emisor || msg.tipo || '');
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
-            const msgDate = parseMessageDate(msg.created_at ?? msg.fecha);
+            const msgDate = parseMessageDate(msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp);
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
               timestamp: msgDate.toISOString(),
@@ -886,7 +1087,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               text: normalizedContent.text || '',
               time: formatTime(msgDate),
               date: msgDate.toISOString(),
-              sent: tipo === 'bot' || tipo !== 'usuario',
+              sent: !isUserSender(tipo),
               read: true,
               type: normalizedType,
               fileUrl: msg.url_archivo,
@@ -2067,6 +2268,14 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   
                   if (messagesLoading[phone]) return;
                   
+                  // � Activar flag para evitar auto-scroll
+                  setIsLoadingMoreMessages(true);
+                  
+                  // �📍 GUARDAR posición de scroll antes de cargar mensajes
+                  const messagesContainer = document.querySelector('[data-messages-container]');
+                  const scrollHeightBefore = messagesContainer?.scrollHeight || 0;
+                  const scrollTopBefore = messagesContainer?.scrollTop || 0;
+                  
                   // Primero verificar si hay mensajes en el caché de memoria
                   const cachedMessages = allMessagesCache[phone] || [];
                   const currentIndex = currentMessageIndex[phone] || 0;
@@ -2081,18 +2290,31 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     // Obtener mensajes del caché
                     const messagesFromCache = cachedMessages.slice(startIndex, currentIndex);
                     
-                    // Añadir al principio de los mensajes actuales
+                    // Añadir al principio de los mensajes actuales (deduplicando por ID)
                     setConversationsState(prev => {
                       const updated = [...prev];
                       const chatIndex = updated.findIndex(c => c.phone === phone);
                       if (chatIndex !== -1) {
-                        updated[chatIndex].messages = [...messagesFromCache, ...updated[chatIndex].messages];
+                        const existingIds = new Set(updated[chatIndex].messages.map((m: any) => m.id));
+                        const newMessages = messagesFromCache.filter((m: any) => !existingIds.has(m.id));
+                        updated[chatIndex].messages = [...newMessages, ...updated[chatIndex].messages];
                       }
                       return updated;
                     });
                     
                     // Actualizar el índice
                     setCurrentMessageIndex(prev => ({ ...prev, [phone]: startIndex }));
+                    
+                    // 📍 RESTAURAR posición de scroll después de que se agreguen los mensajes
+                    setTimeout(() => {
+                      if (messagesContainer) {
+                        const scrollHeightAfter = messagesContainer.scrollHeight;
+                        const heightDifference = scrollHeightAfter - scrollHeightBefore;
+                        messagesContainer.scrollTop = scrollTopBefore + heightDifference;
+                      }
+                      // 🔓 Desactivar flag después de restaurar scroll (delay mayor para asegurar render completo)
+                      setTimeout(() => setIsLoadingMoreMessages(false), 100);
+                    }, 100);
                     
                     // Si llegamos al inicio del caché, marcar que no hay más en memoria
                     if (startIndex === 0) {
@@ -2120,13 +2342,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       if (newMessages.length > 0) {
                         
                         const allMappedMessages = newMessages.map((msg: any) => {
-                          const tipo = (msg.tipo || msg.emisor || '').trim().toLowerCase();
+                          const emisor = normalizeSenderType(msg.emisor || msg.tipo || '');
                           return {
                             id: msg.id,
                             text: msg.contenido || msg.cuerpo || '',
                             time: formatTime(new Date(msg.created_at || msg.fecha)),
                             date: msg.created_at || msg.fecha,
-                            sent: tipo === 'bot' || tipo !== 'usuario',
+                            sent: !isUserSender(emisor),
                             read: true,
                             type: msg.tipo || 'text',
                             fileUrl: msg.url_archivo,
@@ -2147,10 +2369,23 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                           const updated = [...prev];
                           const chatIndex = updated.findIndex(c => c.phone === phone);
                           if (chatIndex !== -1) {
-                            updated[chatIndex].messages = [...messagesToShow, ...updated[chatIndex].messages];
+                            const existingIds = new Set(updated[chatIndex].messages.map((m: any) => m.id));
+                            const newMessages = messagesToShow.filter((m: any) => !existingIds.has(m.id));
+                            updated[chatIndex].messages = [...newMessages, ...updated[chatIndex].messages];
                           }
                           return updated;
                         });
+                        
+                        // 📍 RESTAURAR posición de scroll después de que se agreguen los mensajes
+                        setTimeout(() => {
+                          if (messagesContainer) {
+                            const scrollHeightAfter = messagesContainer.scrollHeight;
+                            const heightDifference = scrollHeightAfter - scrollHeightBefore;
+                            messagesContainer.scrollTop = scrollTopBefore + heightDifference;
+                          }
+                          // 🔓 Desactivar flag después de restaurar scroll (delay mayor para asegurar render completo)
+                          setTimeout(() => setIsLoadingMoreMessages(false), 100);
+                        }, 100);
                         
                         // Actualizar índice
                         setCurrentMessageIndex(prev => ({ 
@@ -2163,9 +2398,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         }
                       } else {
                         setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                        setIsLoadingMoreMessages(false); // Desactivar flag si no hay más mensajes
                       }
                     } catch (error) {
                       console.error('❌ Error al cargar más mensajes:', error);
+                      setIsLoadingMoreMessages(false); // Desactivar flag en caso de error
                     } finally {
                       setMessagesLoading(prev => ({ ...prev, [phone]: false }));
                     }
