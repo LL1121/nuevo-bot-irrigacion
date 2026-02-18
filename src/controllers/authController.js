@@ -20,12 +20,16 @@ const login = async (req, res) => {
     }
 
     const pool = getPool();
-    const [rows] = await pool.query(
+    const rows = await pool.query(
       'SELECT id, username, email, password_hash, role FROM operadores WHERE username = ?',
       [username]
     );
 
-    if (rows.length === 0) {
+    console.log('🔍 DEBUG Login - Username buscado:', username);
+    console.log('🔍 DEBUG Login - Rows encontrados:', rows ? rows.length : 'null/undefined');
+    console.log('🔍 DEBUG Login - Rows:', JSON.stringify(rows));
+
+    if (!rows || rows.length === 0) {
       return res.status(401).json({
         success: false,
         message: 'Usuario o contraseña incorrectos'
@@ -33,7 +37,10 @@ const login = async (req, res) => {
     }
 
     const operador = rows[0];
+    console.log('🔍 DEBUG Login - Operador encontrado:', operador.username);
+    console.log('🔍 DEBUG Login - Hash presente:', !!operador.password_hash);
     const passwordMatch = await bcrypt.compare(password, operador.password_hash);
+    console.log('🔍 DEBUG Login - Password match:', passwordMatch);
 
     if (!passwordMatch) {
       return res.status(401).json({

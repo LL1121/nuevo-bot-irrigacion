@@ -305,6 +305,10 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       await handleTipoCuotaPadron(from, optionToProcess);
       break;
 
+    case 'AWAITING_BOLETO_POST_DEUDA':
+      await handlePostDeudaBoletoChoice(from, optionToProcess);
+      break;
+
     case 'AWAITING_OPCION_BOLETO_PADRON':
       await handleOpcionBoletoPadron(from, optionToProcess);
       break;
@@ -384,17 +388,58 @@ Soy tu asistente virtual, diseñado para ayudarte con tus gestiones hídricas de
 const sendMenuList = async (from, isFollowUp = false) => {
   const sections = [
     {
-      title: 'Trámites Disponibles',
+      title: 'Información y Consultas',
       rows: [
-        { id: 'ubicacion',       title: '📍 Ubicación y Horarios' },
-        { id: 'empadronamiento', title: '📝 Empadronamiento' },
-        { id: 'deuda',           title: '💳 Consultar Deuda' },
-        { id: 'boleto',          title: '📦 Pedir Boleto' },
-        { id: 'vencimientos',    title: '📅 Consultar Vencimientos' },
-        { id: 'perforacion',     title: '🔧 Solicitar Perforación' },
-        { id: 'renuncia',        title: '🧾 Tramitar Renuncia' },
-        { id: 'turnos',          title: '🗓️ Consultar Turnos' },
-        { id: 'operador',        title: '👤 Hablar con Operador' }
+        { 
+          id: 'ubicacion', 
+          title: '📍 Ubicación y Horarios',
+          description: 'Dirección, horarios de atención y contacto'
+        },
+        { 
+          id: 'deuda', 
+          title: '💳 Consultar Deuda',
+          description: 'Verificar estado de cuenta y montos adeudados'
+        },
+        { 
+          id: 'vencimientos', 
+          title: '📅 Consultar Vencimientos',
+          description: 'Ver fechas de vencimiento de pagos'
+        },
+        { 
+          id: 'turnos', 
+          title: '🗓️ Consultar Turnos',
+          description: 'Información sobre turnos disponibles'
+        }
+      ]
+    },
+    {
+      title: 'Trámites y Gestiones',
+      rows: [
+        { 
+          id: 'empadronamiento', 
+          title: '🧾 Empadronamiento',
+          description: 'Registrar nuevo padrón o actualizar datos'
+        },
+        { 
+          id: 'perforacion', 
+          title: '🔧 Solicitar Perforación',
+          description: 'Tramitar autorización para perforación'
+        },
+        { 
+          id: 'renuncia', 
+          title: '🧾 Tramitar Renuncia',
+          description: 'Gestionar renuncia a derechos de riego'
+        }
+      ]
+    },
+    {
+      title: 'Asistencia',
+      rows: [
+        { 
+          id: 'operador', 
+          title: '👤 Hablar con Operador',
+          description: 'Conectar con un agente humano'
+        }
       ]
     }
   ];
@@ -402,13 +447,15 @@ const sendMenuList = async (from, isFollowUp = false) => {
   // Cambiar el mensaje según si es seguimiento o primera vez
   const header = 'Atención al Ciudadano';
   const body = isFollowUp ? '¿Desea realizar otro trámite?' : '¿Qué trámite desea realizar hoy?';
+  const headerImageUrl = process.env.MENU_HEADER_IMAGE_URL || null;
   
   await whatsappService.sendInteractiveList(
     from,
     header,
     body,
     'Ver Opciones',
-    sections
+    sections,
+    headerImageUrl
   );
   
   // Guardar estructura JSON completa para que el frontend pueda reconstruir las opciones
@@ -451,10 +498,33 @@ const handleMainMenu = async (from, option) => {
     case '1':
     case 'option_1':
     case 'ubicacion':
+      const locationLat = parseFloat(process.env.UBICACION_LAT || '');
+      const locationLon = parseFloat(process.env.UBICACION_LON || '');
+      const locationName = process.env.UBICACION_NOMBRE || 'Jefatura de Zona de Riego';
+      const locationAddress = process.env.UBICACION_DIRECCION || 'Av. San Martín 258, Malargüe, Mendoza';
+
+      if (!Number.isNaN(locationLat) && !Number.isNaN(locationLon)) {
+        await whatsappService.sendLocation(from, locationLat, locationLon, locationName, locationAddress);
+        await mensajeService.guardarMensaje({
+          telefono: from,
+          tipo: 'location',
+          cuerpo: JSON.stringify({
+            latitude: locationLat,
+            longitude: locationLon,
+            name: locationName,
+            address: locationAddress
+          }),
+          emisor: 'bot',
+          url_archivo: null
+        });
+      } else {
+        console.warn('⚠️ UBICACION_LAT/UBICACION_LON no configuradas. Enviando solo texto.');
+      }
+
       const locationText = `📍 Ubicación y Horarios
 
 Nos encontramos en:
-🏢 Av. San Martín 258, Malargüe, Mendoza
+🏢 ${locationAddress}
 
 ⏰ Horarios de atención:
 📅 Lunes a Viernes: 8:00 a 13:30 hs
@@ -504,8 +574,9 @@ Mismos requisitos (a-i)
       break;
 
     case 'boleto':
-      // Pedir Boleto: Verificar si tiene DNI vinculado
-      await handlePedirBoleto(from);
+      // Unificado: primero consultar deuda y luego ofrecer boleto
+      await sendMessageAndSave(from, '📄 Para solicitar un boleto primero debemos consultar tu deuda.');
+      await handleConsultarDeuda(from);
       break;
 
     case 'vencimientos': {
@@ -527,7 +598,7 @@ Aquí están las fechas de vencimiento actualizadas:`;
         } else {
           const errorText = `📅 Consultar Vencimientos
 
-La imagen de vencimientos no está disponible en este momento.
+Los vencimientos no están disponibles en este momento.
 
 Por favor contactá a un operador para más información.`;
           await sendMessageAndSave(from, errorText);
@@ -566,7 +637,9 @@ Por favor contactá a un operador para más información.`;
 
 📋 Además deberás completar un formulario.
 
-📧 Presentación presencial en oficinas.`;
+📧 Presentación presencial en oficinas.
+
+📩 También podés presentar la documentación por correo a entradamalargue@irrigacion.gov.ar.`;
       await sendMessageAndSave(from, renunciaText);
       
       try {
@@ -593,9 +666,9 @@ Por favor contactá a un operador para más información.`;
     case 'turnos': {
       const turnosText = `🗓️ Turnos
 
-La gestión de turnos se realiza en Inspección de Cauce.
-Contacto: +54 9 260 432-0807`;
+La gestión de turnos se realiza en Inspección de Cauce.`;
       await sendMessageAndSave(from, turnosText);
+      await sendMessageAndSave(from, 'Contacto: +54 9 260 432-0807');
       await sendMenuList(from, true);
       console.log(`🗓️ Info de turnos enviada a ${from}`);
       break;
@@ -623,7 +696,6 @@ Un operador humano te atenderá en breve.`;
 
     default:
       // Opción no válida, reenviar solo la lista
-      await sendMessageAndSave(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
       await sendMenuList(from, true);
       console.log(`⚠️ Opción inválida de ${from}, reenviando menú`);
       break;
@@ -1011,9 +1083,6 @@ const handleDniInput = async (from, messageBody) => {
     // Ejecutar scraper
     await ejecutarScraper(from, dni);
     
-    // Volver al menú principal
-    userStates[from].step = 'MAIN_MENU';
-    
   } catch (error) {
     console.error('❌ Error en handleDniInput:', error);
     const errorMsg = '❌ Ocurrió un error al vincular tu DNI. Por favor intenta más tarde.';
@@ -1232,6 +1301,55 @@ const handleDescargarBoleto = async (from) => {
 };
 
 /**
+ * Manejar opción posterior a consulta de deuda (Pedir boleto / Volver)
+ */
+const handlePostDeudaBoletoChoice = async (from, option) => {
+  try {
+    if (option === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+
+    if (option !== 'pedir_boleto') {
+      const invalidMsg = '❌ Opción no válida. Por favor elegí una opción del menú.';
+      await sendMessageAndSave(from, invalidMsg);
+      return;
+    }
+
+    const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
+    await sendMessageAndSave(from, preguntaMsg);
+
+    const buttons = [
+      { id: 'cuota_anual', title: '📅 Cuota Anual' },
+      { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
+    ];
+
+    await whatsappService.sendButtonReply(
+      from,
+      'Elige el tipo de cuota:',
+      buttons
+    );
+
+    if (userStates[from].tempPadron && userStates[from].tempTipoPadron) {
+      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+    } else if (userStates[from].tempDni) {
+      userStates[from].step = 'AWAITING_TIPO_CUOTA';
+    } else {
+      const errorMsg = '❌ Ocurrió un error. Por favor intenta nuevamente.';
+      await sendMessageAndSave(from, errorMsg);
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+    }
+  } catch (error) {
+    console.error('❌ Error en handlePostDeudaBoletoChoice:', error);
+    const errorMsg = '❌ Ocurrió un error al procesar tu solicitud. Por favor intenta más tarde.';
+    await sendMessageAndSave(from, errorMsg);
+    await sendMenuList(from, true);
+  }
+};
+
+/**
  * Ejecutar scraper y enviar resultado (OPTIMIZADO)
  */
 const ejecutarScraper = async (from, dni) => {
@@ -1289,11 +1407,23 @@ const ejecutarScraper = async (from, dni) => {
       userStates[from].tempPdf = resultado.pdfPath;
       console.log(`💾 PDF guardado en estado: ${resultado.pdfPath}`);
     }
+
+    // Guardar DNI para posible generación de boleto
+    userStates[from].tempDni = dni;
     
     console.log(`✅ Consulta de deuda completada para ${from}`);
-    
-    // Mostrar menú principal nuevamente
-    await sendMenuList(from, true);
+
+    // Ofrecer generar boleto o volver al menú
+    const opcionesMsg = `📄 *¿Deseas generar un boleto de pago?*`;
+    await sendMessageAndSave(from, opcionesMsg);
+
+    const buttons = [
+      { id: 'pedir_boleto', title: '📄 Pedir boleto' },
+      { id: 'volver_menu', title: '↩️ Volver' }
+    ];
+
+    await whatsappService.sendButtonReply(from, 'Elige una opción:', buttons);
+    userStates[from].step = 'AWAITING_BOLETO_POST_DEUDA';
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraper:', error);
@@ -1700,15 +1830,19 @@ const handleOpcionBoletoPadron = async (from, option) => {
 const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
   try {
     let padronData = {};
+    let padronRaw = '';
     
     if (tipoPadron === 'superficial') {
-      const [codigoCauce, numeroPadron] = (cliente.padron_superficial || '').split(' ');
+      padronRaw = cliente.padron_superficial || '';
+      const [codigoCauce, numeroPadron] = padronRaw.split(' ');
       padronData = { codigoCauce, numeroPadron };
     } else if (tipoPadron === 'subterraneo') {
-      const [codigoDepartamento, numeroPozo] = (cliente.padron_subterraneo || '').split(' ');
+      padronRaw = cliente.padron_subterraneo || '';
+      const [codigoDepartamento, numeroPozo] = padronRaw.split(' ');
       padronData = { codigoDepartamento, numeroPozo };
     } else if (tipoPadron === 'contaminacion') {
-      padronData = { numeroContaminacion: cliente.padron_contaminacion };
+      padronRaw = cliente.padron_contaminacion || '';
+      padronData = { numeroContaminacion: padronRaw };
     }
     
     console.log(`⚙️ Ejecutando scraper de deuda con padrón ${tipoPadron}:`, padronData);
@@ -1730,6 +1864,10 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
     if (resultado.absolutePdfPath) {
       userStates[from].tempPdf = resultado.absolutePdfPath;
     }
+
+    // Guardar padrón para posible generación de boleto
+    userStates[from].tempPadron = padronRaw;
+    userStates[from].tempTipoPadron = tipoPadron;
     
     // Formatear mensaje de deuda
     const datos = resultado.data;
@@ -1746,19 +1884,17 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
     
     await sendMessageAndSave(from, deudaMsg);
     
-    // Mostrar opciones de boleto
-    const opcionesMsg = `📄 *¿Deseas generar un boleto para pagar?*`;
+    // Ofrecer generar boleto o volver al menú
+    const opcionesMsg = `📄 *¿Deseas generar un boleto de pago?*`;
     await sendMessageAndSave(from, opcionesMsg);
-    
+
     const buttons = [
-      { id: 'pedir_boleto_anual', title: '📅 Boleto Anual' },
-      { id: 'pedir_boleto_bimestral', title: '📆 Boleto Bimestral' },
-      { id: 'sin_boleto', title: '❌ No, gracias' }
+      { id: 'pedir_boleto', title: '📄 Pedir boleto' },
+      { id: 'volver_menu', title: '↩️ Volver' }
     ];
-    
-    await whatsappService.sendButtonReply(from, 'Elige opción:', buttons);
-    userStates[from].step = 'AWAITING_OPCION_BOLETO_PADRON';
-    userStates[from].tempTipoPadron = tipoPadron;
+
+    await whatsappService.sendButtonReply(from, 'Elige una opción:', buttons);
+    userStates[from].step = 'AWAITING_BOLETO_POST_DEUDA';
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraperPadron:', error);
@@ -1823,7 +1959,7 @@ const handleIniciarPerforacion = async (from) => {
   try {
     const perforacionInfo = `🔧 *Solicitud de Perforación de Pozo*
 
-La extracción de aguas subterráneas está sujeta al control del Departamento General de Irrigación. Para obtener un permiso de perforación es necesario:
+Para obtener un permiso de perforación es necesario:
 
 ✅ Ubicación de la propiedad
 ✅ Presentar requisitos y formularios
