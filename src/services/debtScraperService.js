@@ -79,6 +79,60 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function createConfiguredPage(browser) {
+  if (!browser || !browser.isConnected()) {
+    throw new Error('Browser desconectado al crear página');
+  }
+  const page = await browser.newPage();
+  await page.setDefaultTimeout(20000);
+  await page.setDefaultNavigationTimeout(30000);
+  await page.setUserAgent(USER_AGENT);
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.setCacheEnabled(false);
+
+  try {
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: DOWNLOAD_DIR
+    });
+  } catch (err) {
+    console.warn('⚠️ No se pudo configurar descargas:', err.message);
+  }
+
+  return page;
+}
+
+async function safeGoto(browser, page, url, maxAttempts = 2) {
+  let currentPage = page;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await currentPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      return currentPage;
+    } catch (err) {
+      const msg = err.message || '';
+      const isDetached = /frame was detached|connection closed|target closed|execution context was destroyed/i.test(msg);
+
+      if (isDetached && attempt < maxAttempts) {
+        try {
+          if (!currentPage.isClosed()) {
+            await currentPage.close();
+          }
+        } catch (_) {
+          // ignore close errors
+        }
+        currentPage = await createConfiguredPage(browser);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  return currentPage;
+}
+
 /**
  * Scrapea deuda del servicio desde el sistema de autogestión de Irrigación.
  * Retorna { success, data: { titular, cuit, hectareas, capital, interes, apremio, eventuales, total, servicio }, pdfPath }
@@ -116,6 +170,8 @@ async function obtenerDeudaYBoleto(dni) {
 async function _scrapeDeudaYBoleto(dni) {
   let browser;
   let browserData;
+  let page;
+  let shouldDiscardBrowser = false;
   const relativePdfPath = `/temp/${dni}.pdf`;
   const absolutePdfPath = path.join(DOWNLOAD_DIR, `${dni}.pdf`);
 
@@ -127,24 +183,10 @@ async function _scrapeDeudaYBoleto(dni) {
     browserData = await browserPool.getBrowser();
     browser = browserData.browser;
     
-    const page = await browser.newPage();
-    await page.setDefaultTimeout(20000);
-
-    // Stealth mode: User-Agent
-    await page.setUserAgent(USER_AGENT);
-
-    // Viewport para asegurar visibilidad
-    await page.setViewport({ width: 1280, height: 800 });
-
-    // Configurar descarga con CDP
-    const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: DOWNLOAD_DIR
-    });
+    page = await createConfiguredPage(browser);
 
     console.log(`🔍 Navegando a ${BASE_URL}...`);
-    await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
+    page = await safeGoto(browser, page, BASE_URL, 2);
 
     // ============================================
     // PASO 1: Buscar input con placeholder "Ingresar DNI/CUIT"
@@ -221,11 +263,13 @@ async function _scrapeDeudaYBoleto(dni) {
       throw new Error('No se encontró botón "Consultar Deuda del Servicio"');
     }
     
-    // Click y esperar navegación
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
-      consultarButton.asElement().click()
-    ]);
+    // Click y esperar contenido sin depender de waitForNavigation
+    await consultarButton.asElement().click();
+    await new Promise(r => setTimeout(r, 1200));
+    await page.waitForFunction(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('titular') || text.includes('capital') || text.includes('cuota');
+    }, { timeout: 15000 });
     
     console.log('✅ Navegó a página de detalle de deuda');
 
@@ -330,13 +374,28 @@ async function _scrapeDeudaYBoleto(dni) {
     };
 
   } catch (error) {
+    const message = error.message || '';
+    if (/frame was detached|protocol error: connection closed|execution context was destroyed|target closed/i.test(message)) {
+      shouldDiscardBrowser = true;
+    }
     console.error('❌ Error en _scrapeDeudaYBoleto:', error.message);
     console.error('Stack:', error.stack);
     throw error; // Re-lanzar para que el wrapper maneje los reintentos
   } finally {
+    if (page && !page.isClosed()) {
+      try {
+        await page.close();
+      } catch (closeError) {
+        console.warn('⚠️ No se pudo cerrar la página:', closeError.message);
+      }
+    }
     // Devolver browser al pool
     if (browser && browserData) {
-      await browserPool.releaseBrowser(browser);
+      if (shouldDiscardBrowser) {
+        await browserPool.discardBrowser(browser);
+      } else {
+        await browserPool.releaseBrowser(browser);
+      }
     }
   }
 }
@@ -612,6 +671,8 @@ async function obtenerDeudaPadron(tipoPadron, datos) {
 async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
   let browser;
   let browserData;
+  let page;
+  let shouldDiscardBrowser = false;
   const idPadron = `${tipoPadron}_${Object.values(datos).join('_')}`;
   const relativePdfPath = `/temp/${idPadron}.pdf`;
   const absolutePdfPath = path.join(DOWNLOAD_DIR, `${idPadron}.pdf`);
@@ -623,19 +684,10 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
     browserData = await browserPool.getBrowser();
     browser = browserData.browser;
     
-    const page = await browser.newPage();
-    await page.setDefaultTimeout(20000);
-    await page.setUserAgent(USER_AGENT);
-    await page.setViewport({ width: 1280, height: 800 });
-
-    const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: DOWNLOAD_DIR
-    });
+    page = await createConfiguredPage(browser);
 
     console.log(`🔍 Navegando a ${BASE_URL}...`);
-    await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
+    page = await safeGoto(browser, page, BASE_URL, 2);
 
     // ============================================
     // PASO 1: Buscar y hacer clic en el menú desplegable de tipo de padrón
@@ -784,10 +836,12 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
       throw new Error('No se encontró botón "Calcular Deuda"');
     }
     
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
-      calcularButton.asElement().click()
-    ]);
+    await calcularButton.asElement().click();
+    await new Promise(r => setTimeout(r, 1200));
+    await page.waitForFunction(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('titular') || text.includes('capital') || text.includes('cuota');
+    }, { timeout: 15000 });
     
     console.log('✅ Navegó a página de detalle de deuda');
 
@@ -885,13 +939,28 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
     };
 
   } catch (error) {
+    const message = error.message || '';
+    if (/frame was detached|protocol error: connection closed|execution context was destroyed|target closed/i.test(message)) {
+      shouldDiscardBrowser = true;
+    }
     console.error('❌ Error en _scrapeDeudaYBoletoPadron:', error.message);
     console.error('Stack:', error.stack);
     throw error;
   } finally {
+    if (page && !page.isClosed()) {
+      try {
+        await page.close();
+      } catch (closeError) {
+        console.warn('⚠️ No se pudo cerrar la página:', closeError.message);
+      }
+    }
     // Devolver browser al pool
     if (browser && browserData) {
-      await browserPool.releaseBrowser(browser);
+      if (shouldDiscardBrowser) {
+        await browserPool.discardBrowser(browser);
+      } else {
+        await browserPool.releaseBrowser(browser);
+      }
     }
   }
 }
@@ -934,6 +1003,8 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoCuota) {
 async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
   let browser;
   let browserData;
+  let page;
+  let shouldDiscardBrowser = false;
   const idBoleto = `boleto_${tipoPadron}_${tipoCuota}_${Object.values(datos).join('_')}`;
   const downloadPath = DOWNLOAD_DIR;
 
@@ -944,19 +1015,10 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     browserData = await browserPool.getBrowser();
     browser = browserData.browser;
     
-    const page = await browser.newPage();
-    await page.setDefaultTimeout(20000);
-    await page.setUserAgent(USER_AGENT);
-    await page.setViewport({ width: 1280, height: 800 });
-
-    const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: downloadPath
-    });
+    page = await createConfiguredPage(browser);
 
     console.log(`🔍 Navegando a ${BASE_URL}...`);
-    await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
+    page = await safeGoto(browser, page, BASE_URL, 2);
 
     // Pasos 1-4: Seleccionar tipo, llenar campos, buscar, verificar resultados
     // (Mismo que en _scrapeDeudaYBoletoPadron)
@@ -1056,8 +1118,6 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
         console.log(`📄 PDF descargado: ${pdfPath}`);
       }
       
-      await browser.close();
-      
       return {
         success: true,
         pdfPath: pdfPath
@@ -1067,12 +1127,27 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     throw new Error('No se encontró botón de descarga');
 
   } catch (error) {
+    const message = error.message || '';
+    if (/frame was detached|protocol error: connection closed|execution context was destroyed|target closed/i.test(message)) {
+      shouldDiscardBrowser = true;
+    }
     console.error('❌ Error en _scrapeBoletonPadron:', error);
     throw error;
   } finally {
+    if (page && !page.isClosed()) {
+      try {
+        await page.close();
+      } catch (closeError) {
+        console.warn('⚠️ No se pudo cerrar la página:', closeError.message);
+      }
+    }
     // Devolver browser al pool
     if (browser && browserData) {
-      await browserPool.releaseBrowser(browser);
+      if (shouldDiscardBrowser) {
+        await browserPool.discardBrowser(browser);
+      } else {
+        await browserPool.releaseBrowser(browser);
+      }
     }
   }
 }

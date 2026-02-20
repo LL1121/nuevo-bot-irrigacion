@@ -110,8 +110,14 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
    */
   axiosInstance.interceptors.request.use(
     async (config) => {
-      // Rate limiting check (skip para endpoint de refresh)
       const endpoint = config.url || '';
+
+      // No aplicar auth ni rate limit en login/refresh
+      if (endpoint.includes(authConfig.endpoints.login) || endpoint.includes(authConfig.endpoints.refresh)) {
+        return config;
+      }
+
+      // Rate limiting check (skip para endpoint de refresh)
       if (!endpoint.includes('/refresh') && isRateLimited(endpoint)) {
         const err = new Error('Rate limit exceeded. Too many requests to this endpoint.');
         captureException(err, { phase: 'rateLimited', endpoint });
@@ -177,7 +183,11 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
       }
 
       // Si 401 (token expirado o inválido)
-      if (error.response?.status === 401 && config._retryCount === 0) {
+      if (
+        error.response?.status === 401 &&
+        config._retryCount === 0 &&
+        !String(config.url || '').includes(authConfig.endpoints.login)
+      ) {
         config._retryCount++;
 
         if (!isRefreshing) {
