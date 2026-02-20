@@ -1,5 +1,6 @@
 const whatsappService = require('../services/whatsappService');
 const debtScraperService = require('../services/debtScraperService');
+const turnadoScraperService = require('../services/turnadoScraperService');
 const mensajeService = require('../services/mensajeService');
 const clienteService = require('../services/clienteService');
 const fs = require('fs');
@@ -315,6 +316,26 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
 
     case 'AWAITING_PADRON':
       await handlePadronInput(from, messageBody);
+      break;
+
+    case 'AWAITING_TURNO_METHOD':
+      await handleTurnoMethodChoice(from, optionToProcess);
+      break;
+
+    case 'AWAITING_TURNO_TITULAR_CHOICE':
+      await handleTurnoTitularChoice(from, optionToProcess);
+      break;
+
+    case 'AWAITING_TURNO_TITULAR':
+      await handleTurnoTitularInput(from, messageBody);
+      break;
+
+    case 'AWAITING_TURNO_CCPP_CHOICE':
+      await handleTurnoCCPPChoice(from, optionToProcess);
+      break;
+
+    case 'AWAITING_TURNO_CCPP':
+      await handleTurnoCCPPInput(from, messageBody);
       break;
 
     case 'AUTH_MENU':
@@ -664,13 +685,24 @@ Por favor contactá a un operador para más información.`;
     }
 
     case 'turnos': {
-      const turnosText = `🗓️ Turnos
+      // Ofrecer opciones de búsqueda de turno
+      const turnosIntro = `🗓️ *Consulta de Turnos*
 
-La gestión de turnos se realiza en Inspección de Cauce.`;
-      await sendMessageAndSave(from, turnosText);
-      await sendMessageAndSave(from, 'Contacto: +54 9 260 432-0807');
-      await sendMenuList(from, true);
-      console.log(`🗓️ Info de turnos enviada a ${from}`);
+¿Cómo desea buscar su turno?`;
+      await sendMessageAndSave(from, turnosIntro);
+      
+      await whatsappService.sendInteractiveButtons(
+        from,
+        '📋 Seleccione el método de búsqueda:',
+        [
+          { id: 'turno_titular', title: '👤 Por Titular' },
+          { id: 'turno_ccpp', title: '🔢 Por C.C.-P.P.' },
+          { id: 'volver', title: '↩️ Volver' }
+        ]
+      );
+      
+      userStates[from].step = 'AWAITING_TURNO_METHOD';
+      console.log(`🗓️ Opciones de búsqueda de turno enviadas a ${from}`);
       break;
     }
 
@@ -706,6 +738,15 @@ Un operador humano te atenderá en breve.`;
  * Procesa el número de padrón ingresado
  */
 const handlePadronInput = async (from, messageBody) => {
+  const lower = messageBody.toLowerCase().trim();
+  
+  // Permitir volver al menú
+  if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+  
   // Extraer números del mensaje usando RegEx
   const match = messageBody.match(/\d+/);
   const padron = match ? match[0] : null;
@@ -714,7 +755,7 @@ const handlePadronInput = async (from, messageBody) => {
   if (!padron) {
     await whatsappService.sendMessage(
       from,
-      '⚠️ No detectamos un número válido. Por favor escribí solo tu número de padrón (Ej: 1234).'
+      '⚠️ No detectamos un número válido. Por favor escribí solo tu número de padrón (Ej: 1234).\n\n_📌 Para cancelar, escribí *SALIR*_'
     );
     console.log(`⚠️ Padrón inválido recibido de ${from}: ${messageBody}`);
     // No cambiar de estado, esperar nuevo input
@@ -729,7 +770,7 @@ const handlePadronInput = async (from, messageBody) => {
       // Padrón no encontrado en la base de datos
       await whatsappService.sendMessage(
         from,
-        `❌ No encontramos el padrón ${padron} en nuestra base de datos. Por favor verifique el número.`
+        `❌ No encontramos el padrón ${padron} en nuestra base de datos. Por favor verifique el número.\n\n_📌 Para cancelar, escribí *SALIR*_`
       );
       console.log(`❌ Padrón ${padron} no encontrado para ${from}`);
       // No cambiar de estado, permitir reintentar
@@ -767,7 +808,7 @@ Seleccioná una opción:`;
     setTimeout(async () => {
       const moreButtons = [
         { id: 'auth_contact', title: '👤 Contactar Operador' },
-        { id: 'auth_salir', title: '🚪 Salir' }
+        { id: 'auth_salir', title: '↩️ Volver al menú' }
       ];
       await whatsappService.sendInteractiveButtons(
         from,
@@ -1065,11 +1106,20 @@ const handlePedirBoleto = async (from) => {
  */
 const handleDniInput = async (from, messageBody) => {
   try {
+    const lower = messageBody.toLowerCase().trim();
+    
+    // Permitir volver al menú
+    if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+    
     // Validar que sea solo números
     const dni = messageBody.replace(/\D/g, ''); // Eliminar todo lo que no sea número
     
     if (!dni || dni.length < 7 || dni.length > 11) {
-      const errorMsg = '⚠️ Por favor ingresa un DNI o CUIT válido (7 a 11 dígitos numéricos).\n\n_Ejemplo: 12345678_';
+      const errorMsg = '⚠️ Por favor ingresa un DNI o CUIT válido (7 a 11 dígitos numéricos).\n\n_Ejemplo: 12345678_\n\n_📝 Para cancelar, escribí *SALIR*_';
       await sendMessageAndSave(from, errorMsg);
       return;
     }
@@ -1096,11 +1146,20 @@ const handleDniInput = async (from, messageBody) => {
  */
 const handleDniInputBoleto = async (from, messageBody) => {
   try {
+    const lower = messageBody.toLowerCase().trim();
+    
+    // Permitir volver al menú
+    if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+    
     // Validar que sea solo números
     const dni = messageBody.replace(/\D/g, ''); // Eliminar todo lo que no sea número
     
     if (!dni || dni.length < 7 || dni.length > 11) {
-      const errorMsg = '⚠️ Por favor ingresa un DNI o CUIT válido (7 a 11 dígitos numéricos).\n\n_Ejemplo: 12345678_';
+      const errorMsg = '⚠️ Por favor ingresa un DNI o CUIT válido (7 a 11 dígitos numéricos).\n\n_Ejemplo: 12345678_\n\n_📝 Para cancelar, escribí *SALIR*_';
       await sendMessageAndSave(from, errorMsg);
       return;
     }
@@ -1114,7 +1173,8 @@ const handleDniInputBoleto = async (from, messageBody) => {
     // Preguntar tipo de cuota
     const buttons = [
       { id: 'cuota_anual', title: '📅 Cuota Anual' },
-      { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
+      { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
+      { id: 'volver_menu', title: '↩️ Volver' }
     ];
     
     await whatsappService.sendButtonReply(
@@ -1140,6 +1200,14 @@ const handleDniInputBoleto = async (from, messageBody) => {
  */
 const handleTipoCuota = async (from, option) => {
   try {
+    // Permitir volver al menú
+    if (option === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      delete userStates[from].tempDni;
+      return;
+    }
+    
     const dni = userStates[from].tempDni;
     
     if (!dni) {
@@ -1188,6 +1256,15 @@ const handleTipoCuota = async (from, option) => {
  */
 const handleTipoCuotaPadron = async (from, option) => {
   try {
+    // Permitir volver al menú
+    if (option === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      delete userStates[from].tempPadron;
+      delete userStates[from].tempTipoPadron;
+      return;
+    }
+    
     const padronData = userStates[from].tempPadron;
     const tipoPadron = userStates[from].tempTipoPadron;
     
@@ -1398,7 +1475,9 @@ const ejecutarScraper = async (from, dni) => {
 • Apremio: ${apremio}
 • Eventuales: ${eventuales}
 
-💰 *TOTAL: ${total}*`;
+💰 *TOTAL: ${total}*
+
+_💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`;
     
     await sendMessageAndSave(from, datosMsg);
     
@@ -1620,11 +1699,20 @@ const handleTipoPadron = async (from, option) => {
  */
 const handlePadronSuperficial = async (from, messageBody) => {
   try {
+    const lower = messageBody.toLowerCase().trim();
+    
+    // Permitir volver al menú
+    if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+    
     const operacion = userStates[from].operacion || 'deuda';
     const partes = messageBody.trim().split(/\s+/);
     
     if (partes.length !== 2) {
-      const msg = '❌ Formato incorrecto. Por favor ingresa:\n\nCódigo de cauce (espacio) Número de padrón\n\nEj: 8234 1710';
+      const msg = '❌ Formato incorrecto. Por favor ingresa:\n\nCódigo de cauce (espacio) Número de padrón\n\nEj: 8234 1710\n\n_📌 Para cancelar, escribí *SALIR*_';
       await sendMessageAndSave(from, msg);
       return;
     }
@@ -1646,20 +1734,9 @@ const handlePadronSuperficial = async (from, messageBody) => {
       
       const buttons = [
         { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
+        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
+        { id: 'volver_menu', title: '↩️ Volver' }
       ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige el tipo de cuota:',
-        buttons
-      );
-      
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
-    } else {
-      // Operación: deuda
-      const cliente = { padron_superficial: `${codigoCauce} ${numeroPadron}` };
-      await ejecutarScraperPadron(from, cliente, 'superficial');
     }
   } catch (error) {
     console.error('❌ Error en handlePadronSuperficial:', error);
@@ -1674,11 +1751,20 @@ const handlePadronSuperficial = async (from, messageBody) => {
  */
 const handlePadronSubterraneo = async (from, messageBody) => {
   try {
+    const lower = messageBody.toLowerCase().trim();
+    
+    // Permitir volver al menú
+    if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+    
     const operacion = userStates[from].operacion || 'deuda';
     const partes = messageBody.trim().split(/\s+/);
     
     if (partes.length !== 2) {
-      const msg = '❌ Formato incorrecto. Por favor ingresa:\n\nCódigo de departamento (espacio) Número de pozo\n\nEj: 10 5';
+      const msg = '❌ Formato incorrecto. Por favor ingresa:\n\nCódigo de departamento (espacio) Número de pozo\n\nEj: 10 5\n\n_📌 Para cancelar, escribí *SALIR*_';
       await sendMessageAndSave(from, msg);
       return;
     }
@@ -1700,7 +1786,8 @@ const handlePadronSubterraneo = async (from, messageBody) => {
       
       const buttons = [
         { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
+        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
+        { id: 'volver_menu', title: '↩️ Volver' }
       ];
       
       await whatsappService.sendButtonReply(
@@ -1728,11 +1815,20 @@ const handlePadronSubterraneo = async (from, messageBody) => {
  */
 const handlePadronContaminacion = async (from, messageBody) => {
   try {
+    const lower = messageBody.toLowerCase().trim();
+    
+    // Permitir volver al menú
+    if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+    
     const operacion = userStates[from].operacion || 'deuda';
     const numeroContaminacion = messageBody.trim();
     
     if (!numeroContaminacion || numeroContaminacion.length === 0) {
-      const msg = '❌ Por favor ingresa un número de contaminación válido.\n\nEj: 12345';
+      const msg = '❌ Por favor ingresa un número de contaminación válido.\n\nEj: 12345\n\n_📌 Para cancelar, escribí *SALIR*_';
       await sendMessageAndSave(from, msg);
       return;
     }
@@ -1751,7 +1847,8 @@ const handlePadronContaminacion = async (from, messageBody) => {
       
       const buttons = [
         { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
+        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
+        { id: 'volver_menu', title: '↩️ Volver' }
       ];
       
       await whatsappService.sendButtonReply(
@@ -1880,7 +1977,8 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
       `Interés: ${datos.interes}\n` +
       `Apremio: ${datos.apremio}\n` +
       `Eventuales: ${datos.eventuales}\n\n` +
-      `*💵 TOTAL A PAGAR: ${datos.total}*`;
+      `*💵 TOTAL A PAGAR: ${datos.total}*\n\n` +
+      `_💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`;
     
     await sendMessageAndSave(from, deudaMsg);
     
@@ -1983,6 +2081,353 @@ Para más información y requisitos, visitá:
     console.error('Error en handleIniciarPerforacion:', error);
     await sendMessageAndSave(from, '❌ Error al mostrar información. Intenta de nuevo.');
   }
+};
+
+/**
+ * Maneja la elección de usar el último titular o ingresar uno nuevo
+ */
+const handleTurnoTitularChoice = async (from, option) => {
+  const normalized = (option || '').toString().trim().toLowerCase();
+
+  if (normalized === 'usar_ultimo_titular') {
+    const lastTitular = userStates[from].lastTitular;
+    await sendMessageAndSave(from, `🔎 Buscando turno con: *${lastTitular}*...`);
+    
+    const result = await turnadoScraperService.buscarPorTitular(lastTitular);
+    
+    if (!result.success) {
+      const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
+
+Podés reintentar ingresando el titular nuevamente o escribir *volver*.`;
+      await sendMessageAndSave(from, errorMsg);
+      userStates[from].step = 'AWAITING_TURNO_TITULAR';
+      return;
+    }
+    
+    const data = result.data || {};
+    const response = `✅ *Turno encontrado*
+
+• Inspección de cauce: ${data.inspeccion || 'No disponible'}
+• Hijuela: ${data.hijuela || 'No disponible'}
+• C.C.-P.P.: ${data.ccpp || 'No disponible'}
+• Titular: ${data.titular || lastTitular}
+• Inicio de turno: ${data.inicioTurno || 'No disponible'}
+• Fin de turno: ${data.finTurno || 'No disponible'}`;
+    
+    await sendMessageAndSave(from, response);
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  if (normalized === 'nuevo_titular') {
+    const msg = `📝 *Ingresar nuevo titular*
+
+Recordá: *APELLIDO* seguido del *Nombre*
+
+Ej: *GONZALEZ JUAN*`;
+    await sendMessageAndSave(from, msg);
+    userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    return;
+  }
+
+  if (normalized === 'volver' || normalized === 'menu') {
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  await sendMessageAndSave(from, '❌ Opción no válida.');
+};
+
+/**
+ * Maneja la elección de usar el último C.C.-P.P. o ingresar uno nuevo
+ */
+const handleTurnoCCPPChoice = async (from, option) => {
+  const normalized = (option || '').toString().trim().toLowerCase();
+
+  if (normalized === 'usar_ultimo_ccpp') {
+    const lastCCPP = userStates[from].lastCCPP;
+    await sendMessageAndSave(from, `🔎 Buscando turno con: *${lastCCPP}*...`);
+    
+    const result = await turnadoScraperService.buscarPorCCPP(lastCCPP);
+    
+    if (!result.success) {
+      const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
+
+Podés reintentar ingresando el C.C.-P.P. nuevamente o escribir *volver*.`;
+      await sendMessageAndSave(from, errorMsg);
+      userStates[from].step = 'AWAITING_TURNO_CCPP';
+      return;
+    }
+    
+    const data = result.data || {};
+    const response = `✅ *Turno encontrado*
+
+• Inspección de cauce: ${data.inspeccion || 'No disponible'}
+• C.C.-P.P.: ${data.ccpp || lastCCPP}
+• Titular: ${data.titular || 'No disponible'}
+• Inicio de turno: ${data.inicioTurno || 'No disponible'}
+• Fin de turno: ${data.finTurno || 'No disponible'}`;
+    
+    await sendMessageAndSave(from, response);
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  if (normalized === 'nuevo_ccpp') {
+    const msg = `📝 *Ingresar nuevo C.C.-P.P.*
+
+Recordá: *sin ceros después del guion*
+
+Ej: *8234-1*`;
+    await sendMessageAndSave(from, msg);
+    userStates[from].step = 'AWAITING_TURNO_CCPP';
+    return;
+  }
+
+  if (normalized === 'volver' || normalized === 'menu') {
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  await sendMessageAndSave(from, '❌ Opción no válida.');
+};
+
+/**
+ * Maneja la elección del método de búsqueda de turnos
+ */
+const handleTurnoMethodChoice = async (from, option) => {
+  const normalized = (option || '').toString().trim().toLowerCase();
+
+  if (normalized === 'turno_titular') {
+    // Cargar último titular desde BD
+    const lastTitularDB = await clienteService.obtenerUltimoTitular(from);
+    const lastTitular = lastTitularDB || userStates[from].lastTitular;
+    
+    if (lastTitular) {
+      // Ofrecer usar el último titular
+      const msg = `👤 *Búsqueda por Titular*
+
+Último titular usado: *${lastTitular}*
+
+¿Querés buscar con el mismo titular?`;
+      await sendMessageAndSave(from, msg);
+      
+      await whatsappService.sendInteractiveButtons(
+        from,
+        'Elegí una opción:',
+        [
+          { id: 'usar_ultimo_titular', title: '✅ Usar mismo' },
+          { id: 'nuevo_titular', title: '📝 Ingresar otro' },
+          { id: 'volver', title: '↩️ Volver' }
+        ]
+      );
+      
+      userStates[from].step = 'AWAITING_TURNO_TITULAR_CHOICE';
+      userStates[from].lastTitular = lastTitular; // Guardar en memoria también
+    } else {
+      const msg = `👤 *Búsqueda por Titular*
+
+Recordá ingresar *APELLIDO* seguido del *Nombre* como figura en tu turno anterior o boleta de pago.
+
+Ej: *GONZALEZ JUAN*`;
+      await sendMessageAndSave(from, msg);
+      userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    }
+    return;
+  }
+
+  if (normalized === 'turno_ccpp') {
+    // Cargar último C.C.-P.P. desde BD
+    const lastCCPPDB = await clienteService.obtenerUltimoCCPP(from);
+    const lastCCPP = lastCCPPDB || userStates[from].lastCCPP;
+    
+    if (lastCCPP) {
+      const msg = `🔢 *Búsqueda por C.C.-P.P.*
+
+Último C.C.-P.P. usado: *${lastCCPP}*
+
+¿Querés buscar con el mismo padrón?`;
+      await sendMessageAndSave(from, msg);
+      
+      await whatsappService.sendInteractiveButtons(
+        from,
+        'Elegí una opción:',
+        [
+          { id: 'usar_ultimo_ccpp', title: '✅ Usar mismo' },
+          { id: 'nuevo_ccpp', title: '📝 Ingresar otro' },
+          { id: 'volver', title: '↩️ Volver' }
+        ]
+      );
+      
+      userStates[from].step = 'AWAITING_TURNO_CCPP_CHOICE';
+      userStates[from].lastCCPP = lastCCPP; // Guardar en memoria también
+    } else {
+      const msg = `🔢 *Búsqueda por C.C.-P.P.*
+
+Recordá: *los ceros después del guion (-) NO se colocan*.
+
+Ej: si tu padrón es *8234-0001* debés ingresar *8234-1*`;
+      await sendMessageAndSave(from, msg);
+      userStates[from].step = 'AWAITING_TURNO_CCPP';
+    }
+    return;
+  }
+
+  if (normalized === 'volver' || normalized === 'menu') {
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  await sendMessageAndSave(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
+  await whatsappService.sendInteractiveButtons(
+    from,
+    '📋 Seleccione el método de búsqueda:',
+    [
+      { id: 'turno_titular', title: '👤 Por Titular' },
+      { id: 'turno_ccpp', title: '🔢 Por C.C.-P.P.' },
+      { id: 'volver', title: '↩️ Volver' }
+    ]
+  );
+};
+
+/**
+ * Maneja ingreso de titular para búsqueda de turnos
+ */
+const handleTurnoTitularInput = async (from, messageBody) => {
+  const raw = (messageBody || '').trim();
+  const lower = raw.toLowerCase();
+
+  if (!raw) {
+    await sendMessageAndSave(from, '⚠️ Por favor ingresá el titular (APELLIDO Nombre).');
+    return;
+  }
+
+  if (lower === 'volver' || lower === 'menu') {
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  // Guardar en memoria y BD
+  userStates[from].lastTitular = raw;
+  await clienteService.guardarUltimoTitular(from, raw);
+
+  await sendMessageAndSave(from, '🔎 Buscando turno, un momento por favor...');
+
+  const result = await turnadoScraperService.buscarPorTitular(raw);
+
+  if (!result.success) {
+    const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
+
+Podés reintentar ingresando el titular nuevamente o escribir *volver*.`;
+    await sendMessageAndSave(from, errorMsg);
+    return;
+  }
+
+  const data = result.data || {};
+  const response = `✅ *Turno encontrado*
+
+• Inspección de cauce: ${data.inspeccion || 'No disponible'}
+• Hijuela: ${data.hijuela || 'No disponible'}
+• C.C.-P.P.: ${data.ccpp || 'No disponible'}
+• Titular: ${data.titular || raw}
+• Inicio de turno: ${data.inicioTurno || 'No disponible'}
+• Fin de turno: ${data.finTurno || 'No disponible'}`;
+
+  await sendMessageAndSave(from, response);
+  await sendMenuList(from, true);
+  userStates[from].step = 'MAIN_MENU';
+};
+
+/**
+ * Maneja ingreso de C.C.-P.P. para búsqueda de turnos
+ */
+const handleTurnoCCPPInput = async (from, messageBody) => {
+  const raw = (messageBody || '').trim();
+  const lower = raw.toLowerCase();
+
+  if (!raw) {
+    await sendMessageAndSave(from, '⚠️ Por favor ingresá el C.C.-P.P. (Ej: 8234-1).');
+    return;
+  }
+
+  if (lower === 'volver' || lower === 'menu') {
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  // Normalizar formato flexible: 8234-1, 82341, 8234 1, 8234-1710, etc.
+  let normalized;
+  
+  // Opción 1: Ya tiene guion (8234-1 o 8234-1710)
+  if (raw.includes('-')) {
+    const parts = raw.split('-');
+    const pref = parts[0]?.trim() || '';
+    const sufRaw = parts[1]?.trim() || '';
+    
+    if (!pref || !sufRaw) {
+      await sendMessageAndSave(from, '⚠️ C.C.-P.P. inválido. Ej: 8234-1 o 8234-1710');
+      return;
+    }
+    
+    // Si el sufijo tiene 4 dígitos (1710), reducir a 1
+    const suf = sufRaw.length === 4 ? sufRaw.replace(/^0+/, '') : sufRaw;
+    normalized = `${pref}-${suf}`;
+  } else {
+    // Opción 2: Sin guion (82341 o 8234 1)
+    const cleaned = raw.replace(/\s+/g, '');
+    
+    if (cleaned.length < 4) {
+      await sendMessageAndSave(from, '⚠️ C.C.-P.P. inválido. Ej: 8234-1 o 82341');
+      return;
+    }
+    
+    // Si tiene más de 4 dígitos, es probablemente 82341710 → 8234-1
+    if (cleaned.length > 4) {
+      const pref = cleaned.substring(0, 4);
+      const sufRaw = cleaned.substring(4);
+      const suf = sufRaw.replace(/^0+/, '') || '0';
+      normalized = `${pref}-${suf}`;
+    } else {
+      normalized = `${cleaned}-0`;
+    }
+  }
+
+  // Guardar en memoria y BD
+  userStates[from].lastCCPP = normalized;
+  await clienteService.guardarUltimoCCPP(from, normalized);
+
+  await sendMessageAndSave(from, `🔎 Buscando turno para C.C.-P.P. ${normalized}...`);
+
+  const result = await turnadoScraperService.buscarPorCCPP(normalized);
+
+  if (!result.success) {
+    const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
+
+Podés reintentar ingresando el C.C.-P.P. nuevamente o escribir *volver*.`;
+    await sendMessageAndSave(from, errorMsg);
+    return;
+  }
+
+  const data = result.data || {};
+  const response = `✅ *Turno encontrado*
+
+• Inspección de cauce: ${data.inspeccion || 'No disponible'}
+• Hijuela: ${data.hijuela || 'No disponible'}
+• C.C.-P.P.: ${data.ccpp || normalized}
+• Titular: ${data.titular || 'No disponible'}
+• Inicio de turno: ${data.inicioTurno || 'No disponible'}
+• Fin de turno: ${data.finTurno || 'No disponible'}`;
+
+  await sendMessageAndSave(from, response);
+  await sendMenuList(from, true);
+  userStates[from].step = 'MAIN_MENU';
 };
 
 module.exports = {
