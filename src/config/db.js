@@ -29,6 +29,7 @@ const initializeDB = async () => {
           } else {
             try {
               await createTables();
+              await runMigrations();
               resolve(db);
             } catch (error) {
               reject(error);
@@ -57,6 +58,8 @@ const createTables = async () => {
       padron_contaminacion TEXT,
       tipo_consulta_preferido TEXT,
       estado_deuda TEXT,
+      last_titular TEXT,
+      last_ccpp TEXT,
       bot_activo INTEGER DEFAULT 1,
       ultima_interaccion DATETIME DEFAULT CURRENT_TIMESTAMP,
       fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -153,6 +156,42 @@ const createTables = async () => {
   }
 
   console.log('✅ Tablas clientes, mensajes, notas_internas, operadores y audit_log listas');
+};
+
+/**
+ * Ejecuta migraciones de base de datos para agregar columnas faltantes
+ */
+const runMigrations = async () => {
+  console.log('🔄 Verificando migraciones de base de datos...');
+  
+  // Migración 1: Agregar columnas last_titular y last_ccpp
+  try {
+    // Verificar si la columna ya existe
+    const tableInfo = await query("PRAGMA table_info(clientes)");
+    const hasLastTitular = tableInfo.some(col => col.name === 'last_titular');
+    const hasLastCCPP = tableInfo.some(col => col.name === 'last_ccpp');
+    
+    if (!hasLastTitular) {
+      console.log('  ➕ Agregando columna last_titular a tabla clientes...');
+      await run('ALTER TABLE clientes ADD COLUMN last_titular TEXT');
+      console.log('  ✅ Columna last_titular agregada');
+    }
+    
+    if (!hasLastCCPP) {
+      console.log('  ➕ Agregando columna last_ccpp a tabla clientes...');
+      await run('ALTER TABLE clientes ADD COLUMN last_ccpp TEXT');
+      console.log('  ✅ Columna last_ccpp agregada');
+    }
+    
+    if (hasLastTitular && hasLastCCPP) {
+      console.log('  ✅ Todas las migraciones ya están aplicadas');
+    }
+    
+  } catch (error) {
+    console.error('❌ Error ejecutando migraciones:', error);
+  }
+  
+  console.log('✅ Migraciones completadas');
 };
 
 /**

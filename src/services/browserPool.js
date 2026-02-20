@@ -10,38 +10,82 @@ class BrowserPool {
     this.browsers = [];
     this.queue = [];
     this.activeBrowsers = 0;
+    this.maxLaunchAttempts = 2;
+  }
+
+  buildLaunchOptions(variant = 'primary') {
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH || undefined;
+    const baseArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--disable-extensions',
+      '--disable-software-rasterizer',
+      '--disable-features=IsolateOrigins,site-per-process'
+    ];
+
+    if (variant === 'fallback') {
+      return {
+        headless: true,
+        pipe: true,
+        args: baseArgs,
+        executablePath,
+        timeout: 30000
+      };
+    }
+
+    return {
+      headless: 'new',
+      args: baseArgs,
+      executablePath,
+      timeout: 30000
+    };
+  }
+
+  async validateBrowser(browser) {
+    if (!browser || !browser.isConnected()) {
+      throw new Error('Browser desconectado al iniciar');
+    }
+    const page = await browser.newPage();
+    await page.close();
   }
 
   async getBrowser() {
-    // Si hay un browser disponible, reutilizarlo
-    if (this.browsers.length > 0) {
+    // Si hay un browser disponible, reutilizarlo (solo si sigue conectado)
+    while (this.browsers.length > 0) {
       const browser = this.browsers.pop();
-      console.log(`♻️ Reutilizando browser existente (${this.browsers.length} disponibles)`);
-      return { browser, isNew: false };
+      if (browser && browser.isConnected()) {
+        console.log(`♻️ Reutilizando browser existente (${this.browsers.length} disponibles)`);
+        return { browser, isNew: false };
+      }
+      await this.discardBrowser(browser);
     }
 
     // Si podemos crear más browsers, crear uno nuevo
     if (this.activeBrowsers < this.maxBrowsers) {
-      this.activeBrowsers++;
-      console.log(`🆕 Creando nuevo browser (${this.activeBrowsers}/${this.maxBrowsers})`);
-      
-      const browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-first-run',
-          '--no-zygote',
-          '--single-process',
-          '--disable-extensions',
-          '--disable-software-rasterizer'
-        ],
-        timeout: 30000
-      });
+      console.log(`🆕 Creando nuevo browser (${this.activeBrowsers + 1}/${this.maxBrowsers})`);
 
-      return { browser, isNew: true };
+      for (let attempt = 1; attempt <= this.maxLaunchAttempts; attempt++) {
+        let browser;
+        try {
+          const options = this.buildLaunchOptions(attempt === 1 ? 'primary' : 'fallback');
+          browser = await puppeteer.launch(options);
+          await this.validateBrowser(browser);
+
+          this.activeBrowsers++;
+          return { browser, isNew: true };
+        } catch (err) {
+          if (browser) {
+            await this.discardBrowser(browser);
+          }
+          console.error(`❌ Error iniciando browser (intento ${attempt}/${this.maxLaunchAttempts}):`, err.message);
+          if (attempt === this.maxLaunchAttempts) {
+            throw err;
+          }
+        }
+      }
     }
 
     // Si llegamos al límite, esperar en cola
@@ -52,6 +96,11 @@ class BrowserPool {
   }
 
   async releaseBrowser(browser) {
+    if (!browser || !browser.isConnected()) {
+      await this.discardBrowser(browser);
+      return;
+    }
+
     // Si hay alguien esperando en la cola, dárselo
     if (this.queue.length > 0) {
       const resolve = this.queue.shift();
@@ -71,6 +120,19 @@ class BrowserPool {
       this.activeBrowsers--;
       console.log(`🗑️ Browser cerrado (exceso en pool)`);
     }
+  }
+
+  async discardBrowser(browser) {
+    if (!browser) return;
+    try {
+      await browser.close();
+    } catch (err) {
+      console.error('Error cerrando browser desconectado:', err.message);
+    }
+    if (this.activeBrowsers > 0) {
+      this.activeBrowsers--;
+    }
+    console.log('🗑️ Browser descartado (desconectado)');
   }
 
   async closeAll() {

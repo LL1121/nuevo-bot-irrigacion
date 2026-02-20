@@ -228,6 +228,14 @@ export default function App() {
     const now = new Date();
     const messageDate = new Date(date);
     
+    console.log('🕐 DEBUG TIME:', {
+      inputDate: date,
+      parsedDate: messageDate,
+      now: now,
+      messageHours: messageDate.getHours(),
+      nowHours: now.getHours()
+    });
+    
     // Comparar solo día/mes/año (ignorar horas)
     const isToday = 
       messageDate.getDate() === now.getDate() &&
@@ -235,8 +243,10 @@ export default function App() {
       messageDate.getFullYear() === now.getFullYear();
     
     if (isToday) {
-      // Mensajes de hoy: mostrar hora (HH:MM)
-      return messageDate.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+      // Mensajes de hoy: mostrar hora (HH:MM) en 24hs
+      const hours = messageDate.getHours().toString().padStart(2, '0');
+      const minutes = messageDate.getMinutes().toString().padStart(2, '0');
+      return `${hours}:${minutes}`;
     }
     
     // Calcular diferencia en días
@@ -479,6 +489,70 @@ const dedupeMessages = (msgs: any[]) => {
   });
 };
 
+// Función para reproducir sonido de notificación
+const playNotificationSound = () => {
+  // Sonido beep simple usando Web Audio API
+  try {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.frequency.value = 800; // Frecuencia en Hz
+    oscillator.type = 'sine';
+    
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+    
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.5);
+  } catch (e) {
+    console.log('No se pudo reproducir sonido:', e);
+  }
+};
+
+// Función para mostrar notificación
+const showNotification = (title: string, options: NotificationOptions = {}) => {
+  if (!('Notification' in window)) {
+    console.log('Este navegador no soporta notificaciones');
+    return;
+  }
+
+  if (Notification.permission === 'granted') {
+    // Reproducir sonido
+    playNotificationSound();
+    
+    // Mostrar notificación
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'SHOW_NOTIFICATION',
+        title,
+        options: {
+          ...options,
+          icon: 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💧</text></svg>',
+          badge: 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💧</text></svg>',
+          tag: 'irrigacion-notification'
+        }
+      });
+    } else {
+      new Notification(title, options);
+    }
+  }
+};
+
+// Función para solicitar permisos de notificación
+const requestNotificationPermission = async () => {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission !== 'denied') {
+    const permission = await Notification.requestPermission();
+    return permission === 'granted';
+  }
+  return false;
+};
+
 const dedupeDisplayMessages = (msgs: any[]) => {
   const seen = new Set<string>();
   return msgs.filter((m: any) => {
@@ -702,6 +776,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               return mTextKey === incomingTextKey && mBucket === incomingBucket && m.sent === incomingSent;
             });
             
+            console.log('🔍 DEBUG - Check duplicado:', {
+              messageExists,
+              newMsgId: newMsg.id,
+              newMsgText: newMsg.mensaje,
+              currentMessagesCount: chat.messages.length
+            });
+            
             if (!messageExists) {
               const emisorLimpio = normalizeSenderType(newMsg.emisor || newMsg.tipo);
               
@@ -734,6 +815,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   duration: newMsg.duracion
                 };
                 
+                console.log('✅ ADDING MESSAGE:', {
+                  mappedMessageId: mappedMessage.id,
+                  mappedMessageText: mappedMessage.text,
+                  mappedMessageTime: mappedMessage.time,
+                  sent: mappedMessage.sent
+                });
+                
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
                 const existingIds = new Set(chat.messages.map((m: any) => m.id));
                 if (!existingIds.has(mappedMessage.id)) {
@@ -744,6 +832,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   });
                   // Mantener solo los últimos messagesLimit mensajes en UI
                   chat.messages = sortedMessages.slice(-messagesLimit);
+                  
+                  console.log('📊 MESSAGES UPDATED:', {
+                    newCount: chat.messages.length,
+                    lastMessage: chat.messages[chat.messages.length - 1]?.text,
+                    selectedChatIndex: existingChatIndex,
+                    isCurrentChat: selectedChat === existingChatIndex
+                  });
+                  
+                  // FORCE UPDATE: Crear nuevo objeto de chat para triggear re-render
+                  updated[existingChatIndex] = { ...chat };
                   
                   // También agregar al caché de memoria
                   setAllMessagesCache(prev => {
@@ -764,6 +862,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   const isUserMessage = isUserSender(emisorLimpio);
                   if (isUserMessage) {
                     chat.unread = (chat.unread || 0) + 1;
+                    
+                    // 📢 Mostrar notificación si el usuario no está en este chat
+                    if (selectedChat !== existingChatIndex) {
+                      const contactName = chat.nombre || chat.phone;
+                      const messagePreview = messageText.substring(0, 100);
+                      showNotification(`Mensaje de ${contactName}`, {
+                        body: messagePreview,
+                        silent: false
+                      });
+                    }
                   }
                 } else {
                   // ID ya existe, ignorar
@@ -921,6 +1029,17 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     if (stored) setDarkMode(stored === 'true');
   }, []);
 
+  // Solicitar permisos de notificación al autenticarse
+  useEffect(() => {
+    if (isAuthenticated) {
+      requestNotificationPermission().then(granted => {
+        if (granted) {
+          console.log('✅ Notificaciones push habilitadas');
+        }
+      });
+    }
+  }, [isAuthenticated]);
+
   // Load preferences from storage
   useEffect(() => {
     const storedTheme = localStorage.getItem('theme') || 'emerald';
@@ -1043,9 +1162,18 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               contenido: (msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '').substring(0, 50)
             });
             
+            const rawTimestamp = msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp;
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
-            const msgDate = parseMessageDate(msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp);
+            const msgDate = parseMessageDate(rawTimestamp);
+            
+            console.log('🕐 TIMESTAMP DEBUG (API LOAD):', {
+              raw_timestamp: rawTimestamp,
+              parsed_date: msgDate.toISOString(),
+              locale_hours: msgDate.getHours(),
+              formatted_time: formatTime(msgDate)
+            });
+            
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
               timestamp: msgDate.toISOString(),

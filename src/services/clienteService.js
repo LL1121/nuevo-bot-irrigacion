@@ -294,6 +294,80 @@ const actualizarPadronContaminacion = async (telefono, numeroContaminacion) => {
   }
 };
 
+/**
+ * Guardar último titular buscado en turnos
+ * @param {string} telefono - Número de teléfono
+ * @param {string} titular - Nombre del titular
+ */
+const guardarUltimoTitular = async (telefono, titular) => {
+  try {
+    await run(
+      'UPDATE clientes SET last_titular = ? WHERE telefono = ?',
+      [titular, telefono]
+    );
+    console.log(`💾 Último titular guardado: ${telefono} -> ${titular}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error guardando último titular:', error);
+    throw error;
+  }
+};
+
+/**
+ * Obtener último titular buscado
+ * @param {string} telefono - Número de teléfono
+ * @returns {string|null} Último titular o null
+ */
+const obtenerUltimoTitular = async (telefono) => {
+  try {
+    const cliente = await get(
+      'SELECT last_titular FROM clientes WHERE telefono = ?',
+      [telefono]
+    );
+    return cliente?.last_titular || null;
+  } catch (error) {
+    console.error('❌ Error obteniendo último titular:', error);
+    return null;
+  }
+};
+
+/**
+ * Guardar último C.C.-P.P. buscado en turnos
+ * @param {string} telefono - Número de teléfono
+ * @param {string} ccpp - C.C.-P.P.
+ */
+const guardarUltimoCCPP = async (telefono, ccpp) => {
+  try {
+    await run(
+      'UPDATE clientes SET last_ccpp = ? WHERE telefono = ?',
+      [ccpp, telefono]
+    );
+    console.log(`💾 Último C.C.-P.P. guardado: ${telefono} -> ${ccpp}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error guardando último C.C.-P.P.:', error);
+    throw error;
+  }
+};
+
+/**
+ * Obtener último C.C.-P.P. buscado
+ * @param {string} telefono - Número de teléfono
+ * @returns {string|null} Último C.C.-P.P. o null
+ */
+const obtenerUltimoCCPP = async (telefono) => {
+  try {
+    const cliente = await get(
+      'SELECT last_ccpp FROM clientes WHERE telefono = ?',
+      [telefono]
+    );
+    return cliente?.last_ccpp || null;
+  } catch (error) {
+    console.error('❌ Error obteniendo último C.C.-P.P.:', error);
+    return null;
+  }
+};
+
 module.exports = {
   obtenerOCrearCliente,
   obtenerTodosLosClientes,
@@ -304,5 +378,9 @@ module.exports = {
   obtenerCliente,
   actualizarPadronSuperficial,
   actualizarPadronSubterraneo,
-  actualizarPadronContaminacion
+  actualizarPadronContaminacion,
+  guardarUltimoTitular,
+  obtenerUltimoTitular,
+  guardarUltimoCCPP,
+  obtenerUltimoCCPP
 };
