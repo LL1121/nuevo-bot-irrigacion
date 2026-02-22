@@ -9,6 +9,161 @@ function delay(ms) {
 }
 
 /**
+ * Extrae información detallada de horarios haciendo click en "presiona aquí"
+ * @param {Page} page - Página de Puppeteer
+ * @returns {Promise<Object>} Información detallada de inicio y fin de turno
+ */
+async function extraerHorariosDetallados(page) {
+  try {
+    console.log('🔍 Buscando botón "presiona aquí"...');
+    
+    // Buscar y hacer click en el botón que contiene "presiona aquí"
+    const clickedButton = await page.evaluate(() => {
+      // Buscar todos los botones, enlaces y elementos clickeables
+      const allElements = Array.from(document.querySelectorAll('button, a, span, div, input[type="button"]'));
+      
+      // Buscar el que contiene "presiona aquí" (case insensitive)
+      const targetButton = allElements.find(el => {
+        const text = (el.textContent || '').toLowerCase();
+        return text.includes('presiona aquí') || text.includes('presiona aqui') || text.includes('presiona');
+      });
+      
+      if (targetButton) {
+        console.log('✅ Botón encontrado:', targetButton.textContent);
+        targetButton.click();
+        return true;
+      }
+      
+      console.log('❌ No se encontró el botón "presiona aquí"');
+      return false;
+    });
+    
+    if (!clickedButton) {
+      console.log('⚠️ No se pudo hacer click en el botón, continuando con datos generales');
+      return null;
+    }
+    
+    console.log('⏳ Esperando que aparezca el recuadro con horarios...');
+    await delay(2500);
+    
+    // Extraer la información del recuadro nuevo
+    const horariosDetallados = await page.evaluate(() => {
+      console.log('🔍 Buscando horarios detallados...');
+      
+      // Obtener todo el texto visible de la página
+      const pageText = document.body.innerText || document.body.textContent || '';
+      console.log('📄 Texto de la página:\n', pageText);
+      
+      // Buscar todos los inputs (pueden ser inputs, divs, spans, etc.)
+      const allElements = Array.from(document.querySelectorAll('input, div, span, p, label'));
+      
+      // Recopilar todos los valores visibles
+      const valores = [];
+      allElements.forEach(el => {
+        const valor = el.value || el.textContent || el.innerText || '';
+        const textoLimpio = valor.trim();
+        
+        // Solo si tiene contenido y no es muy largo (probablemente no sea contenedor)
+        if (textoLimpio && textoLimpio.length < 100) {
+          valores.push(textoLimpio);
+        }
+      });
+      
+      console.log('📋 Valores encontrados:', valores);
+      
+      // Buscar días de la semana
+      const diasSemana = ['lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado', 'domingo'];
+      
+      // Patrones para buscar
+      const dateTimePattern = /(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2})/;
+      const horaPattern = /^(\d{1,2}:\d{2})$/;
+      const diaPattern = new RegExp(`^(${diasSemana.join('|')})$`, 'i');
+      
+      let resultado = {
+        encontrado: false,
+        fechaInicio: null,
+        diaInicio: null,
+        horaInicio: null,
+        diaFin: null,
+        horaFin: null
+      };
+      
+      // Buscar la secuencia en los valores
+      for (let i = 0; i < valores.length - 4; i++) {
+        const val0 = valores[i]; // Fecha + hora
+        const val1 = valores[i + 1]; // Día inicio
+        const val2 = valores[i + 2]; // Hora inicio
+        const val3 = valores[i + 3]; // Día fin
+        const val4 = valores[i + 4]; // Hora fin
+        
+        if (
+          dateTimePattern.test(val0) &&
+          diaPattern.test(val1) &&
+          horaPattern.test(val2) &&
+          diaPattern.test(val3) &&
+          horaPattern.test(val4)
+        ) {
+          resultado = {
+            encontrado: true,
+            fechaInicio: val0,
+            diaInicio: val1,
+            horaInicio: val2,
+            diaFin: val3,
+            horaFin: val4
+          };
+          console.log('✅ Secuencia encontrada:', resultado);
+          break;
+        }
+      }
+      
+      // Si no se encontró de forma directa, buscar en el texto de la página
+      if (!resultado.encontrado) {
+        console.log('🔍 Buscando en texto de página...');
+        
+        // Buscar fecha + hora
+        const dateMatch = pageText.match(dateTimePattern);
+        if (dateMatch) {
+          resultado.fechaInicio = dateMatch[1];
+          
+          // Buscar días después de la fecha
+          const diasMatches = Array.from(pageText.matchAll(new RegExp(`(${diasSemana.join('|')})`, 'ig')));
+          if (diasMatches.length >= 2) {
+            resultado.diaInicio = diasMatches[0][1];
+            resultado.diaFin = diasMatches[1][1];
+            
+            // Buscar horas
+            const horasMatches = Array.from(pageText.matchAll(horaPattern));
+            if (horasMatches.length >= 2) {
+              resultado.horaInicio = horasMatches[0][1];
+              resultado.horaFin = horasMatches[1][1];
+              resultado.encontrado = true;
+            }
+          }
+        }
+      }
+      
+      return resultado;
+    });
+    
+    console.log('📅 Horarios detallados extraídos:', horariosDetallados);
+    
+    if (horariosDetallados.encontrado) {
+      return {
+        inicioDetallado: `${horariosDetallados.diaInicio} ${horariosDetallados.horaInicio}`,
+        finDetallado: `${horariosDetallados.diaFin} ${horariosDetallados.horaFin}`,
+        fechaInicioCompleta: horariosDetallados.fechaInicio
+      };
+    }
+    
+    return null;
+    
+  } catch (error) {
+    console.error('❌ Error extrayendo horarios detallados:', error);
+    return null;
+  }
+}
+
+/**
  * Busca información de turnado por nombre y apellido
  * @param {string} nombreCompleto - APELLIDO seguido del nombre
  * @returns {Promise<Object>} Información del turno
@@ -179,6 +334,20 @@ async function buscarPorTitular(nombreCompleto) {
     // Validar que se encontraron datos
     if (!turnoInfo.ccpp && !turnoInfo.titular) {
       throw new Error('No se encontró información del turno. Verifique que el nombre sea correcto.');
+    }
+    
+    // Intentar extraer horarios detallados
+    console.log('🕐 Intentando extraer horarios detallados...');
+    const horariosDetallados = await extraerHorariosDetallados(page);
+    
+    // Si se encontraron horarios detallados, reemplazar los generales
+    if (horariosDetallados) {
+      console.log('✅ Horarios detallados obtenidos');
+      turnoInfo.inicioTurno = horariosDetallados.inicioDetallado;
+      turnoInfo.finTurno = horariosDetallados.finDetallado;
+      turnoInfo.fechaInicioCompleta = horariosDetallados.fechaInicioCompleta;
+    } else {
+      console.log('ℹ️ Usando horarios generales');
     }
     
     return {
@@ -418,6 +587,20 @@ async function buscarPorCCPP(ccpp) {
     console.log('   1. El C.C.-P.P. no existe en el sistema');
     console.log('   2. El C.C.-P.P. está en un formato incorrecto');
     console.log('   3. La búsqueda no retornó resultados');      throw new Error('No se encontró información del turno. Verifique que el C.C.-P.P. sea correcto.');
+    }
+    
+    // Intentar extraer horarios detallados
+    console.log('🕐 Intentando extraer horarios detallados...');
+    const horariosDetallados = await extraerHorariosDetallados(page);
+    
+    // Si se encontraron horarios detallados, reemplazar los generales
+    if (horariosDetallados) {
+      console.log('✅ Horarios detallados obtenidos');
+      turnoInfo.inicioTurno = horariosDetallados.inicioDetallado;
+      turnoInfo.finTurno = horariosDetallados.finDetallado;
+      turnoInfo.fechaInicioCompleta = horariosDetallados.fechaInicioCompleta;
+    } else {
+      console.log('ℹ️ Usando horarios generales');
     }
     
     return {
