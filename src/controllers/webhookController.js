@@ -696,7 +696,7 @@ Por favor contactá a un operador para más información.`;
         '📋 Seleccione el método de búsqueda:',
         [
           { id: 'turno_titular', title: '👤 Por Titular' },
-          { id: 'turno_ccpp', title: '🔢 Por C.C.-P.P.' },
+          { id: 'turno_ccpp', title: '🔢 Por Servicio' },
           { id: 'volver', title: '↩️ Volver' }
         ]
       );
@@ -2211,7 +2211,7 @@ const handleTurnoMethodChoice = async (from, option) => {
       // Ofrecer usar el último titular
       const msg = `👤 *Búsqueda por Titular*
 
-Último titular usado: *${lastTitular}*
+Último titular buscado: *${lastTitular}*
 
 ¿Querés buscar con el mismo titular?`;
       await sendMessageAndSave(from, msg);
@@ -2246,11 +2246,11 @@ Ej: *GONZALEZ JUAN*`;
     const lastCCPP = lastCCPPDB || userStates[from].lastCCPP;
     
     if (lastCCPP) {
-      const msg = `🔢 *Búsqueda por C.C.-P.P.*
+      const msg = `🔢 *Búsqueda por Servicio*
 
-Último C.C.-P.P. usado: *${lastCCPP}*
+Último servicio utilizado: *${lastCCPP}*
 
-¿Querés buscar con el mismo padrón?`;
+¿Querés buscar con el mismo servicio?`;
       await sendMessageAndSave(from, msg);
       
       await whatsappService.sendInteractiveButtons(
@@ -2266,11 +2266,18 @@ Ej: *GONZALEZ JUAN*`;
       userStates[from].step = 'AWAITING_TURNO_CCPP_CHOICE';
       userStates[from].lastCCPP = lastCCPP; // Guardar en memoria también
     } else {
-      const msg = `🔢 *Búsqueda por C.C.-P.P.*
+      const msg = `🔢 *Búsqueda por Servicio*
 
-Recordá: *los ceros después del guion (-) NO se colocan*.
+ℹ️ *¿Qué es el servicio?*
+El número del servicio está compuesto por:
+• *CC* = Código de Cauce
+• *PP* = Padrón Parcial
+Ejemplo: 8234-1710
 
-Ej: si tu padrón es *8234-0001* debés ingresar *8234-1*`;
+📝 *Importante:* los ceros después del guion (-) NO se colocan.
+Ej: si tu padrón es *8234-0001* debés ingresar *8234-1*
+
+Ingresá tu número de servicio:`;
       await sendMessageAndSave(from, msg);
       userStates[from].step = 'AWAITING_TURNO_CCPP';
     }
@@ -2289,7 +2296,7 @@ Ej: si tu padrón es *8234-0001* debés ingresar *8234-1*`;
     '📋 Seleccione el método de búsqueda:',
     [
       { id: 'turno_titular', title: '👤 Por Titular' },
-      { id: 'turno_ccpp', title: '🔢 Por C.C.-P.P.' },
+      { id: 'turno_ccpp', title: '🔢 Por Servicio' },
       { id: 'volver', title: '↩️ Volver' }
     ]
   );
