@@ -4,7 +4,8 @@ const path = require('path');
 const puppeteer = require('puppeteer');
 const browserPool = require('./browserPool');
 
-const BASE_URL = 'https://autogestion.cloud.irrigacion.gov.ar/dni';
+const BASE_URL_DNI = 'https://autogestion.cloud.irrigacion.gov.ar/dni';
+const BASE_URL_SERVICIO = 'https://autogestion.cloud.irrigacion.gov.ar/servicio';
 const DOWNLOAD_DIR = path.resolve(__dirname, '../../public/temp');
 const DOWNLOAD_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
@@ -185,8 +186,8 @@ async function _scrapeDeudaYBoleto(dni) {
     
     page = await createConfiguredPage(browser);
 
-    console.log(`🔍 Navegando a ${BASE_URL}...`);
-    page = await safeGoto(browser, page, BASE_URL, 2);
+    console.log(`🔍 Navegando a ${BASE_URL_DNI}...`);
+    page = await safeGoto(browser, page, BASE_URL_DNI, 2);
 
     // ============================================
     // PASO 1: Buscar input con placeholder "Ingresar DNI/CUIT"
@@ -638,15 +639,16 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
  * Obtener deuda usando padrón (superficial, subterráneo o contaminación)
  * @param {string} tipoPadron - 'superficial', 'subterraneo' o 'contaminacion'
  * @param {object} datos - { codigoCauce, numeroPadron } | { codigoDepartamento, numeroPozo } | { numeroContaminacion }
+ * @param {string} tipoOperacion - 'deuda' o 'boleto' (default: 'deuda')
  * @returns {object} { success, data, pdfPath, absolutePdfPath }
  */
-async function obtenerDeudaPadron(tipoPadron, datos) {
+async function obtenerDeudaPadron(tipoPadron, datos, tipoOperacion = 'deuda') {
   const MAX_INTENTOS = 3;
   
   for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
     try {
-      console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerDeudaPadron ${tipoPadron}:`, datos);
-      const resultado = await _scrapeDeudaYBoletoPadron(tipoPadron, datos);
+      console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerDeudaPadron ${tipoPadron}`);
+      const resultado = await _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion);
       return resultado;
     } catch (error) {
       console.error(`❌ Intento ${intento} falló:`, error.message);
@@ -668,7 +670,7 @@ async function obtenerDeudaPadron(tipoPadron, datos) {
 /**
  * Función interna que hace el scraping con padrón
  */
-async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
+async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deuda') {
   let browser;
   let browserData;
   let page;
@@ -686,157 +688,342 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
     
     page = await createConfiguredPage(browser);
 
-    console.log(`🔍 Navegando a ${BASE_URL}...`);
-    page = await safeGoto(browser, page, BASE_URL, 2);
+    console.log(`🔍 Navegando a ${BASE_URL_SERVICIO}...`);
+    page = await safeGoto(browser, page, BASE_URL_SERVICIO, 2);
+
+    // Esperar a que la página cargue completamente
+    console.log('⏳ Esperando a que cargue la página...');
+    await page.waitForSelector('input[name="codigo1"], .mantine-Select-root, h5', { timeout: 15000 }).catch(() => {
+      console.log('⚠️ Timeout esperando elementos de la página');
+    });
+    
+    await new Promise(r => setTimeout(r, 4000));
+    console.log('✅ Página cargada');
 
     // ============================================
-    // PASO 1: Buscar y hacer clic en el menú desplegable de tipo de padrón
+    // PASO 1: Abrir dropdown y seleccionar tipo de padrón (A/B/C)
     // ============================================
-    console.log('📝 Buscando selector de tipo de padrón (A/B/C)...');
+    console.log('📝 Seleccionando tipo de padrón (A/B/C)...');
     
     // El selector tiene opciones A, B, C
     const tipoCodigo = tipoPadron === 'superficial' ? 'A' :
                        tipoPadron === 'subterraneo' ? 'B' :
                        tipoPadron === 'contaminacion' ? 'C' : 'A';
     
-    // Buscar select o combo box
-    const selectFound = await page.evaluate((tipoCode) => {
-      // Buscar select directo
-      const selects = Array.from(document.querySelectorAll('select'));
-      const selectConOpcion = selects.find(sel => {
-        const opciones = Array.from(sel.querySelectorAll('option'));
-        return opciones.some(op => op.textContent.includes(tipoCode) || op.value.includes(tipoCode));
-      });
-      return selectConOpcion !== undefined;
-    }, tipoCodigo);
-
-    if (selectFound) {
-      // Es un select HTML
-      console.log(`✅ Encontrado select, seleccionando opción ${tipoCodigo}`);
-      await page.select('select', tipoCodigo);
-    } else {
-      // Podría ser un combo box personalizado - buscar y hacer clic
-      console.log(`✅ Buscando combo box personalizado para opción ${tipoCodigo}`);
-      const comboFound = await page.evaluateHandle((tipoCode) => {
-        const divs = Array.from(document.querySelectorAll('div, button, li'));
-        const opcion = divs.find(el => 
-          (el.textContent.includes(tipoCode) || el.textContent.includes(tipoPadron === 'superficial' ? 'Superficial' : tipoPadron === 'subterraneo' ? 'Subterráneo' : 'Contaminación')) &&
-          el.textContent.length < 50
-        );
-        return opcion;
-      }, tipoCodigo);
-
-      if (comboFound && comboFound.asElement()) {
-        await comboFound.asElement().click();
-        console.log(`✅ Click en opción ${tipoCodigo}`);
+    const tipoNombre = tipoPadron === 'superficial' ? 'Superficial' :
+                       tipoPadron === 'subterraneo' ? 'Subterráneo' :
+                       tipoPadron === 'contaminacion' ? 'Contaminación' : 'Superficial';
+    
+    console.log(`🔍 Buscando dropdown "Selecciona una opción" para elegir: ${tipoCodigo} - ${tipoNombre}`);
+    
+    // Paso 1: Hacer clic en el input del dropdown para abrirlo
+    const dropdownFound = await page.evaluate(() => {
+      // Buscar todos los inputs de tipo select de Mantine
+      const selects = Array.from(document.querySelectorAll('.mantine-Select-input'));
+      console.log(`📝 Total selects Mantine encontrados: ${selects.length}`);
+      
+      // El segundo select es el de tipo de servicio (A/B/C)
+      // El primero es "Cuota Vigente / Tengo un Boleto"
+      if (selects.length >= 2) {
+        const targetSelect = selects[1]; // Segundo select
+        console.log('✅ Encontrado select de tipo servicio (segundo), haciendo clic...');
+        targetSelect.click();
+        targetSelect.focus();
+        return true;
       }
+      
+      console.log('❌ No se encontraron suficientes selects');
+      return false;
+    });
+    
+    if (!dropdownFound) {
+      // Capturar screenshot y HTML para debug
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_${timestamp}.png`) });
+      const htmlContent = await page.content();
+      await fsp.writeFile(path.join(DOWNLOAD_DIR, `debug_dropdown_${timestamp}.html`), htmlContent, 'utf-8');
+      console.log(`📸 Screenshot y HTML guardados para debug`);
+      throw new Error('No se encontró el dropdown de tipo de servicio');
     }
-
+    
     await new Promise(r => setTimeout(r, 1000));
+    
+    // Paso 2: Hacer clic en la opción correcta (A, B o C)
+    const optionClicked = await page.evaluate((tipoCode, tipoNom) => {
+      // Buscar la opción en el dropdown abierto
+      const options = Array.from(document.querySelectorAll('[role="option"], .mantine-Select-option, div[data-combobox-option]'));
+      console.log(`🔍 Encontradas ${options.length} opciones en el dropdown`);
+      
+      options.forEach((opt, idx) => {
+        console.log(`  Opción ${idx}: ${opt.textContent?.substring(0, 50)}`);
+      });
+      
+      const targetOption = options.find(opt => {
+        const text = opt.textContent || '';
+        return text.includes(tipoCode) && (text.includes('Superficial') || text.includes('Subterráneo') || text.includes('Contaminación'));
+      });
+      
+      if (targetOption) {
+        console.log(`✅ Encontrada opción: ${targetOption.textContent}`);
+        targetOption.click();
+        return true;
+      }
+      
+      console.log(`❌ No se encontró opción ${tipoCode} - ${tipoNom}`);
+      return false;
+    }, tipoCodigo, tipoNombre);
+    
+    if (!optionClicked) {
+      // Capturar screenshot para debug
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_open_${timestamp}.png`) });
+      console.log(`📸 Screenshot del dropdown abierto guardado`);
+      throw new Error(`No se pudo seleccionar la opción ${tipoCodigo} - ${tipoNombre}`);
+    }
+    
+    console.log(`✅ Opción seleccionada: ${tipoCodigo} - ${tipoNombre}`);
+    await new Promise(r => setTimeout(r, 1500));
 
+    // ============================================
+    // PASO 2: Llenar campos según el tipo de padrón
     // ============================================
     // PASO 2: Llenar campos según el tipo de padrón
     // ============================================
     console.log(`📝 Llenando campos para padrón tipo ${tipoPadron}...`);
     
-    const inputs = await page.$$('input[type="text"]');
+    // Esperar a que aparezcan los inputs después de seleccionar el tipo
+    // Los inputs tienen clase mantine-Input-input y nombres codigo1, codigo2
+    await page.waitForSelector('input[name="codigo1"]', { timeout: 5000 }).catch(() => {
+      console.log('⚠️ No se encontró input codigo1...');
+    });
     
-    if (tipoPadron === 'superficial') {
-      // Campos: código de cauce (izquierda), padrón parcial (derecha)
-      if (inputs.length >= 2) {
-        await inputs[0].click({ clickCount: 3 });
-        await inputs[0].type(datos.codigoCauce, { delay: 100 });
-        console.log(`✅ Código de cauce ingresado: ${datos.codigoCauce}`);
-        
-        await inputs[1].click({ clickCount: 3 });
-        await inputs[1].type(datos.numeroPadron, { delay: 100 });
-        console.log(`✅ Padrón parcial ingresado: ${datos.numeroPadron}`);
-      }
-    } else if (tipoPadron === 'subterraneo') {
-      // Campos: código de departamento (izquierda), N° de pozo (derecha)
-      if (inputs.length >= 2) {
-        await inputs[0].click({ clickCount: 3 });
-        await inputs[0].type(datos.codigoDepartamento, { delay: 100 });
-        console.log(`✅ Código de departamento ingresado: ${datos.codigoDepartamento}`);
-        
-        await inputs[1].click({ clickCount: 3 });
-        await inputs[1].type(datos.numeroPozo, { delay: 100 });
-        console.log(`✅ N° de pozo ingresado: ${datos.numeroPozo}`);
-      }
-    } else if (tipoPadron === 'contaminacion') {
-      // Campo: N° de contaminación (solo izquierda)
-      if (inputs.length >= 1) {
-        await inputs[0].click({ clickCount: 3 });
-        await inputs[0].type(datos.numeroContaminacion, { delay: 100 });
-        console.log(`✅ N° de contaminación ingresado: ${datos.numeroContaminacion}`);
-      }
-    }
-
-    // ============================================
-    // PASO 3: Buscar botón "Buscar" y hacer clic
-    // ============================================
-    console.log('🔍 Buscando botón "Buscar"...');
     await new Promise(r => setTimeout(r, 500));
     
-    const buscarButton = await page.evaluateHandle(() => {
-      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
-      return buttons.find(btn => 
-        /Buscar/i.test(btn.textContent || btn.value || '')
-      );
-    });
-    
-    if (!buscarButton || buscarButton.asElement() === null) {
-      throw new Error('No se encontró botón "Buscar"');
+    if (tipoPadron === 'superficial') {
+      // Campos: código de cauce (codigo1), padrón parcial (codigo2)
+      await page.evaluate((codigoCauce, numeroPadron) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        const input2 = document.querySelector('input[name="codigo2"]');
+        if (input1) {
+          input1.focus();
+          input1.value = '';
+          input1.value = codigoCauce;
+          input1.dispatchEvent(new Event('focus', { bubbles: true }));
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+          input1.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+        if (input2) {
+          input2.focus();
+          input2.value = '';
+          input2.value = numeroPadron;
+          input2.dispatchEvent(new Event('focus', { bubbles: true }));
+          input2.dispatchEvent(new Event('input', { bubbles: true }));
+          input2.dispatchEvent(new Event('change', { bubbles: true }));
+          input2.dispatchEvent(new Event('blur', { bubbles: true }));
+          input2.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+      }, datos.codigoCauce, datos.numeroPadron);
+      console.log(`✅ Código de cauce ingresado: ${datos.codigoCauce}`);
+      console.log(`✅ Padrón parcial ingresado: ${datos.numeroPadron}`);
+      
+    } else if (tipoPadron === 'subterraneo') {
+      // Campos: código de departamento (codigo1), N° de pozo (codigo2)
+      await page.evaluate((codigoDpto, numeroPozo) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        const input2 = document.querySelector('input[name="codigo2"]');
+        if (input1) {
+          input1.focus();
+          input1.value = '';
+          input1.value = codigoDpto;
+          input1.dispatchEvent(new Event('focus', { bubbles: true }));
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+          input1.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+        if (input2) {
+          input2.focus();
+          input2.value = '';
+          input2.value = numeroPozo;
+          input2.dispatchEvent(new Event('focus', { bubbles: true }));
+          input2.dispatchEvent(new Event('input', { bubbles: true }));
+          input2.dispatchEvent(new Event('change', { bubbles: true }));
+          input2.dispatchEvent(new Event('blur', { bubbles: true }));
+          input2.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+      }, datos.codigoDepartamento, datos.numeroPozo);
+      console.log(`✅ Código de departamento ingresado: ${datos.codigoDepartamento}`);
+      console.log(`✅ N° de pozo ingresado: ${datos.numeroPozo}`);
+      
+    } else if (tipoPadron === 'contaminacion') {
+      // Campo: N° de contaminación (solo codigo1)
+      await page.evaluate((numeroContam) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        if (input1) {
+          input1.focus();
+          input1.value = '';
+          input1.value = numeroContam;
+          input1.dispatchEvent(new Event('focus', { bubbles: true }));
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+          input1.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+      }, datos.numeroContaminacion);
+      console.log(`✅ N° de contaminación ingresado: ${datos.numeroContaminacion}`);
     }
     
-    await buscarButton.asElement().click();
-    console.log('✅ Click en "Buscar"');
-    
-    await new Promise(r => setTimeout(r, 2000));
+    // Esperar a que se habilite el botón
+    await new Promise(r => setTimeout(r, 1500));
 
     // ============================================
-    // PASO 4: Verificar que aparecieron los recuadros (Cuota Anual/Bimestral)
+    // PASO 3: Según la operación, hacer click en diferente botón
     // ============================================
-    console.log('🔍 Esperando resultados...');
-    
-    const tieneResultados = await page.evaluate(() => {
-      const bodyText = document.body.innerText.toLowerCase();
-      return bodyText.includes('cuota anual') || bodyText.includes('cuota bimestral');
-    });
-    
-    if (!tieneResultados) {
-      const noEncontrado = await page.evaluate(() => {
-        const bodyText = document.body.innerText.toLowerCase();
-        return bodyText.includes('no se encontr') || bodyText.includes('sin resultados');
+    if (tipoOperacion === 'deuda') {
+      // Para DEUDA: buscar y hacer clic en "Consultar Deuda"
+      console.log('🔍 Buscando botón "Consultar Deuda"...');
+      
+      const consultarButton = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+        return buttons.find(btn => 
+          /Consultar Deuda/i.test(btn.textContent || btn.value || '')
+        );
       });
       
-      if (noEncontrado) {
-        return { success: false, error: 'No encontramos ese padrón en nuestra base de datos. Por favor verifica los datos.' };
+      if (!consultarButton || consultarButton.asElement() === null) {
+        throw new Error('No se encontró botón "Consultar Deuda"');
       }
       
-      throw new Error('No se encontraron servicios asociados al padrón');
-    }
-    
-    console.log('✅ Servicios encontrados');
+      await consultarButton.asElement().click();
+      console.log('✅ Click en "Consultar Deuda"');
+      
+      await new Promise(r => setTimeout(r, 2000));
+      
+      // Capturar screenshot para debug
+      const timestamp = Date.now();
+      const screenshotPath = path.join(DOWNLOAD_DIR, `debug_deuda_${timestamp}.png`);
+      await page.screenshot({ path: screenshotPath });
+      console.log(`📸 Screenshot guardado: ${screenshotPath}`);
+      
+      // Esperar a que carguen los datos
+      await page.waitForFunction(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        return text.includes('titular') || text.includes('capital') || text.includes('cuota');
+      }, { timeout: 15000 }).catch(() => {
+        console.log('⚠️ Timeout esperando datos, continuando...');
+      });
+      
+      console.log('✅ Datos de deuda cargados');
+      
+      await new Promise(r => setTimeout(r, 2000));
+      
+      // Guardar HTML completo para debug
+      const pageContent = await page.content();
+      const htmlPath = path.join(DOWNLOAD_DIR, `debug_deuda_${timestamp}.html`);
+      await fsp.writeFile(htmlPath, pageContent, 'utf-8');
+      console.log(`💾 HTML guardado: ${htmlPath}`);
+      
+      // Extraer datos de deuda
+      const deudaData = await page.evaluate(() => {
+        const resultado = {
+          titular: 'No disponible',
+          cuit: 'No disponible',
+          hectareas: 'No disponible',
+          capital: 'No disponible',
+          interes: 'No disponible',
+          apremio: 'No disponible',
+          eventuales: 'No disponible',
+          total: 'No disponible'
+        };
+        
+        const bodyText = document.body.innerText || '';
+        
+        // Debug: Log primeras 2000 caracteres
+        console.log('DEBUG - Primeros 2000 caracteres:', bodyText.substring(0, 2000));
+        
+        const titularMatch = bodyText.match(/Titular\s*\n\s*([^\n]+)/i);
+        if (titularMatch) {
+          resultado.titular = titularMatch[1].trim();
+        }
+        
+        const cuitMatch = bodyText.match(/CUIT[:\s]*(\d{2}-\d{8}-\d{1}|\d{11})/i);
+        if (cuitMatch) {
+          resultado.cuit = cuitMatch[1];
+        }
+        
+        const hectareasMatch = bodyText.match(/Hectáreas[:\s]*(\d+[,.]?\d*)/i);
+        if (hectareasMatch) {
+          resultado.hectareas = hectareasMatch[1];
+        }
+        
+        const capitalMatch = bodyText.match(/Capital[:\s]*\$\s?([\d.,]+)/i);
+        if (capitalMatch) resultado.capital = `$ ${capitalMatch[1]}`;
+        
+        const interesMatch = bodyText.match(/Interés[:\s]*\$\s?([\d.,]+)/i);
+        if (interesMatch) resultado.interes = `$ ${interesMatch[1]}`;
+        
+        const apremioMatch = bodyText.match(/Apremio[:\s]*\$\s?([\d.,]+)/i);
+        if (apremioMatch) resultado.apremio = `$ ${apremioMatch[1]}`;
+        
+        const eventualesMatch = bodyText.match(/Eventuales[:\s]*\$\s?([\d.,]+)/i);
+        if (eventualesMatch) resultado.eventuales = `$ ${eventualesMatch[1]}`;
+        
+        const totalMatch = bodyText.match(/Total[:\s]*\$\s?([\d.,]+)/i);
+        if (totalMatch) resultado.total = `$ ${totalMatch[1]}`;
+        
+        return resultado;
+      });
+      
+      console.log('📋 Datos extraídos:', deudaData);
+      
+      // Cerrar el browser para liberar RAM después de consultar deuda
+      try {
+        await browserPool.discardBrowser(browser);
+        console.log('🗑️ Browser cerrado para liberar RAM');
+      } catch (err) {
+        console.error('⚠️ Error cerrando browser:', err.message);
+      }
+      
+      return {
+        success: true,
+        data: deudaData,
+        pdfPath: null,
+        absolutePdfPath: null
+      };
+      
+    } else {
+      // Para BOLETO: buscar y hacer clic en "Buscar"
+      console.log('🔍 Buscando botón "Buscar" para boleto...');
+      await new Promise(r => setTimeout(r, 500));
+      
+      const buscarButton = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
+        return buttons.find(btn => 
+          /Buscar/i.test(btn.textContent || btn.value || '')
+        );
+      });
+      
+      if (!buscarButton || buscarButton.asElement() === null) {
+        throw new Error('No se encontró botón "Buscar"');
+      }
+      
+      await buscarButton.asElement().click();
+      console.log('✅ Click en "Buscar"');
+      
+      await new Promise(r => setTimeout(r, 2000));
 
-    // ============================================
-    // PASO 5: Click en "Calcular Deuda"
-    // ============================================
-    console.log('🔍 Buscando botón "Calcular Deuda"...');
-    await new Promise(r => setTimeout(r, 1000));
-    
-    const calcularButton = await page.evaluateHandle(() => {
-      const buttons = Array.from(document.querySelectorAll('button, a'));
-      return buttons.find(btn => 
-        /Calcular Deuda|Consultar Deuda/i.test(btn.textContent || '')
-      );
-    });
-    
-    if (!calcularButton || calcularButton.asElement() === null) {
-      throw new Error('No se encontró botón "Calcular Deuda"');
+      // Continuar con flujo de boleto...
+      // TODO: Implementar lógica completa de boleto
+      return {
+        success: false,
+        error: 'Flujo de boleto en desarrollo'
+      };
     }
     
-    await calcularButton.asElement().click();
+    /*
+    // CÓDIGO VIEJO - YA NO SE EJECUTA
     await new Promise(r => setTimeout(r, 1200));
     await page.waitForFunction(() => {
       const text = (document.body?.innerText || '').toLowerCase();
@@ -937,6 +1124,7 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos) {
       pdfPath: null,
       absolutePdfPath: null
     };
+    */
 
   } catch (error) {
     const message = error.message || '';
@@ -1017,78 +1205,343 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     
     page = await createConfiguredPage(browser);
 
-    console.log(`🔍 Navegando a ${BASE_URL}...`);
-    page = await safeGoto(browser, page, BASE_URL, 2);
+    console.log(`🔍 Navegando a ${BASE_URL_SERVICIO}...`);
+    page = await safeGoto(browser, page, BASE_URL_SERVICIO, 2);
 
-    // Pasos 1-4: Seleccionar tipo, llenar campos, buscar, verificar resultados
-    // (Mismo que en _scrapeDeudaYBoletoPadron)
+    // Esperar a que la página cargue completamente
+    console.log('⏳ Esperando a que cargue la página...');
+    await page.waitForSelector('input[name="codigo1"], .mantine-Select-root', { timeout: 15000 }).catch(() => {
+      console.log('⚠️ Timeout esperando elementos de la página');
+    });
+    
+    await new Promise(r => setTimeout(r, 4000));
+    console.log('✅ Página cargada');
+
+    // ============================================
+    // PASO 1: Abrir dropdown y seleccionar tipo de padrón (A/B/C)
+    // ============================================
+    console.log('📝 Seleccionando tipo de padrón (A/B/C)...');
     
     const tipoCodigo = tipoPadron === 'superficial' ? 'A' :
                        tipoPadron === 'subterraneo' ? 'B' :
                        tipoPadron === 'contaminacion' ? 'C' : 'A';
     
-    // Seleccionar tipo de padrón
-    const selectFound = await page.evaluate((tipoCode) => {
-      const selects = Array.from(document.querySelectorAll('select'));
-      const selectConOpcion = selects.find(sel => {
-        const opciones = Array.from(sel.querySelectorAll('option'));
-        return opciones.some(op => op.textContent.includes(tipoCode) || op.value.includes(tipoCode));
-      });
-      return selectConOpcion !== undefined;
-    }, tipoCodigo);
-
-    if (selectFound) {
-      await page.select('select', tipoCodigo);
-    }
-
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Llenar campos
-    const inputs = await page.$$('input[type="text"]');
+    const tipoNombre = tipoPadron === 'superficial' ? 'Superficial' :
+                       tipoPadron === 'subterraneo' ? 'Subterráneo' :
+                       tipoPadron === 'contaminacion' ? 'Contaminación' : 'Superficial';
     
-    if (tipoPadron === 'superficial' && inputs.length >= 2) {
-      await inputs[0].click({ clickCount: 3 });
-      await inputs[0].type(datos.codigoCauce, { delay: 100 });
-      await inputs[1].click({ clickCount: 3 });
-      await inputs[1].type(datos.numeroPadron, { delay: 100 });
-    } else if (tipoPadron === 'subterraneo' && inputs.length >= 2) {
-      await inputs[0].click({ clickCount: 3 });
-      await inputs[0].type(datos.codigoDepartamento, { delay: 100 });
-      await inputs[1].click({ clickCount: 3 });
-      await inputs[1].type(datos.numeroPozo, { delay: 100 });
-    } else if (tipoPadron === 'contaminacion' && inputs.length >= 1) {
-      await inputs[0].click({ clickCount: 3 });
-      await inputs[0].type(datos.numeroContaminacion, { delay: 100 });
-    }
-
-    // Buscar
-    const buscarButton = await page.evaluateHandle(() => {
-      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
-      return buttons.find(btn => /Buscar/i.test(btn.textContent || btn.value || ''));
+    console.log(`🔍 Buscando dropdown para elegir: ${tipoCodigo} - ${tipoNombre}`);
+    
+    // Hacer clic en el segundo select (tipo de servicio)
+    const dropdownFound = await page.evaluate(() => {
+      const selects = Array.from(document.querySelectorAll('.mantine-Select-input'));
+      console.log(`📝 Total selects encontrados: ${selects.length}`);
+      
+      if (selects.length >= 2) {
+        const targetSelect = selects[1]; // Segundo select = tipo servicio
+        console.log('✅ Encontrado select de tipo servicio, haciendo clic...');
+        targetSelect.click();
+        targetSelect.focus();
+        return true;
+      }
+      
+      console.log('❌ No se encontraron suficientes selects');
+      return false;
     });
     
-    if (buscarButton && buscarButton.asElement()) {
-      await buscarButton.asElement().click();
-      await new Promise(r => setTimeout(r, 2000));
+    if (!dropdownFound) {
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_boleto_${timestamp}.png`) });
+      const htmlContent = await page.content();
+      fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_dropdown_boleto_${timestamp}.html`), htmlContent, 'utf-8');
+      console.log(`📸 Screenshot guardado para debug`);
+      throw new Error('No se encontró el dropdown de tipo de servicio');
     }
+    
+    await new Promise(r => setTimeout(r, 1000));
+    
+    // Hacer clic en la opción correcta (A, B o C)
+    const optionClicked = await page.evaluate((tipoCode, tipoNom) => {
+      const options = Array.from(document.querySelectorAll('[role="option"], .mantine-Select-option, div[data-combobox-option]'));
+      console.log(`🔍 Encontradas ${options.length} opciones`);
+      
+      const targetOption = options.find(opt => {
+        const text = opt.textContent || '';
+        return text.includes(tipoCode);
+      });
+      
+      if (targetOption) {
+        console.log(`✅ Encontrada opción: ${targetOption.textContent}`);
+        targetOption.click();
+        return true;
+      }
+      
+      return false;
+    }, tipoCodigo, tipoNombre);
+    
+    if (!optionClicked) {
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_option_boleto_${timestamp}.png`) });
+      throw new Error(`No se pudo seleccionar la opción ${tipoCodigo}`);
+    }
+    
+    console.log(`✅ Opción seleccionada: ${tipoCodigo} - ${tipoNombre}`);
+    await new Promise(r => setTimeout(r, 1500));
 
     // ============================================
-    // PASO 5: Seleccionar cuota (Anual o Bimestral)
+    // PASO 2: Llenar campos según el tipo de padrón
     // ============================================
-    console.log(`📅 Seleccionando ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}...`);
+    console.log(`📝 Llenando campos para padrón tipo ${tipoPadron}...`);
     
+    await page.waitForSelector('input[name="codigo1"]', { timeout: 5000 }).catch(() => {
+      console.log('⚠️ No se encontró input codigo1');
+    });
+    
+    await new Promise(r => setTimeout(r, 500));
+    
+    if (tipoPadron === 'superficial') {
+      await page.evaluate((codigoCauce, numeroPadron) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        const input2 = document.querySelector('input[name="codigo2"]');
+        if (input1) {
+          input1.focus();
+          input1.value = '';
+          input1.value = codigoCauce;
+          input1.dispatchEvent(new Event('focus', { bubbles: true }));
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+          input1.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+        if (input2) {
+          input2.focus();
+          input2.value = '';
+          input2.value = numeroPadron;
+          input2.dispatchEvent(new Event('focus', { bubbles: true }));
+          input2.dispatchEvent(new Event('input', { bubbles: true }));
+          input2.dispatchEvent(new Event('change', { bubbles: true }));
+          input2.dispatchEvent(new Event('blur', { bubbles: true }));
+          input2.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+      }, datos.codigoCauce, datos.numeroPadron);
+      console.log(`✅ Campos llenados: Cauce=${datos.codigoCauce}, Padrón=${datos.numeroPadron}`);
+    } else if (tipoPadron === 'subterraneo') {
+      await page.evaluate((codigoDpto, numeroPozo) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        const input2 = document.querySelector('input[name="codigo2"]');
+        if (input1) {
+          input1.focus();
+          input1.value = '';
+          input1.value = codigoDpto;
+          input1.dispatchEvent(new Event('focus', { bubbles: true }));
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+          input1.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+        if (input2) {
+          input2.focus();
+          input2.value = '';
+          input2.value = numeroPozo;
+          input2.dispatchEvent(new Event('focus', { bubbles: true }));
+          input2.dispatchEvent(new Event('input', { bubbles: true }));
+          input2.dispatchEvent(new Event('change', { bubbles: true }));
+          input2.dispatchEvent(new Event('blur', { bubbles: true }));
+          input2.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+      }, datos.codigoDepartamento, datos.numeroPozo);
+      console.log(`✅ Campos llenados: Dpto=${datos.codigoDepartamento}, Pozo=${datos.numeroPozo}`);
+    } else if (tipoPadron === 'contaminacion') {
+      await page.evaluate((numeroContam) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        if (input1) {
+          input1.focus();
+          input1.value = '';
+          input1.value = numeroContam;
+          input1.dispatchEvent(new Event('focus', { bubbles: true }));
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+          input1.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }
+      }, datos.numeroContaminacion);
+      console.log(`✅ Campo llenado: Contaminación=${datos.numeroContaminacion}`);
+    }
+
+    // Esperar más tiempo para que React procese y los botones se habiliten
+    // Esto también ayuda a evitar reCAPTCHA - hacemos que parezca más natural
+    console.log('⏳ Esperando a que React procese los cambios (para evitar reCAPTCHA)...');
+    await new Promise(r => setTimeout(r, 3000));
+
+    // ============================================
+    // PASO 3: Esperar activamente a que el botón "Buscar" se habilite
+    // ============================================
+    console.log('⏳ Esperando a que el botón "Buscar" se habilite...');
+    
+    try {
+      await page.waitForFunction(() => {
+        const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+        const buscarBtn = buttons.find(btn => {
+          const text = btn.textContent?.trim() || btn.value || '';
+          return /Buscar/i.test(text);
+        });
+        
+        if (!buscarBtn) return false;
+        
+        const isEnabled = !buscarBtn.hasAttribute('disabled') && 
+                         buscarBtn.getAttribute('aria-disabled') !== 'true' &&
+                         !buscarBtn.disabled;
+        
+        if (isEnabled) {
+          console.log('✅ Botón Buscar habilitado');
+        } else {
+          console.log('⏳ Botón Buscar aún deshabilitado...');
+        }
+        
+        return isEnabled;
+      }, { timeout: 10000, polling: 300 });
+      
+      console.log('✅ Botón "Buscar" está habilitado');
+    } catch (timeoutError) {
+      console.log('⚠️ Timeout esperando que se habilite el botón Buscar');
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_buscar_disabled_${timestamp}.png`) });
+      throw new Error('El botón Buscar no se habilitó después de 10 segundos');
+    }
+    
+    // Espera adicional para estabilidad
+    await new Promise(r => setTimeout(r, 1000));
+
+    // ============================================
+    // PASO 4: Click en Buscar
+    // ============================================
+    console.log('🔍 Haciendo click en botón "Buscar"...');
+    
+    const buscarClicked = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+      const buscarBtn = buttons.find(btn => {
+        const text = btn.textContent?.trim() || btn.value || '';
+        return /Buscar/i.test(text);
+      });
+      
+      if (buscarBtn) {
+        const isEnabled = !buscarBtn.hasAttribute('disabled') && 
+                         buscarBtn.getAttribute('aria-disabled') !== 'true' &&
+                         !buscarBtn.disabled;
+        
+        if (isEnabled) {
+          console.log('✅ Haciendo click en botón Buscar habilitado');
+          buscarBtn.click();
+          return true;
+        } else {
+          console.log('❌ Botón Buscar sigue deshabilitado');
+          return false;
+        }
+      }
+      
+      console.log('❌ No se encontró botón Buscar');
+      return false;
+    });
+    
+    if (!buscarClicked) {
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_buscar_not_clicked_${timestamp}.png`) });
+      throw new Error('No se pudo hacer click en el botón Buscar (aún deshabilitado o no encontrado)');
+    }
+    
+    console.log('✅ Click en "Buscar" - Esperando que carguen los resultados...');
+    
+    // PASO 5: Esperar y seleccionar la cuota (Anual o Bimestral)
+    console.log(`⏳ Esperando opciones de cuota...`);
+    
+    try {
+      await page.waitForFunction(() => {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
+        const hasCuotaButtons = buttons.some(btn => {
+          const text = (btn.textContent || '').trim();
+          const isVisible = btn.offsetParent !== null;
+          return isVisible && /Cuota Anual|Cuota Bimestral/i.test(text);
+        });
+        return hasCuotaButtons;
+      }, { timeout: 15000, polling: 500 });
+      
+      console.log('✅ Opciones de cuota aparecieron');
+    } catch (timeoutError) {
+      console.log('⚠️ Timeout esperando opciones de cuota');
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_timeout_cuota_${timestamp}.png`) });
+      const htmlContent = await page.content();
+      fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_timeout_cuota_${timestamp}.html`), htmlContent, 'utf-8');
+      throw new Error('No aparecieron opciones de cuota después de 15 segundos');
+    }
+    
+    await new Promise(r => setTimeout(r, 2000));
+    
+    // Seleccionar la cuota solicitada
     const tipoCuotaTexto = tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
+    console.log(`📅 Seleccionando ${tipoCuotaTexto}...`);
     
-    const cuotaButton = await page.evaluateHandle((textoB) => {
+    const cuotaButtonClicked = await page.evaluate((textoB) => {
       const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-      return buttons.find(btn => btn.textContent.includes(textoB));
+      const cuotaBtn = buttons.find(btn => {
+        const text = (btn.textContent || '').trim();
+        const isVisible = btn.offsetParent !== null;
+        return text.includes(textoB) && isVisible;
+      });
+      
+      if (cuotaBtn) {
+        console.log(`✅ Encontrado botón: ${cuotaBtn.textContent}`);
+        cuotaBtn.click();
+        return true;
+      }
+      
+      console.log(`❌ No se encontró botón de ${textoB}`);
+      return false;
     }, tipoCuotaTexto);
     
-    if (cuotaButton && cuotaButton.asElement()) {
-      await cuotaButton.asElement().click();
-      await new Promise(r => setTimeout(r, 1500));
-      console.log(`✅ Seleccionada: ${tipoCuotaTexto}`);
+    if (!cuotaButtonClicked) {
+      throw new Error(`No se pudo seleccionar ${tipoCuotaTexto}`);
     }
+    
+    console.log(`✅ Seleccionada: ${tipoCuotaTexto} - Esperando botón Imprimir...`);
+    
+    // PASO 5: Ahora sí, esperar el botón "Imprimir"
+    try {
+      await page.waitForFunction(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+        const hasImprimirButton = buttons.some(btn => {
+          const text = (btn.textContent || '').trim();
+          const isVisible = btn.offsetParent !== null;
+          return isVisible && /Imprimir|PDF|Descargar/i.test(text);
+        });
+        return hasImprimirButton;
+      }, { timeout: 15000, polling: 500 });
+      
+      console.log('✅ Botón "Imprimir" apareció');
+    } catch (timeoutError) {
+      console.log('⚠️ Timeout esperando botón Imprimir después de seleccionar cuota');
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_timeout_imprimir_${timestamp}.png`) });
+      const htmlContent = await page.content();
+      fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_timeout_imprimir_${timestamp}.html`), htmlContent, 'utf-8');
+      
+      // Listar botones disponibles para debug
+      const availableButtons = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
+        return buttons.map(btn => ({
+          text: (btn.textContent || '').trim().substring(0, 50),
+          visible: btn.offsetParent !== null,
+          disabled: btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true'
+        })).filter(b => b.visible && b.text);
+      });
+      console.log('🔍 Botones visibles después del timeout:', JSON.stringify(availableButtons, null, 2));
+      
+      throw new Error('No apareció el botón Imprimir después de seleccionar cuota');
+    }
+    
+    // Espera adicional para asegurar estabilidad
+    await new Promise(r => setTimeout(r, 2000));
+    console.log('✅ Página lista para descargar PDF');
 
     // ============================================
     // PASO 6: Buscar y clickear botón "Imprimir"
@@ -1096,8 +1549,12 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     console.log('📄 Buscando botón "Imprimir" para descargar PDF...');
     
     const imprimirButton = await page.evaluateHandle(() => {
-      const buttons = Array.from(document.querySelectorAll('button, a'));
-      return buttons.find(btn => /Imprimir|PDF|Descargar/i.test(btn.textContent || ''));
+      const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+      return buttons.find(btn => {
+        const text = btn.textContent?.trim() || '';
+        const isVisible = btn.offsetParent !== null;
+        return /Imprimir|PDF|Descargar/i.test(text) && isVisible;
+      });
     });
     
     if (imprimirButton && imprimirButton.asElement() !== null) {
@@ -1124,6 +1581,20 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
       };
     }
 
+    // Si no encontramos el botón, guardar screenshot y HTML para debug
+    const debugId = `debug_imprimir_${Date.now()}`;
+    const screenshotPath = path.join(__dirname, '../../public/temp', `${debugId}.png`);
+    const htmlPath = path.join(__dirname, '../../public/temp', `${debugId}.html`);
+    
+    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => '');
+    if (html) {
+      fs.writeFileSync(htmlPath, html);
+    }
+    
+    console.log(`📸 Screenshot guardado: ${screenshotPath}`);
+    console.log(`📄 HTML guardado: ${htmlPath}`);
+    
     throw new Error('No se encontró botón de descarga');
 
   } catch (error) {
@@ -1152,10 +1623,213 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
   }
 }
 
+/**
+ * Obtener link de pago usando padrón y tipo de cuota
+ * @param {string} tipoPadron - 'superficial', 'subterraneo' o 'contaminacion'
+ * @param {object} datos - Parámetros del padrón
+ * @param {string} tipoCuota - 'anual' o 'bimestral'
+ * @returns {object} { success, linkPago }
+ */
+async function obtenerLinkPagoBoleto(tipoPadron, datos, tipoCuota) {
+  let browser;
+  let browserData;
+  let page;
+  let shouldDiscardBrowser = false;
+
+  try {
+    // Obtener browser del pool
+    browserData = await browserPool.getBrowser();
+    browser = browserData.browser;
+    
+    page = await createConfiguredPage(browser);
+
+    console.log(`🔍 Navegando a ${BASE_URL_SERVICIO} para capturar link de pago...`);
+    page = await safeGoto(browser, page, BASE_URL_SERVICIO, 2);
+    
+    // Esperar carga
+    await page.waitForSelector('input[name="codigo1"], .mantine-Select-root', { timeout: 15000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 4000));
+
+    // Seleccionar tipo de padrón (A/B/C)
+    const tipoCodigo = tipoPadron === 'superficial' ? 'A' :
+                       tipoPadron === 'subterraneo' ? 'B' : 'C';
+    
+    const selects = await page.$$('.mantine-Select-input');
+    if (selects.length >= 2) {
+      await selects[1].click();
+      await new Promise(r => setTimeout(r, 1000));
+      
+      await page.evaluate((tipoCode) => {
+        const options = Array.from(document.querySelectorAll('[role="option"]'));
+        const option = options.find(opt => opt.textContent.includes(tipoCode));
+        if (option) option.click();
+      }, tipoCodigo);
+      
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    // Llenar campos según tipo
+    if (tipoPadron === 'superficial') {
+      await page.evaluate((codigoCauce, numeroPadron) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        const input2 = document.querySelector('input[name="codigo2"]');
+        if (input1) {
+          input1.focus();
+          input1.value = codigoCauce;
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+        if (input2) {
+          input2.focus();
+          input2.value = numeroPadron;
+          input2.dispatchEvent(new Event('input', { bubbles: true }));
+          input2.dispatchEvent(new Event('change', { bubbles: true }));
+          input2.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+      }, datos.codigoCauce, datos.numeroPadron);
+    } else if (tipoPadron === 'subterraneo') {
+      await page.evaluate((codigoDpto, numeroPozo) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        const input2 = document.querySelector('input[name="codigo2"]');
+        if (input1) {
+          input1.focus();
+          input1.value = codigoDpto;
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+        if (input2) {
+          input2.focus();
+          input2.value = numeroPozo;
+          input2.dispatchEvent(new Event('input', { bubbles: true }));
+          input2.dispatchEvent(new Event('change', { bubbles: true }));
+          input2.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+      }, datos.codigoDepartamento, datos.numeroPozo);
+    } else if (tipoPadron === 'contaminacion') {
+      await page.evaluate((numeroContam) => {
+        const input1 = document.querySelector('input[name="codigo1"]');
+        if (input1) {
+          input1.focus();
+          input1.value = numeroContam;
+          input1.dispatchEvent(new Event('input', { bubbles: true }));
+          input1.dispatchEvent(new Event('change', { bubbles: true }));
+          input1.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+      }, datos.numeroContaminacion);
+    }
+
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Click en Buscar
+    const buscarButton = await page.evaluateHandle(() => {
+      const buttons = Array.from(document.querySelectorAll('button'));
+      return buttons.find(btn => /Buscar/i.test(btn.textContent || ''));
+    });
+    
+    if (buscarButton && buscarButton.asElement()) {
+      await buscarButton.asElement().click();
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
+    // Seleccionar tipo de cuota
+    console.log(`📅 Seleccionando ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}...`);
+    const tipoCuotaTexto = tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
+    
+    await page.evaluate((texto) => {
+      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
+      const btn = buttons.find(b => b.textContent.includes(texto));
+      if (btn) btn.click();
+    }, tipoCuotaTexto);
+    
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Click en botón "Pagar" (al lado de Imprimir)
+    console.log('💳 Buscando botón "Pagar"...');
+    await page.waitForFunction(() => {
+      const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+      return candidates.some(btn => {
+        const text = (btn.textContent || '').trim();
+        const isPagar = /Pagar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
+        const isVisible = btn.offsetParent !== null;
+        const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true';
+        return isPagar && isVisible && !isDisabled;
+      });
+    }, { timeout: 15000 }).catch(() => {});
+
+    const pagarButton = await page.evaluateHandle(() => {
+      const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+      return candidates.find(btn => {
+        const text = (btn.textContent || '').trim();
+        const isPagar = /Pagar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
+        const isVisible = btn.offsetParent !== null;
+        const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true';
+        return isPagar && isVisible && !isDisabled;
+      });
+    });
+    
+    if (!pagarButton || pagarButton.asElement() === null) {
+      throw new Error('No se encontró el botón "Pagar"');
+    }
+    
+    await pagarButton.asElement().click();
+    console.log('✅ Click en "Pagar" - Esperando modal o redirección...');
+
+    const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+    await delay(1500);
+
+    // Click en segundo botón "Pagar" dentro del modal (si aparece)
+    const pagarModalButton = await page.evaluateHandle(() => {
+      const modals = Array.from(document.querySelectorAll('[role="dialog"], .modal, .mantine-Modal-root, div[class*="modal"]'));
+      for (const modal of modals) {
+        const buttons = Array.from(modal.querySelectorAll('button, a, div[role="button"]'));
+        const pagarBtn = buttons.find(btn => /Pagar/i.test(btn.textContent || ''));
+        if (pagarBtn) return pagarBtn;
+      }
+      return null;
+    });
+    
+    if (pagarModalButton && pagarModalButton.asElement()) {
+      await pagarModalButton.asElement().click();
+      console.log('✅ Click en segundo "Pagar" - Esperando redirección...');
+    } else {
+      console.log('ℹ️ No se encontró modal, esperando redirección directa...');
+    }
+    
+    await navigationPromise;
+    await delay(2000);
+    
+    const linkPago = page.url();
+    console.log(`🔗 Link de pago capturado: ${linkPago}`);
+    
+    // Cerrar browser para liberar RAM
+    await browserPool.discardBrowser(browser);
+    
+    return {
+      success: true,
+      linkPago: linkPago
+    };
+    
+  } catch (error) {
+    console.error('❌ Error en obtenerLinkPagoBoleto:', error);
+    
+    if (browser) {
+      await browserPool.discardBrowser(browser);
+    }
+    
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
 module.exports = {
   obtenerDeudaYBoleto,
   obtenerSoloBoleto,
   obtenerDeudaPadron,
-  obtenerBoletoPadron
+  obtenerBoletoPadron,
+  obtenerLinkPagoBoleto
 };
 

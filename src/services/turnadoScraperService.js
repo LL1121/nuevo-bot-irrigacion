@@ -9,6 +9,26 @@ function delay(ms) {
 }
 
 /**
+ * Captura el HTML de la página para debug
+ * @param {Page} page - Página de Puppeteer
+ * @returns {Promise<string>} HTML de la página
+ */
+async function capturarHTMLDebug(page) {
+  try {
+    const html = await page.content();
+    const fs = require('fs');
+    const timestamp = Date.now();
+    const filename = `debug_turno_html_${timestamp}.html`;
+    fs.writeFileSync(filename, html);
+    console.log(`📄 HTML capturado en: ${filename}`);
+    return html;
+  } catch (error) {
+    console.error('Error capturando HTML:', error);
+    return null;
+  }
+}
+
+/**
  * Extrae información detallada de horarios haciendo click en "presiona aquí"
  * @param {Page} page - Página de Puppeteer
  * @returns {Promise<Object>} Información detallada de inicio y fin de turno
@@ -17,24 +37,24 @@ async function extraerHorariosDetallados(page) {
   try {
     console.log('🔍 Buscando botón "presiona aquí"...');
     
-    // Buscar y hacer click en el botón que contiene "presiona aquí"
+    // Buscar y hacer click en el botón que contiene "presione aquí"
     const clickedButton = await page.evaluate(() => {
-      // Buscar todos los botones, enlaces y elementos clickeables
-      const allElements = Array.from(document.querySelectorAll('button, a, span, div, input[type="button"]'));
+      // Buscar todos los botones de búsqueda (input type=submit con "presione Aqui")
+      const allButtons = Array.from(document.querySelectorAll('input[type="submit"]'));
       
-      // Buscar el que contiene "presiona aquí" (case insensitive)
-      const targetButton = allElements.find(el => {
-        const text = (el.textContent || '').toLowerCase();
-        return text.includes('presiona aquí') || text.includes('presiona aqui') || text.includes('presiona');
+      // Buscar el que contiene "presione Aqui" (case insensitive)
+      const targetButton = allButtons.find(el => {
+        const value = (el.getAttribute('value') || '').toLowerCase();
+        return value.includes('presione aqui') || value.includes('presione');
       });
       
       if (targetButton) {
-        console.log('✅ Botón encontrado:', targetButton.textContent);
+        console.log('✅ Botón encontrado:', targetButton.getAttribute('value'));
         targetButton.click();
         return true;
       }
       
-      console.log('❌ No se encontró el botón "presiona aquí"');
+      console.log('❌ No se encontró el botón "presione Aqui"');
       return false;
     });
     
@@ -43,38 +63,56 @@ async function extraerHorariosDetallados(page) {
       return null;
     }
     
-    console.log('⏳ Esperando que aparezca el recuadro con horarios...');
-    await delay(2500);
+    console.log('⏳ Esperando redirección o cambio de página...');
     
-    // Extraer la información del recuadro nuevo
+    // Esperar a que navegue o cambie el URL
+    try {
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 });
+      console.log('✅ Página redirigida');
+    } catch (e) {
+      console.log('⚠️ Sin redirección esperada, pero continuando...');
+      await delay(3000);
+    }
+    
+    // Capturar HTML después de la navegación
+    await capturarHTMLDebug(page);
+    
+    // Verificar URL actual
+    const currentUrl = page.url();
+    console.log('🌐 URL actual:', currentUrl);
+    
+    // Extraer la información de los horarios personales
     const horariosDetallados = await page.evaluate(() => {
-      console.log('🔍 Buscando horarios detallados...');
+      console.log('🔍 Buscando horarios detallados personales...');
       
-      // Obtener todo el texto visible de la página
+      // Obtener todo el texto visible
       const pageText = document.body.innerText || document.body.textContent || '';
-      console.log('📄 Texto de la página:\n', pageText);
+      console.log('📄 Primeros 2000 caracteres:', pageText.substring(0, 2000));
       
-      // Buscar todos los inputs (pueden ser inputs, divs, spans, etc.)
-      const allElements = Array.from(document.querySelectorAll('input, div, span, p, label'));
-      
-      // Recopilar todos los valores visibles
-      const valores = [];
-      allElements.forEach(el => {
-        const valor = el.value || el.textContent || el.innerText || '';
-        const textoLimpio = valor.trim();
-        
-        // Solo si tiene contenido y no es muy largo (probablemente no sea contenedor)
-        if (textoLimpio && textoLimpio.length < 100) {
-          valores.push(textoLimpio);
+      // Buscar todos los inputs y sus valores
+      const allInputs = Array.from(document.querySelectorAll('input'));
+      console.log('📝 Inputs encontrados:');
+      allInputs.forEach((inp, idx) => {
+        const value = inp.value || inp.getAttribute('value') || '';
+        if (value && value.length < 100) {
+          console.log(`  [${idx}] type=${inp.type}, name=${inp.name}, value=${value}`);
         }
       });
       
-      console.log('📋 Valores encontrados:', valores);
+      // Buscar todos los divs con datos
+      const allDivs = Array.from(document.querySelectorAll('div'));
+      const valores = [];
+      allDivs.forEach(div => {
+        const text = (div.innerText || div.textContent || '').trim();
+        if (text && text.length < 100 && text.length > 0 && !valores.includes(text)) {
+          valores.push(text);
+        }
+      });
       
-      // Buscar días de la semana
-      const diasSemana = ['lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado', 'domingo'];
+      console.log('📋 Primeros 40 valores de divs:', valores.slice(0, 40));
       
       // Patrones para buscar
+      const diasSemana = ['lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado', 'domingo'];
       const dateTimePattern = /(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2})/;
       const horaPattern = /^(\d{1,2}:\d{2})$/;
       const diaPattern = new RegExp(`^(${diasSemana.join('|')})$`, 'i');
@@ -88,13 +126,13 @@ async function extraerHorariosDetallados(page) {
         horaFin: null
       };
       
-      // Buscar la secuencia en los valores
+      // Buscar la secuencia en los valores: [fecha, dia, hora, dia, hora]
       for (let i = 0; i < valores.length - 4; i++) {
-        const val0 = valores[i]; // Fecha + hora
-        const val1 = valores[i + 1]; // Día inicio
-        const val2 = valores[i + 2]; // Hora inicio
-        const val3 = valores[i + 3]; // Día fin
-        const val4 = valores[i + 4]; // Hora fin
+        const val0 = valores[i];
+        const val1 = valores[i + 1];
+        const val2 = valores[i + 2];
+        const val3 = valores[i + 3];
+        const val4 = valores[i + 4];
         
         if (
           dateTimePattern.test(val0) &&
@@ -116,41 +154,27 @@ async function extraerHorariosDetallados(page) {
         }
       }
       
-      // Si no se encontró de forma directa, buscar en el texto de la página
+      // Búsqueda alternativa en texto puro
       if (!resultado.encontrado) {
         console.log('🔍 Buscando en texto de página...');
         
-        // Buscar fecha + hora
         const dateMatch = pageText.match(dateTimePattern);
         if (dateMatch) {
           resultado.fechaInicio = dateMatch[1];
-          
-          // Buscar días después de la fecha
-          const diasMatches = Array.from(pageText.matchAll(new RegExp(`(${diasSemana.join('|')})`, 'ig')));
-          if (diasMatches.length >= 2) {
-            resultado.diaInicio = diasMatches[0][1];
-            resultado.diaFin = diasMatches[1][1];
-            
-            // Buscar horas
-            const horasMatches = Array.from(pageText.matchAll(horaPattern));
-            if (horasMatches.length >= 2) {
-              resultado.horaInicio = horasMatches[0][1];
-              resultado.horaFin = horasMatches[1][1];
-              resultado.encontrado = true;
-            }
-          }
+          console.log('✅ Fecha encontrada:', resultado.fechaInicio);
+          resultado.encontrado = true;
         }
       }
       
       return resultado;
     });
     
-    console.log('📅 Horarios detallados extraídos:', horariosDetallados);
+    console.log('📅 Resultado de horarios:', horariosDetallados);
     
-    if (horariosDetallados.encontrado) {
+    if (horariosDetallados.encontrado && horariosDetallados.fechaInicio) {
       return {
-        inicioDetallado: `${horariosDetallados.diaInicio} ${horariosDetallados.horaInicio}`,
-        finDetallado: `${horariosDetallados.diaFin} ${horariosDetallados.horaFin}`,
+        inicioDetallado: `${horariosDetallados.diaInicio || ''} ${horariosDetallados.horaInicio || ''}`.trim(),
+        finDetallado: `${horariosDetallados.diaFin || ''} ${horariosDetallados.horaFin || ''}`.trim(),
         fechaInicioCompleta: horariosDetallados.fechaInicio
       };
     }
@@ -262,9 +286,16 @@ async function buscarPorTitular(nombreCompleto) {
     console.log('⏳ Esperando resultados (5 segundos)...');
     await delay(5000);
     
-    // Verificar URL actual
+    // Verificar URL actual - podría haber sido redirigida
     const currentUrl = page.url();
     console.log('🌐 URL actual después de búsqueda:', currentUrl);
+    
+    // Si fue redirigida a turno.php, usamos esa página
+    if (currentUrl.includes('turno.php')) {
+      console.log('✅ Redirigida a turno.php, extrayendo datos de allá...');
+      await delay(2000);
+    }
+    
     await delay(2000);
     
     // Extraer información del recuadro de resultados

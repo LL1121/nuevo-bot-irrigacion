@@ -310,6 +310,14 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       await handlePostDeudaBoletoChoice(from, optionToProcess);
       break;
 
+    case 'AWAITING_PAGO_DEUDA':
+      await handlePagoDeudaChoice(from, optionToProcess);
+      break;
+
+    case 'AWAITING_PAGO_BOLETO':
+      await handlePagoBoletoChoice(from, optionToProcess);
+      break;
+
     case 'AWAITING_OPCION_BOLETO_PADRON':
       await handleOpcionBoletoPadron(from, optionToProcess);
       break;
@@ -418,8 +426,13 @@ const sendMenuList = async (from, isFollowUp = false) => {
         },
         { 
           id: 'deuda', 
-          title: '💳 Consultar Deuda',
-          description: 'Verificar estado de cuenta y montos adeudados'
+          title: '💳 Solicitar Deuda',
+          description: 'Consultar deuda y pagar online'
+        },
+        { 
+          id: 'boleto', 
+          title: '📄 Pago Anual o Bimestral',
+          description: 'Obtener boleto y pagar online'
         },
         { 
           id: 'vencimientos', 
@@ -590,14 +603,14 @@ Mismos requisitos (a-i)
     case '3':
     case 'option_3':
     case 'deuda':
-      // Consultar Deuda: Verificar si tiene DNI vinculado
+      // Solicitar Deuda: Consultar deuda y ofrecer pago online
       await handleConsultarDeuda(from);
       break;
 
     case 'boleto':
-      // Unificado: primero consultar deuda y luego ofrecer boleto
-      await sendMessageAndSave(from, '📄 Para solicitar un boleto primero debemos consultar tu deuda.');
-      await handleConsultarDeuda(from);
+    case 'option_4':
+      // Pago Anual o Bimestral
+      await handlePedirBoleto(from);
       break;
 
     case 'vencimientos': {
@@ -1632,7 +1645,7 @@ const handleModoConsulta = async (from, option) => {
       
     } else if (option === 'modo_padron') {
       // El usuario eligió consultar por Padrón
-      const msg = '📋 *Selecciona el tipo de padrón:*';
+      const msg = '📋 *Selecciona el tipo de servicio:*';
       await sendMessageAndSave(from, msg);
       
       const buttons = [
@@ -1643,12 +1656,12 @@ const handleModoConsulta = async (from, option) => {
       
       await whatsappService.sendButtonReply(
         from,
-        'Elige el tipo de padrón:',
+        'Elige el tipo de servicio:',
         buttons
       );
       
       userStates[from].step = 'AWAITING_TIPO_PADRON';
-      console.log(`📝 Esperando selección de tipo de padrón de ${from}`);
+      console.log(`📝 Esperando selección de tipo de servicio de ${from}`);
     }
   } catch (error) {
     console.error('❌ Error en handleModoConsulta:', error);
@@ -1658,7 +1671,7 @@ const handleModoConsulta = async (from, option) => {
 };
 
 /**
- * Manejar selección de tipo de padrón (A, B o C)
+ * Manejar selección de tipo de servicio (A, B o C)
  */
 const handleTipoPadron = async (from, option) => {
   try {
@@ -1725,7 +1738,12 @@ const handlePadronSuperficial = async (from, messageBody) => {
     console.log(`✅ Padrón superficial guardado: ${from} -> ${codigoCauce} ${numeroPadron}`);
     
     // Ejecutar la operación
-    if (operacion === 'boleto') {
+    if (operacion === 'deuda') {
+      // Consultar deuda con el padrón
+      const cliente = await clienteService.obtenerCliente(from);
+      await ejecutarScraperPadron(from, cliente, 'superficial', 'deuda');
+      
+    } else if (operacion === 'boleto') {
       userStates[from].tempPadron = `${codigoCauce} ${numeroPadron}`;
       
       // Preguntar tipo de cuota
@@ -1737,6 +1755,9 @@ const handlePadronSuperficial = async (from, messageBody) => {
         { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
         { id: 'volver_menu', title: '↩️ Volver' }
       ];
+      
+      await whatsappService.sendButtonReply(from, preguntaMsg, buttons);
+      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
     }
   } catch (error) {
     console.error('❌ Error en handlePadronSuperficial:', error);
@@ -1798,9 +1819,9 @@ const handlePadronSubterraneo = async (from, messageBody) => {
       
       userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
     } else {
-      // Operación: deuda
-      const cliente = { padron_subterraneo: `${codigoDepartamento} ${numeroPozo}` };
-      await ejecutarScraperPadron(from, cliente, 'subterraneo');
+      // Operación: deuda - consultar con el padrón guardado
+      const cliente = await clienteService.obtenerCliente(from);
+      await ejecutarScraperPadron(from, cliente, 'subterraneo', 'deuda');
     }
   } catch (error) {
     console.error('❌ Error en handlePadronSubterraneo:', error);
@@ -1859,9 +1880,9 @@ const handlePadronContaminacion = async (from, messageBody) => {
       
       userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
     } else {
-      // Operación: deuda
-      const cliente = { padron_contaminacion: numeroContaminacion };
-      await ejecutarScraperPadron(from, cliente, 'contaminacion');
+      // Operación: deuda - consultar con el padrón guardado
+      const cliente = await clienteService.obtenerCliente(from);
+      await ejecutarScraperPadron(from, cliente, 'contaminacion', 'deuda');
     }
   } catch (error) {
     console.error('❌ Error en handlePadronContaminacion:', error);
@@ -1924,7 +1945,7 @@ const handleOpcionBoletoPadron = async (from, option) => {
 /**
  * Ejecutar scraper con padrón (consulta de deuda)
  */
-const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
+const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 'deuda') => {
   try {
     let padronData = {};
     let padronRaw = '';
@@ -1942,13 +1963,13 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
       padronData = { numeroContaminacion: padronRaw };
     }
     
-    console.log(`⚙️ Ejecutando scraper de deuda con padrón ${tipoPadron}:`, padronData);
+    console.log(`⚙️ Ejecutando scraper de ${tipoOperacion} con padrón ${tipoPadron}:`, padronData);
     
-    const msg = `⏳ Consultando deuda con padrón ${tipoPadron}...`;
+    const msg = `⏳ Consultando ${tipoOperacion} con padrón ${tipoPadron}...`;
     await sendMessageAndSave(from, msg);
     
-    // Llamar al scraper con padrón
-    const resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData);
+    // Llamar al scraper con padrón - pasar tipoOperacion también
+    const resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
     
     if (!resultado.success) {
       await sendMessageAndSave(from, `❌ Error: ${resultado.error}`);
@@ -1982,23 +2003,30 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron) => {
     
     await sendMessageAndSave(from, deudaMsg);
     
-    // Ofrecer generar boleto o volver al menú
-    const opcionesMsg = `📄 *¿Deseas generar un boleto de pago?*`;
+    // Pequeña pausa para que WhatsApp entregue los mensajes en orden
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Ofrecer pagar deuda o volver
+    const opcionesMsg = `💳 *¿Deseas pagar tu deuda online?*`;
     await sendMessageAndSave(from, opcionesMsg);
+    
+    // Pequeña pausa antes de enviar botones
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     const buttons = [
-      { id: 'pedir_boleto', title: '📄 Pedir boleto' },
+      { id: 'pagar_deuda', title: '💳 Pagar deuda' },
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
     await whatsappService.sendButtonReply(from, 'Elige una opción:', buttons);
-    userStates[from].step = 'AWAITING_BOLETO_POST_DEUDA';
+    userStates[from].step = 'AWAITING_PAGO_DEUDA';
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraperPadron:', error);
     const errorMsg = '❌ Ocurrió un error al consultar la deuda. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
   }
 };
 
@@ -2033,23 +2061,193 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       return;
     }
     
+    // Pequeña pausa
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
     if (resultado.pdfPath) {
       // Enviar PDF
       await whatsappService.sendDocument(from, resultado.pdfPath, `boleto_${tipoCuota}.pdf`);
       console.log(`✅ Boleto PDF enviado: ${resultado.pdfPath}`);
+      
+      // Pequeña pausa
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Ofrecer pagar boleto
+      const pagarMsg = `📄 *Boleto generado correctamente*\n\n¿Deseas pagar este boleto online?`;
+      await sendMessageAndSave(from, pagarMsg);
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const buttons = [
+        { id: 'pagar_boleto', title: '💳 Pagar boleto' },
+        { id: 'volver_menu', title: '🚪 Salir' }
+      ];
+      
+      await whatsappService.sendButtonReply(from, 'Elige una opción:', buttons);
+      userStates[from].step = 'AWAITING_PAGO_BOLETO';
+      
+      // Guardar datos para el pago
+      userStates[from].tempBoletoPago = {
+        tipoPadron,
+        tipoCuota,
+        datos: datosParaScrap
+      };
+      
     } else {
-      await sendMessageAndSave(from, '⚠️ No se pudo descargar el boleto, pero la consulta fue exitosa.');
+      await sendMessageAndSave(from, '⚠️ No se pudo descargar el boleto.');
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
     }
-    
-    // Volver al menú
-    await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraperBoletoPadron:', error);
     const errorMsg = '❌ Ocurrió un error al generar el boleto. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+  }
+};
+
+/**
+ * Manejar elección de pago de deuda
+ */
+const handlePagoDeudaChoice = async (from, optionToProcess) => {
+  try {
+    if (optionToProcess === 'pagar_deuda') {
+      // Construir link de pago
+      const tipoPadron = userStates[from].tempTipoPadron;
+      const padronData = userStates[from].tempPadron;
+      
+      let letra = '';
+      let codigo1 = '';
+      let codigo2 = '';
+      
+      if (tipoPadron === 'superficial') {
+        letra = 'A';
+        const [codigoCauce, numeroPadron] = padronData.split(' ');
+        codigo1 = codigoCauce;
+        codigo2 = numeroPadron;
+      } else if (tipoPadron === 'subterraneo') {
+        letra = 'B';
+        const [codigoDepartamento, numeroPozo] = padronData.split(' ');
+        codigo1 = codigoDepartamento;
+        codigo2 = numeroPozo;
+      } else if (tipoPadron === 'contaminacion') {
+        letra = 'C';
+        codigo1 = padronData;
+        codigo2 = '';
+      }
+      
+      const linkPago = letra === 'C' 
+        ? `https://autogestion.cloud.irrigacion.gov.ar/cuenta-corriente/${letra}/${codigo1}`
+        : `https://autogestion.cloud.irrigacion.gov.ar/cuenta-corriente/${letra}/${codigo1}/${codigo2}`;
+      
+      const instruccionesMsg = 
+        `💳 *Link de pago de deuda*\n\n` +
+        `Podés pagar tu deuda online ingresando al siguiente link:\n\n` +
+        `🔗 ${linkPago}\n\n` +
+        `*Instrucciones:*\n` +
+        `1️⃣ Ingresá al link\n` +
+        `2️⃣ Seleccioná el/los períodos que deseas pagar\n` +
+        `3️⃣ Hacé click en "Pagar"\n` +
+        `4️⃣ Elegí tu método de pago preferido\n` +
+        `5️⃣ Completá el pago\n\n` +
+        `_💡 Recordá: Si pagás el total de la deuda, tenés 50% de descuento en intereses._`;
+      
+      await sendMessageAndSave(from, instruccionesMsg);
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const buttons = [
+        { id: 'volver_menu', title: '↩️ Volver al Menú' }
+      ];
+      
+      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+      userStates[from].step = 'MAIN_MENU';
+      
+    } else if (optionToProcess === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+    }
+    
+  } catch (error) {
+    console.error('❌ Error en handlePagoDeudaChoice:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intenta más tarde.');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+  }
+};
+
+/**
+ * Manejar elección de pago de boleto
+ */
+const handlePagoBoletoChoice = async (from, optionToProcess) => {
+  try {
+    if (optionToProcess === 'pagar_boleto') {
+      // Obtener datos guardados
+      const boletoPago = userStates[from].tempBoletoPago;
+      
+      if (!boletoPago) {
+        await sendMessageAndSave(from, '❌ No se encontraron datos del boleto. Por favor intenta nuevamente.');
+        await sendMenuList(from, true);
+        userStates[from].step = 'MAIN_MENU';
+        return;
+      }
+      
+      const esperaMsg = `⏳ *Obteniendo link de pago...*\n\nEsto puede tardar unos segundos, por favor espera.`;
+      await sendMessageAndSave(from, esperaMsg);
+      
+      // Llamar al scraper para obtener el link de pago
+      const resultado = await debtScraperService.obtenerLinkPagoBoleto(
+        boletoPago.tipoPadron, 
+        boletoPago.datos, 
+        boletoPago.tipoCuota
+      );
+      
+      if (!resultado.success) {
+        await sendMessageAndSave(from, `❌ Error al obtener el link de pago: ${resultado.error}`);
+        await sendMenuList(from, true);
+        userStates[from].step = 'MAIN_MENU';
+        return;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const instruccionesMsg = 
+        `💳 *Link de pago del boleto*\n\n` +
+        `Podés pagar tu boleto online ingresando al siguiente link:\n\n` +
+        `🔗 ${resultado.linkPago}\n\n` +
+        `*Instrucciones:*\n` +
+        `1️⃣ Ingresá al link\n` +
+        `2️⃣ Elegí tu método de pago preferido (tarjeta, Mercado Pago, etc.)\n` +
+        `3️⃣ Completá el pago siguiendo las instrucciones\n` +
+        `4️⃣ Guardá el comprobante de pago\n\n` +
+        `_✅ El pago se acreditará en 24-48 horas hábiles._`;
+      
+      await sendMessageAndSave(from, instruccionesMsg);
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const buttons = [
+        { id: 'volver_menu', title: '↩️ Volver al Menú' }
+      ];
+      
+      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+      userStates[from].step = 'MAIN_MENU';
+      
+      // Limpiar datos temporales
+      delete userStates[from].tempBoletoPago;
+      
+    } else if (optionToProcess === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+    }
+    
+  } catch (error) {
+    console.error('❌ Error en handlePagoBoletoChoice:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar el pago. Por favor intenta más tarde.');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
   }
 };
 
@@ -2105,14 +2303,28 @@ Podés reintentar ingresando el titular nuevamente o escribir *volver*.`;
     }
     
     const data = result.data || {};
+    
+    // Formatear los horarios con la fecha si está disponible
+    let inicioTurnoFormato = data.inicioTurno || 'No disponible';
+    let finTurnoFormato = data.finTurno || 'No disponible';
+    
+    // Si tenemos fecha completa, agrégala al inicio
+    if (data.fechaInicioCompleta) {
+      // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
+      const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+      if (fechaMatch) {
+        inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
+      }
+    }
+    
     const response = `✅ *Turno encontrado*
 
 • Inspección de cauce: ${data.inspeccion || 'No disponible'}
 • Hijuela: ${data.hijuela || 'No disponible'}
 • C.C.-P.P.: ${data.ccpp || 'No disponible'}
 • Titular: ${data.titular || lastTitular}
-• Inicio de turno: ${data.inicioTurno || 'No disponible'}
-• Fin de turno: ${data.finTurno || 'No disponible'}`;
+• Inicio de turno: ${inicioTurnoFormato}
+• Fin de turno: ${finTurnoFormato}`;
     
     await sendMessageAndSave(from, response);
     await sendMenuList(from, true);
@@ -2162,13 +2374,27 @@ Podés reintentar ingresando el C.C.-P.P. nuevamente o escribir *volver*.`;
     }
     
     const data = result.data || {};
+    
+    // Formatear los horarios con la fecha si está disponible
+    let inicioTurnoFormato = data.inicioTurno || 'No disponible';
+    let finTurnoFormato = data.finTurno || 'No disponible';
+    
+    // Si tenemos fecha completa, agrégala al inicio
+    if (data.fechaInicioCompleta) {
+      // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
+      const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+      if (fechaMatch) {
+        inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
+      }
+    }
+    
     const response = `✅ *Turno encontrado*
 
 • Inspección de cauce: ${data.inspeccion || 'No disponible'}
 • C.C.-P.P.: ${data.ccpp || lastCCPP}
 • Titular: ${data.titular || 'No disponible'}
-• Inicio de turno: ${data.inicioTurno || 'No disponible'}
-• Fin de turno: ${data.finTurno || 'No disponible'}`;
+• Inicio de turno: ${inicioTurnoFormato}
+• Fin de turno: ${finTurnoFormato}`;
     
     await sendMessageAndSave(from, response);
     await sendMenuList(from, true);
@@ -2337,14 +2563,28 @@ Podés reintentar ingresando el titular nuevamente o escribir *volver*.`;
   }
 
   const data = result.data || {};
+  
+  // Formatear los horarios con la fecha si está disponible
+  let inicioTurnoFormato = data.inicioTurno || 'No disponible';
+  let finTurnoFormato = data.finTurno || 'No disponible';
+  
+  // Si tenemos fecha completa, agrégala al inicio
+  if (data.fechaInicioCompleta) {
+    // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
+    const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+    if (fechaMatch) {
+      inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
+    }
+  }
+  
   const response = `✅ *Turno encontrado*
 
 • Inspección de cauce: ${data.inspeccion || 'No disponible'}
 • Hijuela: ${data.hijuela || 'No disponible'}
 • C.C.-P.P.: ${data.ccpp || 'No disponible'}
 • Titular: ${data.titular || raw}
-• Inicio de turno: ${data.inicioTurno || 'No disponible'}
-• Fin de turno: ${data.finTurno || 'No disponible'}`;
+• Inicio de turno: ${inicioTurnoFormato}
+• Fin de turno: ${finTurnoFormato}`;
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);
@@ -2423,14 +2663,28 @@ Podés reintentar ingresando el C.C.-P.P. nuevamente o escribir *volver*.`;
   }
 
   const data = result.data || {};
+  
+  // Formatear los horarios con la fecha si está disponible
+  let inicioTurnoFormato = data.inicioTurno || 'No disponible';
+  let finTurnoFormato = data.finTurno || 'No disponible';
+  
+  // Si tenemos fecha completa, agrégala al inicio
+  if (data.fechaInicioCompleta) {
+    // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
+    const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+    if (fechaMatch) {
+      inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
+    }
+  }
+  
   const response = `✅ *Turno encontrado*
 
 • Inspección de cauce: ${data.inspeccion || 'No disponible'}
 • Hijuela: ${data.hijuela || 'No disponible'}
 • C.C.-P.P.: ${data.ccpp || normalized}
 • Titular: ${data.titular || 'No disponible'}
-• Inicio de turno: ${data.inicioTurno || 'No disponible'}
-• Fin de turno: ${data.finTurno || 'No disponible'}`;
+• Inicio de turno: ${inicioTurnoFormato}
+• Fin de turno: ${finTurnoFormato}`;
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);
