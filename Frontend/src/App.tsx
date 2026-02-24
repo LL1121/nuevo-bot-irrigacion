@@ -825,11 +825,32 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
                 const existingIds = new Set(chat.messages.map((m: any) => m.id));
                 if (!existingIds.has(mappedMessage.id)) {
-                  const sortedMessages = dedupeMessages([...chat.messages, mappedMessage]).sort((a: any, b: any) => {
-                    const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+                  const allMessagesBeforeSort = [...chat.messages, mappedMessage];
+                  
+                  console.log('🔄 BEFORE SORT:', {
+                    totalMessages: allMessagesBeforeSort.length,
+                    newMessageDate: mappedMessage.date,
+                    newMessageId: mappedMessage.id,
+                    newMessageText: mappedMessage.text,
+                    lastMessageBeforeSort: allMessagesBeforeSort[allMessagesBeforeSort.length - 1]?.text,
+                    lastMessageDateBeforeSort: allMessagesBeforeSort[allMessagesBeforeSort.length - 1]?.date
+                  });
+                  
+                  const sortedMessages = dedupeMessages(allMessagesBeforeSort).sort((a: any, b: any) => {
+                    const timeA = new Date(a.date).getTime();
+                    const timeB = new Date(b.date).getTime();
+                    const timeDiff = timeA - timeB;
                     // Si las fechas son iguales, ordenar por ID como desempate
                     return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
                   });
+                  
+                  console.log('🔄 AFTER SORT:', {
+                    totalMessages: sortedMessages.length,
+                    lastMessage: sortedMessages[sortedMessages.length - 1]?.text,
+                    lastMessageDate: sortedMessages[sortedMessages.length - 1]?.date,
+                    lastMessageId: sortedMessages[sortedMessages.length - 1]?.id
+                  });
+                  
                   // Mantener solo los últimos messagesLimit mensajes en UI
                   chat.messages = sortedMessages.slice(-messagesLimit);
                   
@@ -882,15 +903,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             }
           }
           
-          // Actualizar último mensaje y traer al frente
+          // Actualizar último mensaje y mantener posición del chat
           // newMsg.mensaje ya está normalizado a string en la parte superior de handleNewMessage
           chat.lastMessage = messagePreview || newMsg.mensaje || '[Mensaje sin contenido]';
           chat.lastMessageDate = msgTimestamp.toISOString();
           chat.time = formatTime(msgTimestamp);
           
-          // Mover al inicio del array
-          updated.splice(existingChatIndex, 1);
-          updated.unshift(chat);
+          // NO mover el chat al inicio - mantener el orden de la lista
+          // Simplemente actualizar el chat en su posición actual
+          updated[existingChatIndex] = chat;
           
           return updated;
         } else {
@@ -2094,7 +2115,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               onContextMenu={(e) => openContextMenu(e, 'chat', conv.id)}
               onClick={() => {
                 const originalIndex = conversationsState.findIndex((c) => c.id === conv.id);
-                setSelectedChat(originalIndex === -1 ? idx : originalIndex);
+                setSelectedChat(originalIndex === -1 ? 0 : originalIndex);
                 setChatClosed(false);
                 // Marcar como leído cuando se selecciona el chat
                 markChatReadById(conv.id);

@@ -56,7 +56,7 @@ const sendMessage = async (to, text) => {
     };
 
     const response = await axiosClient.post(url, data, config);
-    console.log('✅ Mensaje enviado correctamente:', response.data);
+    console.log(`✅ Mensaje enviado a ${to} - ID: ${response.data?.messages?.[0]?.id || 'N/A'}`);
     return response.data;
   }, `sendMessage to ${to}`);
 };
