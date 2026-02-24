@@ -2065,9 +2065,37 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     if (resultado.pdfPath) {
-      // Enviar PDF
-      await whatsappService.sendDocument(from, resultado.pdfPath, `boleto_${tipoCuota}.pdf`);
-      console.log(`✅ Boleto PDF enviado: ${resultado.pdfPath}`);
+      // Subir PDF a WhatsApp primero
+      const sendingMsg = '📤 Procesando boleto...';
+      await sendMessageAndSave(from, sendingMsg);
+      
+      try {
+        const mediaId = await whatsappService.uploadMedia(resultado.pdfPath, 'application/pdf');
+        
+        // Enviar documento con mediaId
+        await whatsappService.sendDocument(
+          from,
+          mediaId,
+          `boleto_${tipoCuota}.pdf`,
+          `Boleto de pago - ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}`
+        );
+        console.log(`✅ Boleto PDF enviado: ${resultado.pdfPath}`);
+        
+        // Limpiar archivo después de enviar
+        try {
+          const fs = require('fs');
+          fs.unlinkSync(resultado.pdfPath);
+          console.log(`🗑️ Archivo ${resultado.pdfPath} eliminado`);
+        } catch (cleanupError) {
+          console.warn(`⚠️ No se pudo eliminar ${resultado.pdfPath}:`, cleanupError.message);
+        }
+        
+      } catch (uploadError) {
+        console.error('❌ Error al subir PDF a WhatsApp:', uploadError);
+        await sendMessageAndSave(from, '❌ Error al enviar el boleto. Por favor intenta más tarde.');
+        await sendMenuList(from, true);
+        return;
+      }
       
       // Pequeña pausa
       await new Promise(resolve => setTimeout(resolve, 1000));

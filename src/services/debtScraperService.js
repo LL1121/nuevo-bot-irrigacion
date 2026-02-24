@@ -998,27 +998,189 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
       console.log('🔍 Buscando botón "Buscar" para boleto...');
       await new Promise(r => setTimeout(r, 500));
       
-      const buscarButton = await page.evaluateHandle(() => {
-        const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
-        return buttons.find(btn => 
-          /Buscar/i.test(btn.textContent || btn.value || '')
-        );
-      });
+      // Buscar el botón "Buscar" y clickearlo usando page.click() que es más confiable
+      console.log('🔍 Buscando botón "Buscar" para boleto...');
       
-      if (!buscarButton || buscarButton.asElement() === null) {
-        throw new Error('No se encontró botón "Buscar"');
+      try {
+        // Primero intenta con un selector específico para botones que dicen "Buscar"
+        await page.click('button:has-text("Buscar"):not(:has-text("Buscar por"))', { timeout: 5000 }).catch(async () => {
+          // Si falla, busca cualquier botón que contenga "Buscar" pero no "Buscar por"
+          const buscarBtn = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            return buttons.findIndex(btn => {
+              const text = (btn.textContent || '').trim();
+              return text === 'Buscar';
+            });
+          });
+          
+          if (buscarBtn === -1) {
+            throw new Error('No se encontró botón "Buscar"');
+          }
+          
+          // Usar evaluateHandle para clickear
+          const btnHandle = await page.$$('button');
+          await btnHandle[buscarBtn].click();
+        });
+        
+        console.log('✅ Click en "Buscar" ejecutado');
+      } catch (err) {
+        console.error('❌ Error al hacer click en "Buscar":', err.message);
+        throw new Error(`No se pudo hacer click en botón "Buscar": ${err.message}`);
       }
       
-      await buscarButton.asElement().click();
-      console.log('✅ Click en "Buscar"');
+      // PASO CRÍTICO: Esperar a que la página se actualice
+      console.log('⏳ Esperando que la página se actualice...');
+      
+      try {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {
+          // Si no hay navegación, esperar a cambios en el DOM
+          console.log('📄 Sin navegación, esperando cambios en el DOM...');
+        });
+      } catch (err) {
+        console.log('⚠️ Timeout en waitForNavigation, continuando...');
+      }
       
       await new Promise(r => setTimeout(r, 2000));
-
-      // Continuar con flujo de boleto...
-      // TODO: Implementar lógica completa de boleto
+      
+      // Esperar a que aparezcan los botones de Imprimir
+      await page.waitForFunction(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+        const imprimirButtons = buttons.filter(btn => 
+          /Imprimir/i.test(btn.textContent || btn.value || '')
+        );
+        return imprimirButtons.length > 0;
+      }, { timeout: 15000, polling: 500 }).catch(() => {
+        console.log('⚠️ Timeout esperando botones de Imprimir');
+      });
+      
+      console.log('✅ Botones de Imprimir detectados');
+      
+      await new Promise(r => setTimeout(r, 2000));
+      
+      // Capturar screenshot DESPUÉS de que carguen los botones
+      const timestamp = Date.now();
+      const screenshotPath = path.join(DOWNLOAD_DIR, `debug_boleto_${timestamp}.png`);
+      await page.screenshot({ path: screenshotPath });
+      console.log(`📸 Screenshot guardado: ${screenshotPath}`);
+      
+      // Guardar HTML completo para debug
+      const pageContent = await page.content();
+      const htmlPath = path.join(DOWNLOAD_DIR, `debug_boleto_${timestamp}.html`);
+      await fsp.writeFile(htmlPath, pageContent, 'utf-8');
+      console.log(`💾 HTML guardado: ${htmlPath}`);
+      
+      // Buscar el botón Imprimir y clickearlo - con debug detallado
+      const imprimirClicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"], div[role="button"]'));
+        
+        // Debug: listar todos los botones
+        console.log(`🔍 Total de botones encontrados: ${buttons.length}`);
+        buttons.forEach((btn, idx) => {
+          const text = (btn.textContent || btn.value || '').trim();
+          const title = btn.getAttribute('title') || '';
+          const ariaLabel = btn.getAttribute('aria-label') || '';
+          console.log(`  [${idx}] text:"${text.substring(0, 30)}" | title:"${title}" | aria-label:"${ariaLabel}" | visible: ${btn.offsetParent !== null} | tag: ${btn.tagName}`);
+        });
+        
+        // Buscar primero por Imprimir en el texto
+        let imprimirBtn = buttons.find(btn => 
+          /Imprimir/i.test(btn.textContent || btn.value || '')
+        );
+        
+        if (imprimirBtn) {
+          console.log(`✅ Encontrado botón Imprimir por texto: ${imprimirBtn.textContent}`);
+          imprimirBtn.click();
+          return true;
+        }
+        
+        // Si no encuentra por texto, buscar por título o aria-label
+        imprimirBtn = buttons.find(btn => {
+          const title = btn.getAttribute('title') || '';
+          const ariaLabel = btn.getAttribute('aria-label') || '';
+          return /Imprimir|PDF|Descargar|Print/i.test(title) || 
+                 /Imprimir|PDF|Descargar|Print/i.test(ariaLabel);
+        });
+        
+        if (imprimirBtn) {
+          console.log(`✅ Encontrado botón Imprimir por atributo: title="${imprimirBtn.getAttribute('title')}" aria-label="${imprimirBtn.getAttribute('aria-label')}"`);
+          imprimirBtn.click();
+          return true;
+        }
+        
+        // Último recurso: buscar botones vacíos o muy pequeños que estén en la zona de resultados
+        // Los botones de Imprimir/Pagar podrían ser los primeros botones sin texto después de un cierto punto
+        const emptyButtons = buttons.filter(btn => {
+          const text = (btn.textContent || btn.value || '').trim();
+          return text === '' && btn.offsetParent !== null && btn.tagName === 'BUTTON';
+        });
+        
+        console.log(`🔍 Encontrados ${emptyButtons.length} botones vacíos`);
+        
+        if (emptyButtons.length >= 2) {
+          // El primero debería ser Imprimir (por lo general)
+          const firstEmptyBtn = emptyButtons[0];
+          console.log(`✅ Clickeando primer botón vacío (asumiendo Imprimir)`);
+          firstEmptyBtn.click();
+          return true;
+        }
+        
+        if (emptyButtons.length >= 1) {
+          console.log(`✅ Clickeando el único botón vacío encontrado`);
+          emptyButtons[0].click();
+          return true;
+        }
+        
+        console.log('❌ No se encontró ningún botón de Imprimir/PDF');
+        return false;
+      });
+      
+      if (!imprimirClicked) {
+        // Listar botones disponibles para debug
+        const availableButtons = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"], div[role="button"]'));
+          return buttons.map(b => ({
+            text: (b.textContent || b.value || '').trim().substring(0, 60),
+            visible: b.offsetParent !== null,
+            tag: b.tagName
+          })).filter(b => b.visible);
+        });
+        
+        console.log('🔍 Botones visibles en el momento del error:', JSON.stringify(availableButtons, null, 2));
+        throw new Error('No se pudo hacer click en el botón Imprimir');
+      }
+      
+      console.log('✅ Click en botón Imprimir');
+      
+      // Esperar a que se descargue el PDF
+      await new Promise(r => setTimeout(r, 5000));
+      
+      // Buscar el archivo PDF descargado
+      const downloadPath = DOWNLOAD_DIR;
+      const files = fs.readdirSync(downloadPath);
+      const pdfFile = files.find(f => f.endsWith('.pdf'));
+      
+      if (!pdfFile) {
+        throw new Error('No se descargó ningún PDF después de clickear Imprimir');
+      }
+      
+      const oldPath = path.join(downloadPath, pdfFile);
+      const newPath = path.join(downloadPath, `${idPadron}_${datos.tipoCuota || 'boleto'}.pdf`);
+      fs.renameSync(oldPath, newPath);
+      
+      console.log(`📄 PDF descargado y renombrado: ${newPath}`);
+      
+      // Cerrar browser para liberar RAM
+      try {
+        await browserPool.discardBrowser(browser);
+        console.log('🗑️ Browser cerrado para liberar RAM');
+      } catch (err) {
+        console.error('⚠️ Error cerrando browser:', err.message);
+      }
+      
       return {
-        success: false,
-        error: 'Flujo de boleto en desarrollo'
+        success: true,
+        pdfPath: newPath,
+        relativePdfPath: `/temp/${path.basename(newPath)}`
       };
     }
     
@@ -1166,7 +1328,8 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoCuota) {
   for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
     try {
       console.log(`🔄 Intento ${intento}/${MAX_INTENTOS} para obtenerBoletoPadron ${tipoPadron} - ${tipoCuota}`);
-      const resultado = await _scrapeBoletonPadron(tipoPadron, datos, tipoCuota);
+      // Usar la MISMA función que funciona para deuda, pero con tipoOperacion='boleto'
+      const resultado = await _scrapeDeudaYBoletoPadron(tipoPadron, datos, 'boleto');
       return resultado;
     } catch (error) {
       console.error(`❌ Intento ${intento} falló:`, error.message);
@@ -1216,6 +1379,28 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     
     await new Promise(r => setTimeout(r, 4000));
     console.log('✅ Página cargada');
+
+    // ============================================
+    // DEBUG: Verificar estado actual de la página
+    // ============================================
+    console.log('🔍 DEBUG: Verificando estado de selects en la página...');
+    const selectsDebug = await page.evaluate(() => {
+      const selects = Array.from(document.querySelectorAll('.mantine-Select-input'));
+      const allInputs = Array.from(document.querySelectorAll('input[name="codigo1"], input[name="codigo2"]'));
+      const allButtons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+      
+      return {
+        totalSelects: selects.length,
+        selectsText: selects.map(s => s.textContent?.trim() || 'VACIO').slice(0, 3),
+        inputsPresentes: allInputs.length,
+        inputsDisabled: allInputs.filter(i => i.disabled).length,
+        buttons: allButtons.map(b => ({
+          text: (b.textContent || b.value || '').substring(0, 30),
+          disabled: b.disabled || b.hasAttribute('disabled')
+        })).slice(0, 5)
+      };
+    });
+    console.log('📊 Estado inicial:', JSON.stringify(selectsDebug, null, 2));
 
     // ============================================
     // PASO 1: Abrir dropdown y seleccionar tipo de padrón (A/B/C)
@@ -1451,151 +1636,71 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     
     console.log('✅ Click en "Buscar" - Esperando que carguen los resultados...');
     
-    // PASO 5: Esperar y seleccionar la cuota (Anual o Bimestral)
-    console.log(`⏳ Esperando opciones de cuota...`);
-    
+    // PASO 5: Esperar a que la página se actualice después del click
+    // Esperamos a que desaparezca el input "codigo1" que indica que estamos en la página de resultados
     try {
       await page.waitForFunction(() => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-        const hasCuotaButtons = buttons.some(btn => {
-          const text = (btn.textContent || '').trim();
-          const isVisible = btn.offsetParent !== null;
-          return isVisible && /Cuota Anual|Cuota Bimestral/i.test(text);
-        });
-        return hasCuotaButtons;
-      }, { timeout: 15000, polling: 500 });
+        const input = document.querySelector('input[name="codigo1"]');
+        // Si el input está oculto o desaparece, significa que se cargaron los resultados
+        return !input || input.offsetParent === null;
+      }, { timeout: 10000, polling: 500 });
       
-      console.log('✅ Opciones de cuota aparecieron');
-    } catch (timeoutError) {
-      console.log('⚠️ Timeout esperando opciones de cuota');
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_timeout_cuota_${timestamp}.png`) });
-      const htmlContent = await page.content();
-      fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_timeout_cuota_${timestamp}.html`), htmlContent, 'utf-8');
-      throw new Error('No aparecieron opciones de cuota después de 15 segundos');
+      console.log('✅ Página de resultados cargada (inputs desaparecieron)');
+    } catch (err) {
+      console.log('⚠️ Timeout esperando cambios en la página, continuando...');
     }
     
     await new Promise(r => setTimeout(r, 2000));
     
-    // Seleccionar la cuota solicitada
-    const tipoCuotaTexto = tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
-    console.log(`📅 Seleccionando ${tipoCuotaTexto}...`);
+    console.log('🔍 Buscando botón "Imprimir"...');
     
-    const cuotaButtonClicked = await page.evaluate((textoB) => {
-      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-      const cuotaBtn = buttons.find(btn => {
-        const text = (btn.textContent || '').trim();
-        const isVisible = btn.offsetParent !== null;
-        return text.includes(textoB) && isVisible;
-      });
-      
-      if (cuotaBtn) {
-        console.log(`✅ Encontrado botón: ${cuotaBtn.textContent}`);
-        cuotaBtn.click();
-        return true;
-      }
-      
-      console.log(`❌ No se encontró botón de ${textoB}`);
-      return false;
-    }, tipoCuotaTexto);
-    
-    if (!cuotaButtonClicked) {
-      throw new Error(`No se pudo seleccionar ${tipoCuotaTexto}`);
-    }
-    
-    console.log(`✅ Seleccionada: ${tipoCuotaTexto} - Esperando botón Imprimir...`);
-    
-    // PASO 5: Ahora sí, esperar el botón "Imprimir"
-    try {
-      await page.waitForFunction(() => {
-        const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-        const hasImprimirButton = buttons.some(btn => {
-          const text = (btn.textContent || '').trim();
-          const isVisible = btn.offsetParent !== null;
-          return isVisible && /Imprimir|PDF|Descargar/i.test(text);
-        });
-        return hasImprimirButton;
-      }, { timeout: 15000, polling: 500 });
-      
-      console.log('✅ Botón "Imprimir" apareció');
-    } catch (timeoutError) {
-      console.log('⚠️ Timeout esperando botón Imprimir después de seleccionar cuota');
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_timeout_imprimir_${timestamp}.png`) });
-      const htmlContent = await page.content();
-      fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_timeout_imprimir_${timestamp}.html`), htmlContent, 'utf-8');
-      
-      // Listar botones disponibles para debug
-      const availableButtons = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-        return buttons.map(btn => ({
-          text: (btn.textContent || '').trim().substring(0, 50),
-          visible: btn.offsetParent !== null,
-          disabled: btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true'
-        })).filter(b => b.visible && b.text);
-      });
-      console.log('🔍 Botones visibles después del timeout:', JSON.stringify(availableButtons, null, 2));
-      
-      throw new Error('No apareció el botón Imprimir después de seleccionar cuota');
-    }
-    
-    // Espera adicional para asegurar estabilidad
-    await new Promise(r => setTimeout(r, 2000));
-    console.log('✅ Página lista para descargar PDF');
-
-    // ============================================
-    // PASO 6: Buscar y clickear botón "Imprimir"
-    // ============================================
-    console.log('📄 Buscando botón "Imprimir" para descargar PDF...');
+    // Listar botones para debug
+    const availableButtons = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+      return buttons.map(b => ({
+        text: (b.textContent || b.value || '').trim().substring(0, 50),
+        visible: b.offsetParent !== null,
+        classes: b.className
+      })).filter(b => b.visible && b.text);
+    });
+    console.log('🔍 Botones disponibles:', JSON.stringify(availableButtons, null, 2));
     
     const imprimirButton = await page.evaluateHandle(() => {
-      const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-      return buttons.find(btn => {
-        const text = btn.textContent?.trim() || '';
-        const isVisible = btn.offsetParent !== null;
-        return /Imprimir|PDF|Descargar/i.test(text) && isVisible;
-      });
+      const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+      return buttons.find(btn => 
+        /Imprimir|PDF|Descargar/i.test(btn.textContent || btn.value || '')
+      );
     });
     
-    if (imprimirButton && imprimirButton.asElement() !== null) {
-      await imprimirButton.asElement().click();
-      console.log('✅ Click en "Imprimir"');
+    if (!imprimirButton || imprimirButton.asElement() === null) {
+      // Capturar screenshot para debug
+      const timestamp = Date.now();
+      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_imprimir_not_found_${timestamp}.png`) });
       
-      await delay(5000);
-      
-      const files = fs.readdirSync(downloadPath);
-      const pdfFile = files.find(f => f.endsWith('.pdf'));
-      
-      let pdfPath = null;
-      if (pdfFile) {
-        const oldPath = path.join(downloadPath, pdfFile);
-        const newPath = path.join(downloadPath, `${idBoleto}.pdf`);
-        fs.renameSync(oldPath, newPath);
-        pdfPath = newPath;
-        console.log(`📄 PDF descargado: ${pdfPath}`);
-      }
-      
-      return {
-        success: true,
-        pdfPath: pdfPath
-      };
-    }
-
-    // Si no encontramos el botón, guardar screenshot y HTML para debug
-    const debugId = `debug_imprimir_${Date.now()}`;
-    const screenshotPath = path.join(__dirname, '../../public/temp', `${debugId}.png`);
-    const htmlPath = path.join(__dirname, '../../public/temp', `${debugId}.html`);
-    
-    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
-    const html = await page.content().catch(() => '');
-    if (html) {
-      fs.writeFileSync(htmlPath, html);
+      throw new Error('No se encontró botón "Imprimir" después de hacer click en "Buscar"');
     }
     
-    console.log(`📸 Screenshot guardado: ${screenshotPath}`);
-    console.log(`📄 HTML guardado: ${htmlPath}`);
+    await imprimirButton.asElement().click();
+    console.log('✅ Click en "Imprimir"');
     
-    throw new Error('No se encontró botón de descarga');
+    await delay(5000);
+    
+    const files = fs.readdirSync(downloadPath);
+    const pdfFile = files.find(f => f.endsWith('.pdf'));
+    
+    let pdfPath = null;
+    if (pdfFile) {
+      const oldPath = path.join(downloadPath, pdfFile);
+      const newPath = path.join(downloadPath, `${idBoleto}.pdf`);
+      fs.renameSync(oldPath, newPath);
+      pdfPath = newPath;
+      console.log(`📄 PDF descargado: ${pdfPath}`);
+    }
+    
+    return {
+      success: true,
+      pdfPath: pdfPath
+    };
 
   } catch (error) {
     const message = error.message || '';
