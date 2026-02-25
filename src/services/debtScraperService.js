@@ -8,7 +8,10 @@ const BASE_URL_DNI = 'https://autogestion.cloud.irrigacion.gov.ar/dni';
 const BASE_URL_SERVICIO = 'https://autogestion.cloud.irrigacion.gov.ar/servicio';
 const DOWNLOAD_DIR = path.resolve(__dirname, '../../public/temp');
 const DOWNLOAD_TIMEOUT_MS = 15000;
+const FILE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const SCRAPER_DEBUG = process.env.SCRAPER_DEBUG === 'true';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
+let lastCleanupAt = 0;
 
 // Asegurar carpeta de descargas
 if (!fs.existsSync(DOWNLOAD_DIR)) {
@@ -19,9 +22,13 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
  * Limpia archivos PDF antiguos (>1 hora) en la carpeta temp
  */
 async function cleanOldFiles() {
+  const now = Date.now();
+  if (now - lastCleanupAt < FILE_CLEANUP_INTERVAL_MS) {
+    return;
+  }
+
   try {
     const files = await fsp.readdir(DOWNLOAD_DIR);
-    const now = Date.now();
     const oneHour = 60 * 60 * 1000;
 
     for (const file of files) {
@@ -33,6 +40,7 @@ async function cleanOldFiles() {
         console.log(`🗑️ Archivo antiguo eliminado: ${file}`);
       }
     }
+    lastCleanupAt = now;
   } catch (err) {
     console.error('⚠️ Error limpiando archivos antiguos:', err.message);
   }
@@ -54,7 +62,7 @@ async function waitForDownload(downloadDir, targetName, timeoutMs = DOWNLOAD_TIM
       const candidate = newFiles[0];
       // Esperar a que termine la descarga (.crdownload eliminado)
       if (candidate.endsWith('.crdownload')) {
-        await delay(300);
+        await delay(120);
         continue;
       }
       const tmpPath = path.join(downloadDir, candidate);
@@ -70,7 +78,7 @@ async function waitForDownload(downloadDir, targetName, timeoutMs = DOWNLOAD_TIM
       await fsp.rename(tmpPath, finalPath);
       return finalPath;
     }
-    await delay(300);
+    await delay(120);
   }
 
   throw new Error('Timeout esperando la descarga del PDF');
@@ -78,6 +86,17 @@ async function waitForDownload(downloadDir, targetName, timeoutMs = DOWNLOAD_TIM
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAnyText(page, texts, timeout = 9000, polling = 200) {
+  return page.waitForFunction(
+    (expectedTexts) => {
+      const bodyText = (document.body?.innerText || '').toLowerCase();
+      return expectedTexts.some((txt) => bodyText.includes(txt));
+    },
+    { timeout, polling },
+    texts.map((txt) => txt.toLowerCase())
+  );
 }
 
 async function createConfiguredPage(browser) {
@@ -204,7 +223,6 @@ async function _scrapeDeudaYBoleto(dni) {
     // PASO 2: Click en "Buscar servicios asociados"
     // ============================================
     console.log('🔍 Buscando botón "Buscar servicios asociados"...');
-    await new Promise(r => setTimeout(r, 500));
     
     const buscarButton = await page.evaluateHandle(() => {
       const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
@@ -220,7 +238,7 @@ async function _scrapeDeudaYBoleto(dni) {
     await buscarButton.asElement().click();
     console.log('✅ Click en "Buscar servicios asociados"');
     
-    await new Promise(r => setTimeout(r, 2000));
+    await waitForAnyText(page, ['cuota anual', 'cuota bimestral', 'no se encontr', 'sin resultados'], 10000, 250).catch(() => {});
 
     // ============================================
     // PASO 3: Verificar que aparecieron los recuadros (Cuota Anual/Bimestral)
@@ -251,7 +269,6 @@ async function _scrapeDeudaYBoleto(dni) {
     // PASO 4: Click en "Consultar Deuda del Servicio"
     // ============================================
     console.log('🔍 Buscando botón "Consultar Deuda del Servicio"...');
-    await new Promise(r => setTimeout(r, 1000));
     
     const consultarButton = await page.evaluateHandle(() => {
       const buttons = Array.from(document.querySelectorAll('button, a'));
@@ -266,11 +283,10 @@ async function _scrapeDeudaYBoleto(dni) {
     
     // Click y esperar contenido sin depender de waitForNavigation
     await consultarButton.asElement().click();
-    await new Promise(r => setTimeout(r, 1200));
     await page.waitForFunction(() => {
       const text = (document.body?.innerText || '').toLowerCase();
       return text.includes('titular') || text.includes('capital') || text.includes('cuota');
-    }, { timeout: 15000 });
+    }, { timeout: 12000, polling: 250 });
     
     console.log('✅ Navegó a página de detalle de deuda');
 
@@ -278,9 +294,6 @@ async function _scrapeDeudaYBoleto(dni) {
     // PASO 5: Extraer datos de la página de cuenta corriente
     // ============================================
     console.log('📋 Extrayendo datos de deuda...');
-    
-    // Esperar a que se cargue el contenido dinámico
-    await new Promise(r => setTimeout(r, 3000));
     
     const datos = await page.evaluate(() => {
       const resultado = {
@@ -496,7 +509,6 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
     // PASO 2: Click en "Buscar servicios asociados"
     // ============================================
     console.log('🔍 Buscando botón "Buscar servicios asociados"...');
-    await delay(500);
     
     const buscarButton = await page.evaluateHandle(() => {
       const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
@@ -512,7 +524,7 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
     await buscarButton.asElement().click();
     console.log('✅ Click en "Buscar servicios asociados"');
     
-    await delay(3000);
+    await waitForAnyText(page, ['cuota anual', 'cuota bimestral', 'no se encontr', 'sin resultados'], 10000, 250).catch(() => {});
 
     // ============================================
     // PASO 3: Verificar que aparecieron los recuadros
@@ -543,7 +555,6 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
     // PASO 4: Buscar y clickear botón "Imprimir" según tipo de cuota
     // ============================================
     console.log(`📄 Buscando botón "Imprimir" para ${tipoCuota}...`);
-    await delay(1000);
     
     // Buscar el botón Imprimir que está dentro del recuadro del tipo de cuota especificado
     const imprimirButton = await page.evaluateHandle((tipo) => {
@@ -600,24 +611,8 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
     
     await imprimirButton.asElement().click();
     console.log('✅ Click en "Imprimir"');
-    
-    // Esperar a que se descargue el PDF
-    await delay(5000);
-    
-    // Buscar el archivo PDF descargado
-    const files = fs.readdirSync(downloadPath);
-    const pdfFile = files.find(f => f.endsWith('.pdf'));
-    
-    let pdfPath = null;
-    if (pdfFile) {
-      const oldPath = path.join(downloadPath, pdfFile);
-      const newPath = path.join(downloadPath, `boleto_${tipoCuota}_${dni}.pdf`);
-      fs.renameSync(oldPath, newPath);
-      pdfPath = newPath;
-      console.log(`📄 PDF descargado: ${pdfPath}`);
-    }
-    
-    await browser.close();
+    const pdfPath = await waitForDownload(downloadPath, `boleto_${tipoCuota}_${dni}.pdf`, DOWNLOAD_TIMEOUT_MS);
+    console.log(`📄 PDF descargado: ${pdfPath}`);
     
     return {
       success: true,
@@ -693,11 +688,10 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
 
     // Esperar a que la página cargue completamente
     console.log('⏳ Esperando a que cargue la página...');
-    await page.waitForSelector('input[name="codigo1"], .mantine-Select-root, h5', { timeout: 15000 }).catch(() => {
+    await page.waitForSelector('input[name="codigo1"], .mantine-Select-root, h5', { timeout: 12000 }).catch(() => {
       console.log('⚠️ Timeout esperando elementos de la página');
     });
-    
-    await new Promise(r => setTimeout(r, 4000));
+    await page.waitForFunction(() => document.readyState === 'interactive' || document.readyState === 'complete', { timeout: 4000 }).catch(() => {});
     console.log('✅ Página cargada');
 
     // ============================================
@@ -782,7 +776,7 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     }
     
     console.log(`✅ Opción seleccionada: ${tipoCodigo} - ${tipoNombre}`);
-    await new Promise(r => setTimeout(r, 1500));
+    await page.waitForSelector('input[name="codigo1"]', { timeout: 5000 }).catch(() => {});
 
     // ============================================
     // PASO 2: Llenar campos según el tipo de padrón
@@ -796,8 +790,6 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     await page.waitForSelector('input[name="codigo1"]', { timeout: 5000 }).catch(() => {
       console.log('⚠️ No se encontró input codigo1...');
     });
-    
-    await new Promise(r => setTimeout(r, 500));
     
     if (tipoPadron === 'superficial') {
       // Campos: código de cauce (codigo1), padrón parcial (codigo2)
@@ -876,7 +868,12 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     }
     
     // Esperar a que se habilite el botón
-    await new Promise(r => setTimeout(r, 1500));
+    await page.waitForFunction(() => {
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+      const buscarBtn = buttons.find(btn => /Buscar/i.test(btn.textContent || btn.value || ''));
+      if (!buscarBtn) return false;
+      return !buscarBtn.hasAttribute('disabled') && buscarBtn.getAttribute('aria-disabled') !== 'true' && !buscarBtn.disabled;
+    }, { timeout: 7000, polling: 250 }).catch(() => {});
 
     // ============================================
     // PASO 3: Según la operación, hacer click en diferente botón
@@ -898,14 +895,13 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
       
       await consultarButton.asElement().click();
       console.log('✅ Click en "Consultar Deuda"');
-      
-      await new Promise(r => setTimeout(r, 2000));
-      
-      // Capturar screenshot para debug
       const timestamp = Date.now();
-      const screenshotPath = path.join(DOWNLOAD_DIR, `debug_deuda_${timestamp}.png`);
-      await page.screenshot({ path: screenshotPath });
-      console.log(`📸 Screenshot guardado: ${screenshotPath}`);
+      
+      if (SCRAPER_DEBUG) {
+        const screenshotPath = path.join(DOWNLOAD_DIR, `debug_deuda_${timestamp}.png`);
+        await page.screenshot({ path: screenshotPath });
+        console.log(`📸 Screenshot guardado: ${screenshotPath}`);
+      }
       
       // Esperar a que carguen los datos
       await page.waitForFunction(() => {
@@ -917,13 +913,12 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
       
       console.log('✅ Datos de deuda cargados');
       
-      await new Promise(r => setTimeout(r, 2000));
-      
-      // Guardar HTML completo para debug
-      const pageContent = await page.content();
-      const htmlPath = path.join(DOWNLOAD_DIR, `debug_deuda_${timestamp}.html`);
-      await fsp.writeFile(htmlPath, pageContent, 'utf-8');
-      console.log(`💾 HTML guardado: ${htmlPath}`);
+      if (SCRAPER_DEBUG) {
+        const pageContent = await page.content();
+        const htmlPath = path.join(DOWNLOAD_DIR, `debug_deuda_${timestamp}.html`);
+        await fsp.writeFile(htmlPath, pageContent, 'utf-8');
+        console.log(`💾 HTML guardado: ${htmlPath}`);
+      }
       
       // Extraer datos de deuda
       const deudaData = await page.evaluate(() => {
@@ -996,7 +991,6 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     } else {
       // Para BOLETO: buscar y hacer clic en "Buscar"
       console.log('🔍 Buscando botón "Buscar" para boleto...');
-      await new Promise(r => setTimeout(r, 500));
       
       // Buscar el botón "Buscar" y clickearlo usando page.click() que es más confiable
       console.log('🔍 Buscando botón "Buscar" para boleto...');
@@ -1040,8 +1034,6 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
         console.log('⚠️ Timeout en waitForNavigation, continuando...');
       }
       
-      await new Promise(r => setTimeout(r, 2000));
-      
       // Esperar a que aparezcan los botones de Imprimir
       await page.waitForFunction(() => {
         const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
@@ -1055,19 +1047,19 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
       
       console.log('✅ Botones de Imprimir detectados');
       
-      await new Promise(r => setTimeout(r, 2000));
-      
       // Capturar screenshot DESPUÉS de que carguen los botones
       const timestamp = Date.now();
-      const screenshotPath = path.join(DOWNLOAD_DIR, `debug_boleto_${timestamp}.png`);
-      await page.screenshot({ path: screenshotPath });
-      console.log(`📸 Screenshot guardado: ${screenshotPath}`);
       
-      // Guardar HTML completo para debug
-      const pageContent = await page.content();
-      const htmlPath = path.join(DOWNLOAD_DIR, `debug_boleto_${timestamp}.html`);
-      await fsp.writeFile(htmlPath, pageContent, 'utf-8');
-      console.log(`💾 HTML guardado: ${htmlPath}`);
+      if (SCRAPER_DEBUG) {
+        const screenshotPath = path.join(DOWNLOAD_DIR, `debug_boleto_${timestamp}.png`);
+        await page.screenshot({ path: screenshotPath });
+        console.log(`📸 Screenshot guardado: ${screenshotPath}`);
+        
+        const pageContent = await page.content();
+        const htmlPath = path.join(DOWNLOAD_DIR, `debug_boleto_${timestamp}.html`);
+        await fsp.writeFile(htmlPath, pageContent, 'utf-8');
+        console.log(`💾 HTML guardado: ${htmlPath}`);
+      }
       
       // Buscar el botón Imprimir y clickearlo - con debug detallado
       const imprimirClicked = await page.evaluate(() => {
@@ -1150,24 +1142,10 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
       }
       
       console.log('✅ Click en botón Imprimir');
+      const finalPdfName = `${idPadron}_${datos.tipoCuota || 'boleto'}.pdf`;
+      const finalPath = await waitForDownload(DOWNLOAD_DIR, finalPdfName, DOWNLOAD_TIMEOUT_MS);
       
-      // Esperar a que se descargue el PDF
-      await new Promise(r => setTimeout(r, 5000));
-      
-      // Buscar el archivo PDF descargado
-      const downloadPath = DOWNLOAD_DIR;
-      const files = fs.readdirSync(downloadPath);
-      const pdfFile = files.find(f => f.endsWith('.pdf'));
-      
-      if (!pdfFile) {
-        throw new Error('No se descargó ningún PDF después de clickear Imprimir');
-      }
-      
-      const oldPath = path.join(downloadPath, pdfFile);
-      const newPath = path.join(downloadPath, `${idPadron}_${datos.tipoCuota || 'boleto'}.pdf`);
-      fs.renameSync(oldPath, newPath);
-      
-      console.log(`📄 PDF descargado y renombrado: ${newPath}`);
+      console.log(`📄 PDF descargado y renombrado: ${finalPath}`);
       
       // Cerrar browser para liberar RAM
       try {
@@ -1179,8 +1157,8 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
       
       return {
         success: true,
-        pdfPath: newPath,
-        relativePdfPath: `/temp/${path.basename(newPath)}`
+        pdfPath: finalPath,
+        relativePdfPath: `/temp/${path.basename(finalPath)}`
       };
     }
     
