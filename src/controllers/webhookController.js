@@ -318,6 +318,10 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       await handlePagoBoletoChoice(from, optionToProcess);
       break;
 
+    case 'AWAITING_PERFORACION_HELP':
+      await handlePerforacionHelpChoice(from, optionToProcess);
+      break;
+
     case 'AWAITING_OPCION_BOLETO_PADRON':
       await handleOpcionBoletoPadron(from, optionToProcess);
       break;
@@ -421,28 +425,23 @@ const sendMenuList = async (from, isFollowUp = false) => {
       rows: [
         { 
           id: 'ubicacion', 
-          title: '📍 Ubicación y Horarios',
-          description: 'Dirección, horarios de atención y contacto'
+          title: '📍 Ubicación y Horarios'
         },
         { 
           id: 'deuda', 
-          title: '💳 Solicitar Deuda',
-          description: 'Consultar deuda y pagar online'
+          title: '💳 Solicitar Deuda'
         },
         { 
           id: 'boleto', 
-          title: '📄 Pago Anual o Bimestral',
-          description: 'Obtener boleto y pagar online'
+          title: '📄 Pago Anual o Bimestral'
         },
         { 
           id: 'vencimientos', 
-          title: '📅 Consultar Vencimientos',
-          description: 'Ver fechas de vencimiento de pagos'
+          title: '📅 Consultar Vencimientos'
         },
         { 
           id: 'turnos', 
-          title: '🗓️ Consultar Turnos',
-          description: 'Información sobre turnos disponibles'
+          title: '🗓️ Consultar Turnos'
         }
       ]
     },
@@ -451,18 +450,15 @@ const sendMenuList = async (from, isFollowUp = false) => {
       rows: [
         { 
           id: 'empadronamiento', 
-          title: '🧾 Empadronamiento',
-          description: 'Registrar nuevo padrón o actualizar datos'
+          title: '🧾 Empadronamiento'
         },
         { 
           id: 'perforacion', 
-          title: '🔧 Solicitar Perforación',
-          description: 'Tramitar autorización para perforación'
+          title: '🔧 Solicitar Perforación'
         },
         { 
           id: 'renuncia', 
-          title: '🧾 Tramitar Renuncia',
-          description: 'Gestionar renuncia a derechos de riego'
+          title: '🧾 Tramitar Renuncia'
         }
       ]
     },
@@ -471,8 +467,7 @@ const sendMenuList = async (from, isFollowUp = false) => {
       rows: [
         { 
           id: 'operador', 
-          title: '👤 Hablar con Operador',
-          description: 'Conectar con un agente humano'
+          title: '👤 Hablar con Operador'
         }
       ]
     }
@@ -573,7 +568,7 @@ Nos encontramos en:
     case '2':
     case 'option_2':
     case 'empadronamiento':
-      const infoText = `� Empadronamiento / Pedido de Agua
+      const infoText = `🧾 Empadronamiento / Pedido de Agua
 
 *REQUISITOS:*
 
@@ -1304,16 +1299,13 @@ const handleTipoCuotaPadron = async (from, option) => {
       return;
     }
     
-    const searchingMsg = `📄 Generando boleto de *${tipoCuotaTexto}* para padrón *${tipoPadron}* (${padronData})...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
+    const searchingMsg = `📄 Generando boleto de ${tipoCuotaTexto} para padrón *${padronData}*...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
     await sendMessageAndSave(from, searchingMsg);
     
     // Ejecutar scraper con padrón y tipo de cuota
     await ejecutarScraperBoletoPadron(from, padronData, tipoPadron, tipoCuota);
     
-    // Volver al menú principal
-    userStates[from].step = 'MAIN_MENU';
-    delete userStates[from].tempPadron;
-    delete userStates[from].tempTipoPadron;
+    // El estado se define dentro de ejecutarScraperBoletoPadron
     
   } catch (error) {
     console.error('❌ Error en handleTipoCuotaPadron:', error);
@@ -1965,9 +1957,6 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     
     console.log(`⚙️ Ejecutando scraper de ${tipoOperacion} con padrón ${tipoPadron}:`, padronData);
     
-    const msg = `⏳ Consultando ${tipoOperacion} con padrón ${tipoPadron}...`;
-    await sendMessageAndSave(from, msg);
-    
     // Llamar al scraper con padrón - pasar tipoOperacion también
     const resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
     
@@ -1989,7 +1978,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     
     // Formatear mensaje de deuda
     const datos = resultado.data;
-    const deudaMsg = `📊 *DEUDA ENCONTRADA - Padrón ${tipoPadron.toUpperCase()}*\n\n` +
+    const deudaMsg = `📊 *Resumen de deuda del padrón ${tipoPadron.toUpperCase()}*\n\n` +
       `👤 *Titular:* ${datos.titular}\n` +
       `🆔 *CUIT:* ${datos.cuit}\n` +
       `🌾 *Hectáreas:* ${datos.hectareas}\n\n` +
@@ -2036,9 +2025,6 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
 const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuota) => {
   try {
     console.log(`⚙️ Ejecutando scraper de boleto con padrón ${tipoPadron} - ${tipoCuota}`);
-    
-    const msg = `📄 Generando boleto de *${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}* con padrón ${tipoPadron}...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
-    await sendMessageAndSave(from, msg);
     
     // Necesito parsear padronData para obtener tipoPadron
     let datosParaScrap = {};
@@ -2101,7 +2087,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Ofrecer pagar boleto
-      const pagarMsg = `📄 *Boleto generado correctamente*\n\n¿Deseas pagar este boleto online?`;
+      const pagarMsg = `📄 *Boleto generado correctamente*`;
       await sendMessageAndSave(from, pagarMsg);
       
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -2111,7 +2097,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         { id: 'volver_menu', title: '🚪 Salir' }
       ];
       
-      await whatsappService.sendButtonReply(from, 'Elige una opción:', buttons);
+      await whatsappService.sendButtonReply(from, '¿Desea pagar el boleto?', buttons);
       userStates[from].step = 'AWAITING_PAGO_BOLETO';
       
       // Guardar datos para el pago
@@ -2186,11 +2172,7 @@ const handlePagoDeudaChoice = async (from, optionToProcess) => {
       
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      const buttons = [
-        { id: 'volver_menu', title: '↩️ Volver al Menú' }
-      ];
-      
-      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+      await sendMenuList(from, true);
       userStates[from].step = 'MAIN_MENU';
       
     } else if (optionToProcess === 'volver_menu') {
@@ -2300,12 +2282,41 @@ Para más información y requisitos, visitá:
 ¿Necesitás ayuda con el trámite?`;
     
     await sendMessageAndSave(from, perforacionInfo);
-    await sendMenuList(from, true);
+
+    const buttons = [
+      { id: 'perforacion_ayuda_si', title: '✅ Sí' },
+      { id: 'perforacion_ayuda_no', title: '❌ No' }
+    ];
+
+    await whatsappService.sendButtonReply(from, '¿Necesitás mas ayuda?', buttons);
+    userStates[from].step = 'AWAITING_PERFORACION_HELP';
     
     console.log(`🔧 Info de perforación de subterránea enviada a ${from}`);
   } catch (error) {
     console.error('Error en handleIniciarPerforacion:', error);
     await sendMessageAndSave(from, '❌ Error al mostrar información. Intenta de nuevo.');
+  }
+};
+
+const handlePerforacionHelpChoice = async (from, optionToProcess) => {
+  try {
+    if (optionToProcess === 'perforacion_ayuda_si') {
+      const operatorMsg = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.`;
+      await sendMessageAndSave(from, operatorMsg);
+      await clienteService.cambiarEstadoBot(from, false);
+      if (global.io) {
+        global.io.emit('bot_mode_changed', { telefono: from, bot_activo: false });
+      }
+      return;
+    }
+
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+  } catch (error) {
+    console.error('❌ Error en handlePerforacionHelpChoice:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intenta más tarde.');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
   }
 };
 

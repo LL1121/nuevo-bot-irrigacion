@@ -8,6 +8,9 @@ import { toast, Toaster } from 'sonner';
 import { env } from './config/env';
 import { setupAxiosInterceptors } from './utils/axiosInterceptor';
 import { auth } from './config/auth';
+import { parseTimestamp, formatMessageTime, formatChatHeaderTime, isSessionExpired, toUTC } from './utils/dateTime';
+import { sortAndDedupeMessages } from './utils/messageOrder';
+import { appendIncomingMessage, mergeMessageBatches } from './services/messageQueue';
 
 // Configurar Axios base
 axios.defaults.baseURL = env.apiUrl;
@@ -228,14 +231,6 @@ export default function App() {
     const now = new Date();
     const messageDate = new Date(date);
     
-    console.log('🕐 DEBUG TIME:', {
-      inputDate: date,
-      parsedDate: messageDate,
-      now: now,
-      messageHours: messageDate.getHours(),
-      nowHours: now.getHours()
-    });
-    
     // Comparar solo día/mes/año (ignorar horas)
     const isToday = 
       messageDate.getDate() === now.getDate() &&
@@ -429,9 +424,7 @@ const normalizeMessageType = (rawType: any, normalizedType: string) => {
 };
 
 const parseMessageDate = (value: any) => {
-  if (!value) return new Date();
-  const d = new Date(value);
-  return isNaN(d.getTime()) ? new Date() : d;
+  return parseTimestamp(value).toDate();
 };
 
 // Formatear texto con estilos de WhatsApp: *negrita*, _cursiva_, ~tachado~, ```monospace```
@@ -477,16 +470,7 @@ const buildStableMessageId = (params: {
 
 // Dedupe helper to avoid duplicated IDs in UI
 const dedupeMessages = (msgs: any[]) => {
-  const seen = new Set<string | number>();
-  return msgs.filter((m: any) => {
-    const ts = m.date ? new Date(m.date).getTime() : 0;
-    const bucket = ts ? Math.floor(ts / 5000) : 0;
-    const textKey = typeof m.text === 'string' ? m.text.trim() : JSON.stringify(m.text ?? '');
-    const key = m.id ?? `${textKey}-${m.sent ? 'sent' : 'recv'}-${bucket}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return sortAndDedupeMessages(msgs || []);
 };
 
 // Función para reproducir sonido de notificación
@@ -554,16 +538,7 @@ const requestNotificationPermission = async () => {
 };
 
 const dedupeDisplayMessages = (msgs: any[]) => {
-  const seen = new Set<string>();
-  return msgs.filter((m: any) => {
-    const ts = m.date ? new Date(m.date).getTime() : 0;
-    const bucket = ts ? Math.floor(ts / 5000) : 0;
-    const textKey = typeof m.text === 'string' ? m.text.trim() : JSON.stringify(m.text ?? '');
-    const key = `${textKey}-${m.sent ? 'sent' : 'recv'}-${bucket}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return sortAndDedupeMessages(msgs || []);
 };
 
   // Auth handlers
@@ -825,41 +800,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
                 const existingIds = new Set(chat.messages.map((m: any) => m.id));
                 if (!existingIds.has(mappedMessage.id)) {
-                  const allMessagesBeforeSort = [...chat.messages, mappedMessage];
-                  
-                  console.log('🔄 BEFORE SORT:', {
-                    totalMessages: allMessagesBeforeSort.length,
-                    newMessageDate: mappedMessage.date,
-                    newMessageId: mappedMessage.id,
-                    newMessageText: mappedMessage.text,
-                    lastMessageBeforeSort: allMessagesBeforeSort[allMessagesBeforeSort.length - 1]?.text,
-                    lastMessageDateBeforeSort: allMessagesBeforeSort[allMessagesBeforeSort.length - 1]?.date
-                  });
-                  
-                  const sortedMessages = dedupeMessages(allMessagesBeforeSort).sort((a: any, b: any) => {
-                    const timeA = new Date(a.date).getTime();
-                    const timeB = new Date(b.date).getTime();
-                    const timeDiff = timeA - timeB;
-                    // Si las fechas son iguales, ordenar por ID como desempate
-                    return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
-                  });
-                  
-                  console.log('🔄 AFTER SORT:', {
-                    totalMessages: sortedMessages.length,
-                    lastMessage: sortedMessages[sortedMessages.length - 1]?.text,
-                    lastMessageDate: sortedMessages[sortedMessages.length - 1]?.date,
-                    lastMessageId: sortedMessages[sortedMessages.length - 1]?.id
-                  });
-                  
-                  // Mantener solo los últimos messagesLimit mensajes en UI
-                  chat.messages = sortedMessages.slice(-messagesLimit);
-                  
-                  console.log('📊 MESSAGES UPDATED:', {
-                    newCount: chat.messages.length,
-                    lastMessage: chat.messages[chat.messages.length - 1]?.text,
-                    selectedChatIndex: existingChatIndex,
-                    isCurrentChat: selectedChat === existingChatIndex
-                  });
+                  chat.messages = appendIncomingMessage(chat.messages, mappedMessage, { limit: messagesLimit });
                   
                   // FORCE UPDATE: Crear nuevo objeto de chat para triggear re-render
                   updated[existingChatIndex] = { ...chat };
@@ -869,11 +810,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     const phoneCache = prev[chat.phone] || [];
                     const cacheIds = new Set(phoneCache.map((m: any) => m.id));
                     if (!cacheIds.has(mappedMessage.id)) {
-                      const updatedCache = dedupeMessages([...phoneCache, mappedMessage].sort((a: any, b: any) => {
-                        const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
-                        return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
-                      }
-                      ));
+                      const updatedCache = mergeMessageBatches(phoneCache, [mappedMessage]);
                       return { ...prev, [chat.phone]: updatedCache };
                     }
                     return prev;
@@ -1188,13 +1125,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
             const msgDate = parseMessageDate(rawTimestamp);
             
-            console.log('🕐 TIMESTAMP DEBUG (API LOAD):', {
-              raw_timestamp: rawTimestamp,
-              parsed_date: msgDate.toISOString(),
-              locale_hours: msgDate.getHours(),
-              formatted_time: formatTime(msgDate)
-            });
-            
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
               timestamp: msgDate.toISOString(),
@@ -1245,11 +1175,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               duration: msg.duracion
             };
           });
-          const sortedAllMessages = [...allMappedMessages].sort((a: any, b: any) => {
-            const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
-            // Si las fechas son iguales, ordenar por ID como desempate
-            return timeDiff !== 0 ? timeDiff : (Number(a.id) - Number(b.id));
-          });
+          const sortedAllMessages = mergeMessageBatches(allMappedMessages);
           
           // Guardar en caché de memoria
           setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages }));
