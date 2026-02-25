@@ -47,11 +47,21 @@ function verifyMetaWebhook(req, res, next) {
   }
 
   const signature = req.headers['x-hub-signature-256'];
-  const secret = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET;
+  const secret = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
 
   if (!secret) {
-    console.warn('⚠️ WEBHOOK_APP_SECRET no configurado, saltando verificación de firma');
-    return next();
+    console.error('❌ Webhook secret no configurado');
+    return res.status(503).json({
+      success: false,
+      error: 'Webhook signature verification is not configured'
+    });
+  }
+
+  if (!signature) {
+    return res.status(403).json({
+      success: false,
+      error: 'Missing signature header'
+    });
   }
 
   // El body debe estar en raw (string o buffer) para verificar la firma

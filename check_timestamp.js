@@ -1,12 +1,20 @@
 const mysql = require('mysql2/promise');
 
+const dbConfig = {
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || 'irrigacion'
+};
+
+if (!dbConfig.password) {
+  throw new Error('Falta DB_PASSWORD en variables de entorno');
+}
+
+const targetPhone = process.env.TARGET_PHONE || '5492614666411';
+
 (async () => {
-  const conn = await mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'LauLL112129',
-    database: 'irrigacion'
-  });
+  const conn = await mysql.createConnection(dbConfig);
   
   // Obtener el último mensaje "Hola"
   const [rows] = await conn.execute(`
@@ -14,11 +22,11 @@ const mysql = require('mysql2/promise');
            DATE_FORMAT(fecha, '%Y-%m-%d %H:%i:%s') as fecha_formateada,
            UNIX_TIMESTAMP(fecha) as unix_timestamp
     FROM mensajes 
-    WHERE cliente_telefono = '5492614666411' 
+    WHERE cliente_telefono = ? 
     AND cuerpo = 'Hola'
     ORDER BY fecha DESC 
     LIMIT 1
-  `);
+  `, [targetPhone]);
   
   if (rows.length > 0) {
     const msg = rows[0];

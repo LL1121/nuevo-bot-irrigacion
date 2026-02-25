@@ -2,8 +2,12 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { getPool } = require('../config/db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
-const TOKEN_EXPIRY = '8h';
+const JWT_SECRET = process.env.JWT_SECRET;
+const TOKEN_EXPIRY = process.env.JWT_EXPIRY || '8h';
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET no configurado');
+}
 
 /**
  * Login: valida username/password y retorna JWT
@@ -25,10 +29,6 @@ const login = async (req, res) => {
       [username]
     );
 
-    console.log('🔍 DEBUG Login - Username buscado:', username);
-    console.log('🔍 DEBUG Login - Rows encontrados:', rows ? rows.length : 'null/undefined');
-    console.log('🔍 DEBUG Login - Rows:', JSON.stringify(rows));
-
     if (!rows || rows.length === 0) {
       return res.status(401).json({
         success: false,
@@ -37,10 +37,7 @@ const login = async (req, res) => {
     }
 
     const operador = rows[0];
-    console.log('🔍 DEBUG Login - Operador encontrado:', operador.username);
-    console.log('🔍 DEBUG Login - Hash presente:', !!operador.password_hash);
     const passwordMatch = await bcrypt.compare(password, operador.password_hash);
-    console.log('🔍 DEBUG Login - Password match:', passwordMatch);
 
     if (!passwordMatch) {
       return res.status(401).json({
