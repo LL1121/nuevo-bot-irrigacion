@@ -14,6 +14,7 @@ import { appendIncomingMessage, mergeMessageBatches } from './services/messageQu
 import { consumePendingByMatch, registerPendingMessage, removePendingMessage } from './services/optimisticUpdates';
 import { useChatStore } from './stores/chatStore';
 import { getTemplateDisplayText, normalizeMessageContent } from './services/messageParser';
+import { useChatSelection } from './hooks/useChatSelection';
 
 // Configurar Axios base
 axios.defaults.baseURL = env.apiUrl;
@@ -70,6 +71,10 @@ export default function App() {
     setMessagesEndReached,
     currentMessageIndex,
     setCurrentMessageIndex,
+    typingUsers,
+    setTypingUsers,
+    isLoadingMoreMessages,
+    setIsLoadingMoreMessages,
     resetChatStore
   } = useChatStore();
 
@@ -129,8 +134,6 @@ export default function App() {
   const [audioVolume, setAudioVolume] = useState<Record<number, number>>({});
   const [showVolumeControl, setShowVolumeControl] = useState<number | null>(null);
   const [messagesLimit] = useState(20); // Mostrar solo 20 mensajes inicialmente
-  const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({}); // Track quien está escribiendo por teléfono
-  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false); // Flag para evitar auto-scroll al cargar más mensajes
   const previousMessageCountRef = useRef<number>(0); // Para detectar si se agregó al final
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -150,8 +153,11 @@ export default function App() {
     return d.toISOString();
   };
 
-  const currentChat = selectedChat !== null ? conversationsState[selectedChat] : null;
-  const selectedId = selectedChat !== null ? conversationsState[selectedChat]?.id : undefined;
+  const { currentChat, selectedId, selectChatById, closeSelectedChat } = useChatSelection({
+    conversationsState,
+    selectedChat,
+    setSelectedChat
+  });
 
   // Estado para gestionar reactivación de sesión 24h por chat
   const [reactivating, setReactivating] = useState<boolean>(false);
@@ -1997,8 +2003,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               key={conv.id ?? conv.phone ?? idx}
               onContextMenu={(e) => openContextMenu(e, 'chat', conv.id)}
               onClick={() => {
-                const originalIndex = conversationsState.findIndex((c) => c.id === conv.id);
-                setSelectedChat(originalIndex === -1 ? 0 : originalIndex);
+                selectChatById(conv.id, 0);
                 setChatClosed(false);
                 // Marcar como leído cuando se selecciona el chat
                 markChatReadById(conv.id);
@@ -2092,7 +2097,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             {/* Back button only on mobile */}
             <button
               className="md:hidden p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-              onClick={() => setSelectedChat(null)}
+              onClick={closeSelectedChat}
               aria-label="Volver"
             >
               <ArrowLeft className="w-5 h-5 text-gray-700 dark:text-gray-200" />
@@ -3610,7 +3615,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         >
           {contextMenu.type === 'chat' && (
             <div className="py-1 w-56">
-              <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => { setSelectedChat(conversationsState.findIndex(c => c.id === contextMenu.targetId)); setChatClosed(false); setContextMenu({ visible: false, x: 0, y: 0, type: null }); }}>Abrir</button>
+              <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => { selectChatById(contextMenu.targetId, 0); setChatClosed(false); setContextMenu({ visible: false, x: 0, y: 0, type: null }); }}>Abrir</button>
               <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => markChatReadById(contextMenu.targetId!)}>Marcar como leída</button>
               <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => archiveConversationById(contextMenu.targetId!)}>Archivar</button>
               <button className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => deleteConversationById(contextMenu.targetId!)}>Eliminar</button>
@@ -3647,7 +3652,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 </>
               )}
               <div className="border-t border-gray-200 dark:border-gray-700 my-1"></div>
-              <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => { setSelectedChat(null); setChatClosed(true); setContextMenu({ visible: false, x: 0, y: 0, type: null }); }}>Cerrar chat</button>
+              <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => { closeSelectedChat(); setChatClosed(true); setContextMenu({ visible: false, x: 0, y: 0, type: null }); }}>Cerrar chat</button>
             </div>
           )}
         </div>
