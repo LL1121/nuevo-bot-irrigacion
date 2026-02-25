@@ -9,11 +9,19 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Falta variable de entorno requerida: ${name}`);
+  }
+  return value;
+}
 
 // Configuración
-const WEBHOOK_SECRET = process.env.WEBHOOK_APP_SECRET || 'tu_app_secret_de_meta_dashboard_aqui';
-const API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJhZG1pbiIsImVtYWlsIjoiYWRtaW5AaXJyaWdhY2lvbi5jb20iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3NzAwODk4NDQsImV4cCI6MTc3MDExODY0NH0.1udCj25brfWZB7Qi08SjkRrY4qtgKupsP7Sd072v9-4';
+const WEBHOOK_SECRET = requireEnv('WEBHOOK_APP_SECRET');
+const API_TOKEN = requireEnv('API_TOKEN');
 
 // Colores para consola
 const colors = {

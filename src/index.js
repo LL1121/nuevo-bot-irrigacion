@@ -31,19 +31,29 @@ const logger = require('./services/logService');
 const app = express();
 const server = http.createServer(app);
 
+const PORT = process.env.PORT || 3000;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+const socketCorsWhitelist = [
+  'http://localhost:5173',
+  FRONTEND_URL
+].filter(Boolean);
+
 // Configurar Socket.io con CORS
 const io = new Server(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (socketCorsWhitelist.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by Socket.IO CORS'));
+    },
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
 // Exportar io para usar en otros módulos
 global.io = io;
-
-const PORT = process.env.PORT || 3000;
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 // Security Middlewares
 // 1) Helmet for secure HTTP headers
@@ -99,6 +109,16 @@ app.use(express.static(frontendBuildPath));
 
 const bootstrap = async () => {
   try {
+    const webhookSecret = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
+
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET no configurado');
+    }
+
+    if (!webhookSecret) {
+      throw new Error('WEBHOOK_APP_SECRET/WHATSAPP_APP_SECRET/META_APP_SECRET no configurado');
+    }
+
     // Inicializar Redis en paralelo (no bloqueante)
     const redisPromise = initRedis().catch(() => {
       console.log('⚠️ Redis no disponible - continuando sin cache');
