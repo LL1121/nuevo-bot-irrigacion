@@ -1,6 +1,12 @@
 const jwt = require('jsonwebtoken');
 const logService = require('../services/logService');
 
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET no configurado');
+}
+
 /**
  * Middleware para verificar JWT token
  * Requiere: Authorization: Bearer <token>
@@ -17,7 +23,7 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
 
     // OPTIMIZACIÓN: Sin log en cada request (reduce I/O)
@@ -30,7 +36,6 @@ const verifyToken = (req, res, next) => {
     return res.status(403).json({
       success: false,
       message: 'Token inválido o expirado',
-      error: error.message,
       timestamp: new Date().toISOString()
     });
   }
@@ -65,8 +70,7 @@ const verifyRole = (allowedRoles) => {
     } catch (error) {
       return res.status(500).json({
         success: false,
-        message: 'Error validando rol',
-        error: error.message
+        message: 'Error validando rol'
       });
     }
   };
