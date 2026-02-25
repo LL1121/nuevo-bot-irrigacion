@@ -15,6 +15,7 @@
     "test:verbose": "jest --verbose",
     "db:index": "node scripts/createIndexes.js",
     "perf:load": "node scripts/loadTest.js",
+    "perf:scraper": "node scripts/benchmarkScraper.js",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop bot-irrigacion",
     "pm2:restart": "pm2 restart bot-irrigacion",
