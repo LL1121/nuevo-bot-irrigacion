@@ -10,12 +10,16 @@ type ChatStoreState = {
   messagesLoading: Record<string, boolean>;
   messagesEndReached: Record<string, boolean>;
   currentMessageIndex: Record<string, number>;
+  typingUsers: Record<string, boolean>;
+  isLoadingMoreMessages: boolean;
   setConversationsState: Updater<any[]>;
   setSelectedChat: Updater<number | null>;
   setAllMessagesCache: Updater<Record<string, any[]>>;
   setMessagesLoading: Updater<Record<string, boolean>>;
   setMessagesEndReached: Updater<Record<string, boolean>>;
   setCurrentMessageIndex: Updater<Record<string, number>>;
+  setTypingUsers: Updater<Record<string, boolean>>;
+  setIsLoadingMoreMessages: Updater<boolean>;
   resetChatStore: () => void;
 };
 
@@ -33,6 +37,8 @@ export const useChatStore = create<ChatStoreState>((set) => ({
   messagesLoading: {},
   messagesEndReached: {},
   currentMessageIndex: {},
+  typingUsers: {},
+  isLoadingMoreMessages: false,
 
   setConversationsState: (next) =>
     set((state) => ({
@@ -64,6 +70,16 @@ export const useChatStore = create<ChatStoreState>((set) => ({
       currentMessageIndex: resolveState(state.currentMessageIndex, next)
     })),
 
+  setTypingUsers: (next) =>
+    set((state) => ({
+      typingUsers: resolveState(state.typingUsers, next)
+    })),
+
+  setIsLoadingMoreMessages: (next) =>
+    set((state) => ({
+      isLoadingMoreMessages: resolveState(state.isLoadingMoreMessages, next)
+    })),
+
   resetChatStore: () =>
     set({
       conversationsState: [],
@@ -71,6 +87,8 @@ export const useChatStore = create<ChatStoreState>((set) => ({
       allMessagesCache: {},
       messagesLoading: {},
       messagesEndReached: {},
-      currentMessageIndex: {}
+      currentMessageIndex: {},
+      typingUsers: {},
+      isLoadingMoreMessages: false
     })
 }));
