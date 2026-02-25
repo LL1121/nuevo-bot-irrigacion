@@ -104,7 +104,8 @@ const receiveMessage = async (req, res) => {
           // Puede ser list_reply o button_reply
           let selectedOptionId = '';
           if (message.interactive.type === 'list_reply') {
-            messageBody = message.interactive.list_reply.title || message.interactive.list_reply.id;
+            const rawTitle = message.interactive.list_reply.title || message.interactive.list_reply.id;
+            messageBody = (rawTitle || '').split('\n')[0].trim();
             selectedOptionId = message.interactive.list_reply.id;
           } else if (message.interactive.type === 'button_reply') {
             messageBody = message.interactive.button_reply.title || message.interactive.button_reply.id;
@@ -282,6 +283,14 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       await handleModoConsulta(from, optionToProcess);
       break;
 
+    case 'AWAITING_DNI_CHOICE':
+      await handleDniChoice(from, optionToProcess);
+      break;
+
+    case 'AWAITING_PADRON_CHOICE':
+      await handlePadronChoice(from, optionToProcess);
+      break;
+
     case 'AWAITING_TIPO_PADRON':
       await handleTipoPadron(from, optionToProcess);
       break;
@@ -359,7 +368,7 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       console.log(`🔵 Opción recibida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
       if (optionToProcess === 'op_si_operador') {
         // User wants to talk with operator
-        const operatorMsg = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.`;
+        const operatorMsg = `👤 *Derivación a un agente*\n\nEn instantes, un operador humano continuará la atención.`;
         await sendMessageAndSave(from, operatorMsg);
         await clienteService.cambiarEstadoBot(from, false);
         if (global.io) {
@@ -374,7 +383,7 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
         console.log(`📋 Usuario ${from} continúa con menú principal después de error`);
       } else if (optionToProcess === 'op_reintentar_dni') {
         // User wants to retry with a different DNI
-        const retryMsg = `📝 Ingresa tu DNI/CUIT nuevamente.\n\nPor favor, verifica que sea correcto.`;
+        const retryMsg = `📝 Ingresá nuevamente tu DNI/CUIT.\n\nPor favor, verificá que el número sea correcto.`;
         await sendMessageAndSave(from, retryMsg);
         userStates[from].step = 'AWAITING_DNI';
         console.log(`🔄 Usuario ${from} reintentando con nuevo DNI`);
@@ -398,15 +407,15 @@ const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = tru
   
   if (esClienteNuevo) {
     // Saludo genérico para clientes nuevos
-    welcomeMessage = `👋 ¡Hola! Te damos la bienvenida.
+    welcomeMessage = `👋 ¡Bienvenido/a!
 
 Estás comunicado con la Jefatura de Zona de Riego de ríos Malargüe, Grande, Barranca y Colorado.
 
-Soy tu asistente virtual, diseñado para ayudarte con tus gestiones hídricas de forma rápida y sencilla. 💧`;
+Soy el asistente virtual y estoy para ayudarte con tus gestiones hídricas de forma ágil y clara. 💧`;
   } else {
     // Saludo personalizado para clientes conocidos
     const nombre = nombreCliente ? nombreCliente.split(' ')[0] : 'amigo'; // Usar solo el primer nombre
-    welcomeMessage = `👋 ¡Hola ${nombre}! ¿Qué necesitas el día de hoy?`;
+    welcomeMessage = `👋 ¡Hola ${nombre}! ¿En qué puedo ayudarte hoy?`;
   }
   
   await sendMessageAndSave(from, welcomeMessage);
@@ -425,23 +434,28 @@ const sendMenuList = async (from, isFollowUp = false) => {
       rows: [
         { 
           id: 'ubicacion', 
-          title: '📍 Ubicación y Horarios'
+          title: '📍 Ubicación y Horarios',
+          description: 'Dirección, horarios de atención y contacto'
         },
         { 
           id: 'deuda', 
-          title: '💳 Solicitar Deuda'
+          title: '💳 Solicitar Deuda',
+          description: 'Consultar deuda y pagar online'
         },
         { 
           id: 'boleto', 
-          title: '📄 Pago Anual o Bimestral'
+          title: '📄 Pago Anual o Bimestral',
+          description: 'Obtener boleto y pagar online'
         },
         { 
           id: 'vencimientos', 
-          title: '📅 Consultar Vencimientos'
+          title: '📅 Consultar Vencimientos',
+          description: 'Ver fechas de vencimiento de pagos'
         },
         { 
           id: 'turnos', 
-          title: '🗓️ Consultar Turnos'
+          title: '🗓️ Consultar Turnos',
+          description: 'Información sobre turnos disponibles'
         }
       ]
     },
@@ -450,15 +464,18 @@ const sendMenuList = async (from, isFollowUp = false) => {
       rows: [
         { 
           id: 'empadronamiento', 
-          title: '🧾 Empadronamiento'
+          title: '🧾 Empadronamiento',
+          description: 'Registrar nuevo padrón o actualizar datos'
         },
         { 
           id: 'perforacion', 
-          title: '🔧 Solicitar Perforación'
+          title: '🔧 Solicitar Perforación',
+          description: 'Tramitar autorización para perforación'
         },
         { 
           id: 'renuncia', 
-          title: '🧾 Tramitar Renuncia'
+          title: '🧾 Tramitar Renuncia',
+          description: 'Gestionar renuncia a derechos de riego'
         }
       ]
     },
@@ -467,7 +484,8 @@ const sendMenuList = async (from, isFollowUp = false) => {
       rows: [
         { 
           id: 'operador', 
-          title: '👤 Hablar con Operador'
+          title: '👤 Hablar con Operador',
+          description: 'Conectar con un agente humano'
         }
       ]
     }
@@ -935,53 +953,24 @@ Gracias por usar el sistema de Irrigación Malargüe.
  */
 const handleConsultarDeuda = async (from) => {
   try {
-    // Verificar si ya tiene padrón guardado
-    const cliente = await clienteService.obtenerCliente(from);
-    
-    if (cliente && cliente.padron_superficial) {
-      // Tiene padrón superficial: Usar padrón
-      const searchingMsg = `🔍 Buscando deuda para tu padrón superficial...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
-      await sendMessageAndSave(from, searchingMsg);
-      await ejecutarScraperPadron(from, cliente, 'superficial');
-      
-    } else if (cliente && cliente.padron_subterraneo) {
-      // Tiene padrón subterráneo: Usar padrón
-      const searchingMsg = `🔍 Buscando deuda para tu padrón subterráneo...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
-      await sendMessageAndSave(from, searchingMsg);
-      await ejecutarScraperPadron(from, cliente, 'subterraneo');
-      
-    } else if (cliente && cliente.padron_contaminacion) {
-      // Tiene padrón contaminación: Usar padrón
-      const searchingMsg = `🔍 Buscando deuda para tu padrón de contaminación...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
-      await sendMessageAndSave(from, searchingMsg);
-      await ejecutarScraperPadron(from, cliente, 'contaminacion');
-      
-    } else if (cliente && cliente.dni) {
-      // Tiene DNI: Ejecutar scraper directamente
-      const searchingMsg = `🔍 Buscando deuda para el DNI vinculado *${cliente.dni}*...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
-      await sendMessageAndSave(from, searchingMsg);
-      await ejecutarScraper(from, cliente.dni);
-      
-    } else {
-      // No tiene nada: Ofrecer elección inicial DNI vs Padrón
-      const preguntaMsg = `📝 *¿Cómo deseas consultar tu deuda?*`;
-      await sendMessageAndSave(from, preguntaMsg);
-      
-      const buttons = [
-        { id: 'modo_dni', title: '🆔 Por DNI' },
-        { id: 'modo_padron', title: '📋 Por Padrón' }
-      ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige una opción:',
-        buttons
-      );
-      
-      userStates[from].step = 'AWAITING_MODO_CONSULTA';
-      userStates[from].operacion = 'deuda';
-      console.log(`📝 Esperando elección de modo (DNI vs Padrón) para ${from}`);
-    }
+    const preguntaMsg = `📝 *¿Cómo querés consultar tu deuda?*`;
+    await sendMessageAndSave(from, preguntaMsg);
+
+    const buttons = [
+      { id: 'modo_dni', title: '🆔 Por DNI' },
+      { id: 'modo_padron', title: '📋 Por Servicio' },
+      { id: 'volver_menu', title: '↩️ Volver' }
+    ];
+
+    await whatsappService.sendButtonReply(
+      from,
+      'Elegí una opción:',
+      buttons
+    );
+
+    userStates[from].step = 'AWAITING_MODO_CONSULTA';
+    userStates[from].operacion = 'deuda';
+    console.log(`📝 Esperando elección de modo (DNI vs Servicio) para deuda de ${from}`);
     
   } catch (error) {
     console.error('❌ Error en handleConsultarDeuda:', error);
@@ -996,110 +985,24 @@ const handleConsultarDeuda = async (from) => {
  */
 const handlePedirBoleto = async (from) => {
   try {
-    // Verificar si ya tiene padrón o DNI guardado
-    const cliente = await clienteService.obtenerCliente(from);
-    
-    if (cliente && cliente.padron_superficial) {
-      // Tiene padrón superficial: Preguntar tipo de cuota
-      const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
-      await sendMessageAndSave(from, preguntaMsg);
-      
-      const buttons = [
-        { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
-      ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige el tipo de cuota:',
-        buttons
-      );
-      
-      userStates[from].tempPadron = cliente.padron_superficial;
-      userStates[from].tempTipoPadron = 'superficial';
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
-      console.log(`📝 Esperando tipo de cuota para padrón superficial de ${from}`);
-      
-    } else if (cliente && cliente.padron_subterraneo) {
-      const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
-      await sendMessageAndSave(from, preguntaMsg);
-      
-      const buttons = [
-        { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
-      ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige el tipo de cuota:',
-        buttons
-      );
-      
-      userStates[from].tempPadron = cliente.padron_subterraneo;
-      userStates[from].tempTipoPadron = 'subterraneo';
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
-      console.log(`📝 Esperando tipo de cuota para padrón subterráneo de ${from}`);
-      
-    } else if (cliente && cliente.padron_contaminacion) {
-      const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
-      await sendMessageAndSave(from, preguntaMsg);
-      
-      const buttons = [
-        { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
-      ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige el tipo de cuota:',
-        buttons
-      );
-      
-      userStates[from].tempPadron = cliente.padron_contaminacion;
-      userStates[from].tempTipoPadron = 'contaminacion';
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
-      console.log(`📝 Esperando tipo de cuota para padrón de contaminación de ${from}`);
-      
-    } else if (cliente && cliente.dni) {
-      // Tiene DNI: Preguntar tipo de cuota
-      const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
-      await sendMessageAndSave(from, preguntaMsg);
-      
-      const buttons = [
-        { id: 'cuota_anual', title: '📅 Cuota Anual' },
-        { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
-      ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige el tipo de cuota:',
-        buttons
-      );
-      
-      userStates[from].tempDni = cliente.dni;
-      userStates[from].step = 'AWAITING_TIPO_CUOTA';
-      console.log(`📝 Esperando tipo de cuota para ${from}`);
-      
-    } else {
-      // No tiene nada: Ofrecer elección inicial DNI vs Padrón
-      const preguntaMsg = `📄 *¿Cómo deseas obtener tu boleto?*`;
-      await sendMessageAndSave(from, preguntaMsg);
-      
-      const buttons = [
-        { id: 'modo_dni', title: '🆔 Por DNI' },
-        { id: 'modo_padron', title: '📋 Por Padrón' }
-      ];
-      
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige una opción:',
-        buttons
-      );
-      
-      userStates[from].step = 'AWAITING_MODO_CONSULTA';
-      userStates[from].operacion = 'boleto';
-      console.log(`📝 Esperando elección de modo (DNI vs Padrón) para boleto de ${from}`);
-    }
+    const preguntaMsg = `📄 *¿Cómo querés obtener tu boleto?*`;
+    await sendMessageAndSave(from, preguntaMsg);
+
+    const buttons = [
+      { id: 'modo_dni', title: '🆔 Por DNI' },
+      { id: 'modo_padron', title: '📋 Por Servicio' },
+      { id: 'volver_menu', title: '↩️ Volver' }
+    ];
+
+    await whatsappService.sendButtonReply(
+      from,
+      'Elegí una opción:',
+      buttons
+    );
+
+    userStates[from].step = 'AWAITING_MODO_CONSULTA';
+    userStates[from].operacion = 'boleto';
+    console.log(`📝 Esperando elección de modo (DNI vs Servicio) para boleto de ${from}`);
     
   } catch (error) {
     console.error('❌ Error en handlePedirBoleto:', error);
@@ -1135,7 +1038,7 @@ const handleDniInput = async (from, messageBody) => {
     // Guardar DNI en BD
     await clienteService.actualizarDni(from, dni);
     
-    const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n🔍 Buscando tu deuda...`;
+    const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n🔍 Iniciando consulta de deuda...`;
     await sendMessageAndSave(from, confirmMsg);
     
     // Ejecutar scraper
@@ -1175,7 +1078,7 @@ const handleDniInputBoleto = async (from, messageBody) => {
     // Guardar DNI en BD
     await clienteService.actualizarDni(from, dni);
     
-    const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n📄 *Selecciona el tipo de boleto:*`;
+    const confirmMsg = `✅ DNI *${dni}* vinculado correctamente a tu WhatsApp.\n\n📄 *Seleccioná el tipo de boleto:*`;
     await sendMessageAndSave(from, confirmMsg);
     
     // Preguntar tipo de cuota
@@ -1241,7 +1144,7 @@ const handleTipoCuota = async (from, option) => {
       return;
     }
     
-    const searchingMsg = `📄 Generando boleto de *${tipoCuotaTexto}* para el DNI *${dni}*...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
+    const searchingMsg = `📄 Generando boleto de *${tipoCuotaTexto}* para el DNI *${dni}*...\n\n⏳ Aguarda unos segundos mientras procesamos la solicitud.`;
     await sendMessageAndSave(from, searchingMsg);
     
     // Ejecutar scraper con tipo de cuota
@@ -1299,7 +1202,7 @@ const handleTipoCuotaPadron = async (from, option) => {
       return;
     }
     
-    const searchingMsg = `📄 Generando boleto de ${tipoCuotaTexto} para padrón *${padronData}*...\n\n⏳ Por favor espera, esto puede tardar unos segundos.`;
+    const searchingMsg = `📄 Generando boleto de ${tipoCuotaTexto} para padrón *${padronData}*...\n\n⏳ Aguarda unos segundos mientras procesamos la solicitud.`;
     await sendMessageAndSave(from, searchingMsg);
     
     // Ejecutar scraper con padrón y tipo de cuota
@@ -1441,7 +1344,7 @@ const ejecutarScraper = async (from, dni) => {
     
     if (!resultado.success) {
       // Error en scraping - Ofrecer al usuario hablar con operador
-      const errorMsg = `⚠️ Tuvimos problemas buscando tu padrón.\n\n¿Deseas comunicarte con un operador para que te ayude?`;
+      const errorMsg = `⚠️ No pudimos completar la consulta en este momento.\n\n¿Querés que te derivemos con un operador?`;
       await sendMessageAndSave(from, errorMsg);
       
       // Enviar botones con opciones
@@ -1468,7 +1371,7 @@ const ejecutarScraper = async (from, dni) => {
     // ============================================
     const { titular, cuit, hectareas, capital, interes, apremio, eventuales, total } = resultado.data;
     
-    const datosMsg = `✅ *Consulta Exitosa*
+    const datosMsg = `✅ *Consulta completada*
 
 👤 *Titular:* ${titular}
 🆔 *CUIT:* ${cuit}
@@ -1498,7 +1401,7 @@ _💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`;
     console.log(`✅ Consulta de deuda completada para ${from}`);
 
     // Ofrecer generar boleto o volver al menú
-    const opcionesMsg = `📄 *¿Deseas generar un boleto de pago?*`;
+    const opcionesMsg = `📄 *¿Querés generar un boleto de pago?*`;
     await sendMessageAndSave(from, opcionesMsg);
 
     const buttons = [
@@ -1526,7 +1429,7 @@ const ejecutarScraperBoleto = async (from, dni, tipoCuota) => {
     const resultado = await debtScraperService.obtenerSoloBoleto(dni, tipoCuota);
     
     if (!resultado.success) {
-      const errorMsg = `⚠️ No pudimos generar el boleto para el DNI ${dni}.\n\nPor favor verifica que el DNI sea correcto o intenta más tarde.`;
+      const errorMsg = `⚠️ No fue posible generar el boleto para el DNI ${dni}.\n\nVerificá el número e intentá nuevamente en unos minutos.`;
       await sendMessageAndSave(from, errorMsg);
       await sendMenuList(from, true);
       return;
@@ -1548,7 +1451,7 @@ const ejecutarScraperBoleto = async (from, dni, tipoCuota) => {
         `Boleto de pago ${tipoCuota} - DNI ${dni}`
       );
       
-      const successMsg = `✅ *Boleto Enviado*\n\nTu boleto de ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'} ha sido generado exitosamente.`;
+      const successMsg = `✅ *Boleto enviado correctamente*\n\nTu boleto de ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'} ya se encuentra disponible.`;
       await sendMessageAndSave(from, successMsg);
       
       // Limpiar archivo después de enviar
@@ -1622,22 +1525,45 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
 const handleModoConsulta = async (from, option) => {
   try {
     const operacion = userStates[from].operacion || 'deuda';
+
+    if (option === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
     
     if (option === 'modo_dni') {
-      // El usuario eligió consultar por DNI
-      const msg = '🆔 *Ingresa tu número de DNI (sin puntos ni espacios)*\n\nEj: 12345678';
-      await sendMessageAndSave(from, msg);
-      
-      if (operacion === 'boleto') {
-        userStates[from].step = 'AWAITING_DNI_BOLETO';
+      const cliente = await clienteService.obtenerCliente(from);
+      const ultimoDni = cliente?.dni || null;
+
+      if (ultimoDni) {
+        const msg = `🆔 *Último DNI consultado:* *${ultimoDni}*\n\n¿Querés usar este DNI o ingresar uno nuevo?`;
+        await sendMessageAndSave(from, msg);
+
+        const buttons = [
+          { id: 'usar_ultimo_dni', title: '✅ Usar último DNI' },
+          { id: 'ingresar_nuevo_dni', title: '📝 Ingresar DNI nuevo' },
+          { id: 'volver_menu', title: '↩️ Volver' }
+        ];
+
+        await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+        userStates[from].ultimoDni = ultimoDni;
+        userStates[from].step = 'AWAITING_DNI_CHOICE';
       } else {
-        userStates[from].step = 'AWAITING_DNI';
+        const msg = '🆔 *Ingresá tu número de DNI/CUIT* (sin puntos ni espacios)\n\nEj: 12345678\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+
+        if (operacion === 'boleto') {
+          userStates[from].step = 'AWAITING_DNI_BOLETO';
+        } else {
+          userStates[from].step = 'AWAITING_DNI';
+        }
       }
-      console.log(`📝 Esperando DNI para ${operacion} de ${from}`);
+      console.log(`📝 Flujo DNI iniciado para ${operacion} de ${from}`);
       
     } else if (option === 'modo_padron') {
-      // El usuario eligió consultar por Padrón
-      const msg = '📋 *Selecciona el tipo de servicio:*';
+      // El usuario eligió consultar por Servicio (Padrón)
+      const msg = '📋 *Seleccioná el tipo de servicio:*';
       await sendMessageAndSave(from, msg);
       
       const buttons = [
@@ -1646,19 +1572,80 @@ const handleModoConsulta = async (from, option) => {
         { id: 'tipo_padron_c', title: '🛢️ C) Contaminación' }
       ];
       
-      await whatsappService.sendButtonReply(
-        from,
-        'Elige el tipo de servicio:',
-        buttons
-      );
+      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
       
       userStates[from].step = 'AWAITING_TIPO_PADRON';
-      console.log(`📝 Esperando selección de tipo de servicio de ${from}`);
+      console.log(`📝 Esperando selección de servicio (A/B/C) de ${from}`);
     }
   } catch (error) {
     console.error('❌ Error en handleModoConsulta:', error);
     const errorMsg = '❌ Ocurrió un error. Por favor intenta de nuevo.';
     await sendMessageAndSave(from, errorMsg);
+  }
+};
+
+const handleDniChoice = async (from, option) => {
+  try {
+    const operacion = userStates[from].operacion || 'deuda';
+
+    if (option === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      delete userStates[from].ultimoDni;
+      return;
+    }
+
+    if (option === 'usar_ultimo_dni') {
+      const dni = userStates[from].ultimoDni;
+
+      if (!dni) {
+        await sendMessageAndSave(from, '❌ No encontramos un DNI previo para reutilizar.');
+        await sendMenuList(from, true);
+        userStates[from].step = 'MAIN_MENU';
+        return;
+      }
+
+      if (operacion === 'boleto') {
+        userStates[from].tempDni = dni;
+        const preguntaMsg = `📄 *Seleccioná el tipo de boleto que querés generar:*`;
+        await sendMessageAndSave(from, preguntaMsg);
+
+        const buttons = [
+          { id: 'cuota_anual', title: '📅 Cuota Anual' },
+          { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
+          { id: 'volver_menu', title: '↩️ Volver' }
+        ];
+
+        await whatsappService.sendButtonReply(from, 'Elegí el tipo de cuota:', buttons);
+        userStates[from].step = 'AWAITING_TIPO_CUOTA';
+      } else {
+        const searchingMsg = `🔍 Consultando deuda para el DNI *${dni}*...\n\n⏳ Aguarda unos segundos mientras procesamos la solicitud.`;
+        await sendMessageAndSave(from, searchingMsg);
+        await ejecutarScraper(from, dni);
+      }
+
+      delete userStates[from].ultimoDni;
+      return;
+    }
+
+    if (option === 'ingresar_nuevo_dni') {
+      const msg = '🆔 *Ingresá tu número de DNI/CUIT* (sin puntos ni espacios)\n\nEj: 12345678\n\n_📝 Para volver al menú, escribí *SALIR*._';
+      await sendMessageAndSave(from, msg);
+
+      if (operacion === 'boleto') {
+        userStates[from].step = 'AWAITING_DNI_BOLETO';
+      } else {
+        userStates[from].step = 'AWAITING_DNI';
+      }
+      return;
+    }
+
+    await sendMessageAndSave(from, '❌ Opción no válida. Elegí una de las opciones disponibles.');
+  } catch (error) {
+    console.error('❌ Error en handleDniChoice:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intentá nuevamente.');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
   }
 };
 
@@ -1668,27 +1655,63 @@ const handleModoConsulta = async (from, option) => {
 const handleTipoPadron = async (from, option) => {
   try {
     const operacion = userStates[from].operacion || 'deuda';
+    const cliente = await clienteService.obtenerCliente(from);
+    let tipoSeleccionado = '';
+    let ultimoPadron = '';
     
     if (option === 'tipo_padron_a') {
-      // Padrón Superficial
-      const msg = '🌾 *Padrón Superficial*\n\nIngresa el código de cauce y número de padrón\n\n_Formato: código de cauce (espacio) número de padrón_\n\nEj: 8234 1710';
-      await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_PADRON_SUPERFICIAL';
-      userStates[from].tempTipoPadron = 'superficial';
+      tipoSeleccionado = 'superficial';
+      ultimoPadron = cliente?.padron_superficial || '';
       
     } else if (option === 'tipo_padron_b') {
-      // Padrón Subterráneo
-      const msg = '💧 *Padrón Subterráneo*\n\nIngresa el código de departamento y número de pozo\n\n_Formato: código de departamento (espacio) número de pozo_\n\nEj: 10 5';
-      await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_PADRON_SUBTERRANEO';
-      userStates[from].tempTipoPadron = 'subterraneo';
+      tipoSeleccionado = 'subterraneo';
+      ultimoPadron = cliente?.padron_subterraneo || '';
       
     } else if (option === 'tipo_padron_c') {
-      // Padrón Contaminación
-      const msg = '🛢️ *Padrón Contaminación*\n\nIngresa el número de contaminación\n\nEj: 12345';
+      tipoSeleccionado = 'contaminacion';
+      ultimoPadron = cliente?.padron_contaminacion || '';
+    }
+
+    if (!tipoSeleccionado) {
+      await sendMessageAndSave(from, '❌ Opción no válida. Elegí una opción del menú.');
+      return;
+    }
+
+    userStates[from].tempTipoPadron = tipoSeleccionado;
+
+    if (ultimoPadron) {
+      const etiqueta = tipoSeleccionado === 'superficial'
+        ? 'A - Superficial'
+        : tipoSeleccionado === 'subterraneo'
+          ? 'B - Subterráneo'
+          : 'C - Contaminación';
+
+      const msg = `📋 *Servicio ${etiqueta}*\n\nÚltimo padrón guardado: *${ultimoPadron}*\n\n¿Querés usarlo o ingresar uno nuevo?`;
       await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_PADRON_CONTAMINACION';
-      userStates[from].tempTipoPadron = 'contaminacion';
+
+      const buttons = [
+        { id: 'usar_ultimo_padron', title: '✅ Usar último padrón' },
+        { id: 'ingresar_nuevo_padron', title: '📝 Ingresar nuevo' },
+        { id: 'volver_menu', title: '↩️ Volver' }
+      ];
+
+      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+      userStates[from].ultimoPadron = ultimoPadron;
+      userStates[from].step = 'AWAITING_PADRON_CHOICE';
+    } else {
+      if (tipoSeleccionado === 'superficial') {
+        const msg = '🌾 *A - Superficial*\n\nIngresá: *Código de cauce* y *Padrón parcial*\n\n_Formato: código de cauce (espacio) padrón parcial_\n\nEj: 8234 1710\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+        userStates[from].step = 'AWAITING_PADRON_SUPERFICIAL';
+      } else if (tipoSeleccionado === 'subterraneo') {
+        const msg = '💧 *B - Subterráneo*\n\nIngresá: *Código Departamento* y *N° de Pozo*\n\n_Formato: código departamento (espacio) número de pozo_\n\nEj: 10 5\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+        userStates[from].step = 'AWAITING_PADRON_SUBTERRANEO';
+      } else {
+        const msg = '🛢️ *C - Contaminación*\n\nIngresá solo el *N° de Contaminación* (campo izquierdo)\n\nEj: 12345\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+        userStates[from].step = 'AWAITING_PADRON_CONTAMINACION';
+      }
     }
     
     console.log(`📝 Esperando datos de padrón tipo ${userStates[from].tempTipoPadron} de ${from}`);
@@ -1696,6 +1719,83 @@ const handleTipoPadron = async (from, option) => {
     console.error('❌ Error en handleTipoPadron:', error);
     const errorMsg = '❌ Ocurrió un error. Por favor intenta de nuevo.';
     await sendMessageAndSave(from, errorMsg);
+  }
+};
+
+const handlePadronChoice = async (from, option) => {
+  try {
+    const operacion = userStates[from].operacion || 'deuda';
+    const tipoPadron = userStates[from].tempTipoPadron;
+    const ultimoPadron = userStates[from].ultimoPadron;
+
+    if (option === 'volver_menu') {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      delete userStates[from].ultimoPadron;
+      return;
+    }
+
+    if (!tipoPadron) {
+      await sendMessageAndSave(from, '❌ No se encontró el tipo de servicio. Intentá nuevamente.');
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+
+    if (option === 'ingresar_nuevo_padron') {
+      if (tipoPadron === 'superficial') {
+        const msg = '🌾 *A - Superficial*\n\nIngresá: *Código de cauce* y *Padrón parcial*\n\n_Formato: código de cauce (espacio) padrón parcial_\n\nEj: 8234 1710\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+        userStates[from].step = 'AWAITING_PADRON_SUPERFICIAL';
+      } else if (tipoPadron === 'subterraneo') {
+        const msg = '💧 *B - Subterráneo*\n\nIngresá: *Código Departamento* y *N° de Pozo*\n\n_Formato: código departamento (espacio) número de pozo_\n\nEj: 10 5\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+        userStates[from].step = 'AWAITING_PADRON_SUBTERRANEO';
+      } else {
+        const msg = '🛢️ *C - Contaminación*\n\nIngresá solo el *N° de Contaminación* (campo izquierdo)\n\nEj: 12345\n\n_📝 Para volver al menú, escribí *SALIR*._';
+        await sendMessageAndSave(from, msg);
+        userStates[from].step = 'AWAITING_PADRON_CONTAMINACION';
+      }
+      return;
+    }
+
+    if (option === 'usar_ultimo_padron') {
+      if (!ultimoPadron) {
+        await sendMessageAndSave(from, '❌ No hay un padrón guardado para este servicio.');
+        await sendMenuList(from, true);
+        userStates[from].step = 'MAIN_MENU';
+        return;
+      }
+
+      if (operacion === 'boleto') {
+        userStates[from].tempPadron = ultimoPadron;
+
+        const preguntaMsg = `📄 *Seleccioná el tipo de boleto que querés generar:*`;
+        await sendMessageAndSave(from, preguntaMsg);
+
+        const buttons = [
+          { id: 'cuota_anual', title: '📅 Cuota Anual' },
+          { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' },
+          { id: 'volver_menu', title: '↩️ Volver' }
+        ];
+
+        await whatsappService.sendButtonReply(from, 'Elegí el tipo de cuota:', buttons);
+        userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+      } else {
+        const cliente = await clienteService.obtenerCliente(from);
+        await ejecutarScraperPadron(from, cliente, tipoPadron, 'deuda');
+      }
+
+      delete userStates[from].ultimoPadron;
+      return;
+    }
+
+    await sendMessageAndSave(from, '❌ Opción no válida. Elegí una de las opciones disponibles.');
+  } catch (error) {
+    console.error('❌ Error en handlePadronChoice:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intentá nuevamente.');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
   }
 };
 
@@ -1996,7 +2096,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Ofrecer pagar deuda o volver
-    const opcionesMsg = `💳 *¿Deseas pagar tu deuda online?*`;
+    const opcionesMsg = `💳 *¿Querés pagar tu deuda online?*`;
     await sendMessageAndSave(from, opcionesMsg);
     
     // Pequeña pausa antes de enviar botones
@@ -2052,7 +2152,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     
     if (resultado.pdfPath) {
       // Subir PDF a WhatsApp primero
-      const sendingMsg = '📤 Procesando boleto...';
+      const sendingMsg = '📤 Preparando envío del boleto...';
       await sendMessageAndSave(from, sendingMsg);
       
       try {
@@ -2204,7 +2304,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
         return;
       }
       
-      const esperaMsg = `⏳ *Obteniendo link de pago...*\n\nEsto puede tardar unos segundos, por favor espera.`;
+      const esperaMsg = `⏳ *Generando enlace de pago...*\n\nEste proceso puede demorar unos segundos.`;
       await sendMessageAndSave(from, esperaMsg);
       
       // Llamar al scraper para obtener el link de pago
@@ -2224,13 +2324,13 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       const instruccionesMsg = 
-        `💳 *Link de pago del boleto*\n\n` +
-        `Podés pagar tu boleto online ingresando al siguiente link:\n\n` +
+        `💳 *Enlace de pago del boleto*\n\n` +
+        `Podés abonar tu boleto ingresando al siguiente enlace:\n\n` +
         `🔗 ${resultado.linkPago}\n\n` +
-        `*Instrucciones:*\n` +
+        `*Pasos sugeridos:*\n` +
         `1️⃣ Ingresá al link\n` +
         `2️⃣ Elegí tu método de pago preferido (tarjeta, Mercado Pago, etc.)\n` +
-        `3️⃣ Completá el pago siguiendo las instrucciones\n` +
+        `3️⃣ Completá el pago siguiendo las instrucciones del portal\n` +
         `4️⃣ Guardá el comprobante de pago\n\n` +
         `_✅ El pago se acreditará en 24-48 horas hábiles._`;
       
@@ -2301,7 +2401,7 @@ Para más información y requisitos, visitá:
 const handlePerforacionHelpChoice = async (from, optionToProcess) => {
   try {
     if (optionToProcess === 'perforacion_ayuda_si') {
-      const operatorMsg = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.`;
+      const operatorMsg = `👤 *Derivación a un agente*\n\nEn instantes, un operador humano continuará la atención.`;
       await sendMessageAndSave(from, operatorMsg);
       await clienteService.cambiarEstadoBot(from, false);
       if (global.io) {
