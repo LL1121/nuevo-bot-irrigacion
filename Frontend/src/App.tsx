@@ -11,6 +11,9 @@ import { auth } from './config/auth';
 import { parseTimestamp, formatMessageTime, formatChatHeaderTime, isSessionExpired, toUTC } from './utils/dateTime';
 import { sortAndDedupeMessages } from './utils/messageOrder';
 import { appendIncomingMessage, mergeMessageBatches } from './services/messageQueue';
+import { consumePendingByMatch, registerPendingMessage, removePendingMessage } from './services/optimisticUpdates';
+import { useChatStore } from './stores/chatStore';
+import { getTemplateDisplayText, normalizeMessageContent } from './services/messageParser';
 
 // Configurar Axios base
 axios.defaults.baseURL = env.apiUrl;
@@ -54,7 +57,22 @@ export default function App() {
     amber: { primary: 'amber-600', gradient: 'from-amber-500 to-orange-500', light: 'amber-50', hex: '#d97706' }
   };
 
-  const [selectedChat, setSelectedChat] = useState<number | null>(null);
+  const {
+    conversationsState,
+    setConversationsState,
+    selectedChat,
+    setSelectedChat,
+    allMessagesCache,
+    setAllMessagesCache,
+    messagesLoading,
+    setMessagesLoading,
+    messagesEndReached,
+    setMessagesEndReached,
+    currentMessageIndex,
+    setCurrentMessageIndex,
+    resetChatStore
+  } = useChatStore();
+
   const [message, setMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showInfo, setShowInfo] = useState(false);
@@ -110,12 +128,7 @@ export default function App() {
   const [videoMuted, setVideoMuted] = useState(false);
   const [audioVolume, setAudioVolume] = useState<Record<number, number>>({});
   const [showVolumeControl, setShowVolumeControl] = useState<number | null>(null);
-  const [messagesOffset, setMessagesOffset] = useState<Record<string, number>>({});
   const [messagesLimit] = useState(20); // Mostrar solo 20 mensajes inicialmente
-  const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
-  const [messagesEndReached, setMessagesEndReached] = useState<Record<string, boolean>>({});
-  const [allMessagesCache, setAllMessagesCache] = useState<Record<string, any[]>>({}); // Caché en memoria de todos los mensajes
-  const [currentMessageIndex, setCurrentMessageIndex] = useState<Record<string, number>>({}); // Índice del último mensaje mostrado
   const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({}); // Track quien está escribiendo por teléfono
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false); // Flag para evitar auto-scroll al cargar más mensajes
   const previousMessageCountRef = useRef<number>(0); // Para detectar si se agregó al final
@@ -137,8 +150,6 @@ export default function App() {
     return d.toISOString();
   };
 
-  // Estado dinámico de conversaciones (se carga desde la API)
-  const [conversationsState, setConversationsState] = useState<any[]>([]);
   const currentChat = selectedChat !== null ? conversationsState[selectedChat] : null;
   const selectedId = selectedChat !== null ? conversationsState[selectedChat]?.id : undefined;
 
@@ -311,25 +322,6 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   return `${env.apiUrl}/api/media/${mediaId}`;
 };
 
-const safeJsonParse = (value: string) => {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-};
-
-const templateTextMap: Record<string, string> = {
-  reactivacion_tramite: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.',
-  reactivaciontramite: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.'
-};
-
-const getTemplateDisplayText = (templateName?: string) => {
-  if (!templateName) return '';
-  const key = templateName.replace(/(es[-_]?ar|esAr|esAR)/i, '').trim();
-  return templateTextMap[key] || `Plantilla: ${templateName}`;
-};
-
 const normalizeSenderType = (value?: string) => (value || '').trim().toLowerCase();
 const isUserSender = (value?: string) => {
   const v = normalizeSenderType(value);
@@ -355,67 +347,6 @@ const phonesMatch = (a?: string, b?: string) => {
   const na = norm(a);
   const nb = norm(b);
   return !!na && !!nb && na === nb;
-};
-
-const normalizeMessageContent = (input: any) => {
-  const raw = input ?? '';
-  const asString = typeof raw === 'string' ? raw : '';
-  const trimmed = asString.trim();
-  const parsed = trimmed && ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']')))
-    ? safeJsonParse(trimmed)
-    : null;
-  const obj = parsed && typeof parsed === 'object' ? parsed : (typeof raw === 'object' && raw !== null ? raw : null);
-
-  if (typeof raw === 'string') {
-    const templateMatch = raw.match(/Template:\s*([^()]+)\s*(?:\(([^)]+)\))?/i);
-    if (templateMatch) {
-      const templateName = templateMatch[1]?.trim();
-      const displayText = getTemplateDisplayText(templateName);
-      return { text: displayText, preview: displayText, type: 'text' };
-    }
-  }
-
-  if (obj && typeof obj === 'object') {
-    const templateName = (obj as any).templateName || (obj as any).template || (obj as any).name;
-    if (templateName) {
-      const displayText = getTemplateDisplayText(String(templateName));
-      return { text: displayText, preview: displayText, type: 'text' };
-    }
-  }
-
-  const isInteractiveList = !!obj && typeof obj === 'object' && (
-    (obj as any).type === 'interactive_list' ||
-    (obj as any).type === 'interactive' ||
-    (obj as any).sections ||
-    (obj as any).buttonText
-  );
-
-  if (isInteractiveList) {
-    const header = (obj as any).header || 'Menú interactivo';
-    const body = (obj as any).body || '';
-    const buttonText = (obj as any).buttonText || '';
-    const preview = [header, body || buttonText].filter(Boolean).join(' - ').trim();
-    return {
-      text: typeof raw === 'string' ? raw : JSON.stringify(obj),
-      preview,
-      type: 'interactive'
-    };
-  }
-
-  let fallbackText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
-  if (obj && typeof obj === 'object') {
-    fallbackText =
-      (obj as any).cuerpo ||
-      (obj as any).contenido ||
-      (obj as any).text ||
-      (obj as any).body ||
-      fallbackText;
-  }
-  return {
-    text: fallbackText,
-    preview: fallbackText,
-    type: 'text'
-  };
 };
 
 const normalizeMessageType = (rawType: any, normalizedType: string) => {
@@ -544,12 +475,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
   // Auth handlers
   const handleLoginSuccess = () => {
     setIsAuthenticated(true);
-    // Reconectar socket después del login
-    if (!socket.connected) {
-      const token = localStorage.getItem(env.tokenKey);
-      if (token) socket.auth = { token };
-      socket.connect();
-    }
+    requestNotificationPermission().then(granted => {
+      if (granted) {
+        console.log('✅ Notificaciones push habilitadas');
+      }
+    });
   };
 
   const handleLogout = async () => {
@@ -570,8 +500,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     auth.clearSession();
     
     // Limpiar estado de conversaciones
-    setConversationsState([]);
-    setSelectedChat(null);
+    resetChatStore();
     setMessage('');
     
     // Cerrar todos los menus y modales abiertos
@@ -591,12 +520,25 @@ const dedupeDisplayMessages = (msgs: any[]) => {
 
   // ⚡ useEffect para cargar chats desde el backend
   useEffect(() => {
-    // Solo cargar chats si está autenticado
-    if (!isAuthenticated) return;
+    // Conectar/desconectar socket y cargar datos solo autenticado
+    if (!isAuthenticated) {
+      if (socket.connected) {
+        socket.disconnect();
+      }
+      return;
+    }
+
+    const token = localStorage.getItem(env.tokenKey);
+    if (token) {
+      socket.auth = { token };
+    }
+
+    if (!socket.connected) {
+      socket.connect();
+    }
 
     const loadChats = async () => {
       try {
-        const token = localStorage.getItem(env.tokenKey);
         if (!token) {
           handleLogout();
           return;
@@ -729,6 +671,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             const incomingTextKey = typeof incomingText === 'string' ? incomingText.trim() : JSON.stringify(incomingText ?? '');
             const incomingBucket = Math.floor(msgTimestamp.getTime() / 5000);
             const incomingSent = !isUserSender(newMsg.emisor || newMsg.tipo);
+            const emisorLimpio = normalizeSenderType(newMsg.emisor || newMsg.tipo);
+            const isOutgoingFromOperator = ['operador', 'operadora', 'agent', 'agente', 'bot'].includes(emisorLimpio);
+            const matchedTempId = isOutgoingFromOperator
+              ? consumePendingByMatch({
+                  phone: newMsg.telefono,
+                  text: incomingText,
+                  timestamp: msgTimestamp.toISOString()
+                })
+              : null;
             
             // 🔍 DEBUG: Log del sender detection
             console.log('🔍 DEBUG - Detección de emisor:', {
@@ -759,20 +710,31 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             });
             
             if (!messageExists) {
-              const emisorLimpio = normalizeSenderType(newMsg.emisor || newMsg.tipo);
               
               // Si es un mensaje del operador, buscar si ya existe como optimistic update
               // y NO reemplazarlo, para mantener el timestamp original
-              const isOperatorMessage = ['operador', 'operadora', 'agent', 'agente'].includes(emisorLimpio);
+              const isOperatorMessage = ['operador', 'operadora', 'agent', 'agente', 'bot'].includes(emisorLimpio);
               const existingOptimisticMsg = isOperatorMessage 
-                ? chat.messages.find((m: any) => m.text === incomingText && m.sent === true)
+                ? chat.messages.find((m: any) => (matchedTempId ? m.id === matchedTempId : (m.text === incomingText && m.sent === true)))
                 : null;
               
               if (existingOptimisticMsg) {
                 // Actualizar solo el ID, mantener el timestamp original (crear nuevo array)
                 chat.messages = chat.messages.map((m: any) => 
-                  m === existingOptimisticMsg ? { ...existingOptimisticMsg, id: newMsg.id, read: true } : m
+                  m === existingOptimisticMsg
+                    ? { ...existingOptimisticMsg, id: newMsg.id, read: true, status: undefined }
+                    : m
                 );
+
+                setAllMessagesCache(prev => {
+                  const phoneCache = prev[chat.phone] || [];
+                  const updatedCache = phoneCache.map((m: any) =>
+                    m.id === existingOptimisticMsg.id
+                      ? { ...m, id: newMsg.id, read: true, status: undefined }
+                      : m
+                  );
+                  return { ...prev, [chat.phone]: mergeMessageBatches(updatedCache) };
+                });
               } else {
                 // Agregar nuevo mensaje
                 const messageText = incomingText;
@@ -888,15 +850,33 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     };
 
     const handleBotModeChanged = (data: { telefono: string; bot_activo: boolean }) => {
+      let chatLabel = data.telefono;
+
       setConversationsState(prev => {
         const chatIndex = prev.findIndex(c => c.phone === data.telefono);
         if (chatIndex !== -1) {
           const updated = [...prev];
+          chatLabel = updated[chatIndex].name || data.telefono;
           updated[chatIndex].botActive = data.bot_activo;
           return updated;
         }
         return prev;
       });
+
+      if (!data.bot_activo) {
+        playNotificationSound();
+
+        if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+          showNotification('Atención requerida', {
+            body: `El bot se desactivó para ${chatLabel}. Un operador debe continuar la conversación.`,
+            tag: `bot-off-${data.telefono}`
+          });
+        }
+
+        toast.warning(`El bot se desactivó para ${chatLabel}.`, {
+          description: 'Se requiere intervención de un operador.'
+        });
+      }
     };
 
     const handleTyping = (data: { telefono: string; typing: boolean }) => {
@@ -928,33 +908,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       socket.off('nuevo_mensaje', handleNewMessage);
       socket.off('bot_mode_changed', handleBotModeChanged);
       socket.off('typing', handleTyping);
-      socket.off('bot_mode_changed', handleBotModeChanged);
     };
-  }, [isAuthenticated]);
-
-  // Conectar/desconectar socket según autenticación
-  useEffect(() => {
-    if (isAuthenticated) {
-      if (!socket.connected) {
-        const token = localStorage.getItem(env.tokenKey);
-        if (token) socket.auth = { token };
-        
-        console.log('🔌 DEBUG - Conectando socket con auth token:', token ? 'Token presente' : 'Sin token');
-        socket.connect();
-        
-        // Verificar conexión después de intentar conectar
-        setTimeout(() => {
-          console.log('🔌 DEBUG - Estado del socket:', {
-            connected: socket.connected,
-            id: socket.id,
-            disconnected: socket.disconnected
-          });
-        }, 1000);
-      }
-    } else if (socket.connected) {
-      console.log('🔌 DEBUG - Desconectando socket (no autenticado)');
-      socket.disconnect();
-    }
   }, [isAuthenticated]);
 
   // Cerrar menús al hacer click fuera
@@ -986,17 +940,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     const stored = localStorage.getItem('darkMode');
     if (stored) setDarkMode(stored === 'true');
   }, []);
-
-  // Solicitar permisos de notificación al autenticarse
-  useEffect(() => {
-    if (isAuthenticated) {
-      requestNotificationPermission().then(granted => {
-        if (granted) {
-          console.log('✅ Notificaciones push habilitadas');
-        }
-      });
-    }
-  }, [isAuthenticated]);
 
   // Load preferences from storage
   useEffect(() => {
@@ -1383,7 +1326,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         if (!currentChat || !currentChat.phone) return;
         
         const messageText = message.trim();
-        const tempId = Date.now();
+        const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         
         // Crear mensaje temporal para mostrar inmediatamente
         const tempMessage = {
@@ -1400,6 +1343,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           duration: null,
           status: 'sending'  // Estado inicial: enviando
         };
+
+        registerPendingMessage({
+          tempId,
+          phone: currentChat.phone,
+          text: messageText,
+          createdAt: tempMessage.date
+        });
         
         // Actualizar UI inmediatamente (optimistic update)
         setConversationsState(prev => {
@@ -1449,21 +1399,26 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           
           // Actualizar con el ID real del backend si viene
           if (response.data && response.data.message && response.data.message.id) {
+            const realId = response.data.message.id;
+            removePendingMessage(currentChat.phone, tempId);
+
             setConversationsState(prev => {
               const updated = [...prev];
-              if (selectedChat < updated.length && updated[selectedChat].messages) {
+              const targetChatIndex = updated.findIndex((c: any) => phonesMatch(c.phone, currentChat.phone));
+
+              if (targetChatIndex !== -1 && updated[targetChatIndex].messages) {
                 // Verificar si ya existe un mensaje con el ID real (fue actualizado por el socket)
-                const msgAlreadyUpdated = updated[selectedChat].messages.some((m: any) => m.id === response.data.message.id);
+                const msgAlreadyUpdated = updated[targetChatIndex].messages.some((m: any) => m.id === realId);
                 
                 if (!msgAlreadyUpdated) {
                   // Solo actualizar si el socket aún no lo hizo
-                  updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
-                    m.id === tempId ? { ...m, id: response.data.message.id, status: undefined, read: true } : m
+                  updated[targetChatIndex].messages = updated[targetChatIndex].messages.map((m: any) =>
+                    m.id === tempId ? { ...m, id: realId, status: undefined, read: true } : m
                   );
-                  updated[selectedChat].messages = dedupeMessages(updated[selectedChat].messages);
+                  updated[targetChatIndex].messages = dedupeMessages(updated[targetChatIndex].messages);
                 } else {
                   // Limpiar el status del mensaje temporal si existe
-                  updated[selectedChat].messages = updated[selectedChat].messages.map((m: any) =>
+                  updated[targetChatIndex].messages = updated[targetChatIndex].messages.map((m: any) =>
                     m.id === tempId ? { ...m, status: undefined } : m
                   );
                 }
@@ -1474,11 +1429,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             // También actualizar en el caché de memoria
             setAllMessagesCache(prev => {
               const phoneCache = prev[currentChat.phone] || [];
-              const msgAlreadyUpdated = phoneCache.some((m: any) => m.id === response.data.message.id);
+              const msgAlreadyUpdated = phoneCache.some((m: any) => m.id === realId);
               
               if (!msgAlreadyUpdated) {
                 const updatedCache = dedupeMessages(phoneCache.map(msg => 
-                  msg.id === tempId ? { ...msg, id: response.data.message.id } : msg
+                  msg.id === tempId ? { ...msg, id: realId, status: undefined, read: true } : msg
                 ));
                 return { ...prev, [currentChat.phone]: updatedCache };
               } else {
@@ -1488,13 +1443,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           }
         } catch (error) {
           console.error('❌ Error enviando mensaje:', error);
+          removePendingMessage(currentChat.phone, tempId);
           // Marcar el mensaje como error
           setConversationsState(prev => {
             const updated = [...prev];
-            if (selectedChat < updated.length && updated[selectedChat].messages) {
-              const msgIndex = updated[selectedChat].messages.findIndex((m: any) => m.id === tempId);
+            const targetChatIndex = updated.findIndex((c: any) => phonesMatch(c.phone, currentChat.phone));
+            if (targetChatIndex !== -1 && updated[targetChatIndex].messages) {
+              const msgIndex = updated[targetChatIndex].messages.findIndex((m: any) => m.id === tempId);
               if (msgIndex !== -1) {
-                updated[selectedChat].messages[msgIndex].error = true;
+                updated[targetChatIndex].messages[msgIndex].error = true;
               }
             }
             return updated;
