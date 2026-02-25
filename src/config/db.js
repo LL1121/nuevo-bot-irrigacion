@@ -85,6 +85,7 @@ const createTables = async () => {
       cuerpo TEXT NOT NULL,
       url_archivo TEXT,
       emisor TEXT DEFAULT 'usuario',
+      leido INTEGER DEFAULT 0,
       fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
     )`,
@@ -183,7 +184,17 @@ const runMigrations = async () => {
       console.log('  ✅ Columna last_ccpp agregada');
     }
     
-    if (hasLastTitular && hasLastCCPP) {
+    // Migración 2: Agregar columna leido en mensajes
+    const mensajesTableInfo = await query("PRAGMA table_info(mensajes)");
+    const hasLeido = mensajesTableInfo.some(col => col.name === 'leido');
+
+    if (!hasLeido) {
+      console.log('  ➕ Agregando columna leido a tabla mensajes...');
+      await run('ALTER TABLE mensajes ADD COLUMN leido INTEGER DEFAULT 0');
+      console.log('  ✅ Columna leido agregada');
+    }
+
+    if (hasLastTitular && hasLastCCPP && hasLeido) {
       console.log('  ✅ Todas las migraciones ya están aplicadas');
     }
     
