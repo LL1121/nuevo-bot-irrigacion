@@ -1838,41 +1838,46 @@ async function obtenerLinkPagoBoleto(tipoPadron, datos, tipoCuota) {
       await new Promise(r => setTimeout(r, 3000));
     }
 
-    // Seleccionar tipo de cuota
-    console.log(`📅 Seleccionando ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}...`);
-    const tipoCuotaTexto = tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
-    
-    await page.evaluate((texto) => {
-      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-      const btn = buttons.find(b => b.textContent.includes(texto));
-      if (btn) btn.click();
-    }, tipoCuotaTexto);
-    
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Click en botón "Pagar" (al lado de Imprimir)
-    console.log('💳 Buscando botón "Pagar"...');
+    // Click en botón "Pagar" de la cuota seleccionada (Anual izquierda / Bimestral derecha)
+    console.log(`💳 Buscando botón "Pagar" para cuota ${tipoCuota}...`);
     await page.waitForFunction(() => {
       const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
       return candidates.some(btn => {
         const text = (btn.textContent || '').trim();
         const isPagar = /Pagar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
         const isVisible = btn.offsetParent !== null;
-        const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true';
+        const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.disabled;
         return isPagar && isVisible && !isDisabled;
       });
     }, { timeout: 15000 }).catch(() => {});
 
-    const pagarButton = await page.evaluateHandle(() => {
+    const pagarButton = await page.evaluateHandle((tipo) => {
+      const cuotaTexto = tipo === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
       const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-      return candidates.find(btn => {
+      const pagarButtons = candidates.filter(btn => {
         const text = (btn.textContent || '').trim();
         const isPagar = /Pagar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
         const isVisible = btn.offsetParent !== null;
-        const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true';
+        const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.disabled;
         return isPagar && isVisible && !isDisabled;
       });
-    });
+
+      if (pagarButtons.length === 0) return null;
+      if (pagarButtons.length === 1) return pagarButtons[0];
+
+      for (const btn of pagarButtons) {
+        let parent = btn.parentElement;
+        let depth = 0;
+        while (parent && depth < 7) {
+          const txt = (parent.innerText || '').trim();
+          if (txt.includes(cuotaTexto)) return btn;
+          parent = parent.parentElement;
+          depth += 1;
+        }
+      }
+
+      return tipo === 'anual' ? pagarButtons[0] : pagarButtons[1] || pagarButtons[0];
+    }, tipoCuota);
     
     if (!pagarButton || pagarButton.asElement() === null) {
       throw new Error('No se encontró el botón "Pagar"');
@@ -1889,7 +1894,12 @@ async function obtenerLinkPagoBoleto(tipoPadron, datos, tipoCuota) {
       const modals = Array.from(document.querySelectorAll('[role="dialog"], .modal, .mantine-Modal-root, div[class*="modal"]'));
       for (const modal of modals) {
         const buttons = Array.from(modal.querySelectorAll('button, a, div[role="button"]'));
-        const pagarBtn = buttons.find(btn => /Pagar/i.test(btn.textContent || ''));
+        const pagarBtn = buttons.find(btn => {
+          const text = (btn.textContent || '').trim();
+          const isVisible = btn.offsetParent !== null;
+          const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.disabled;
+          return /Pagar/i.test(text) && isVisible && !isDisabled;
+        });
         if (pagarBtn) return pagarBtn;
       }
       return null;
