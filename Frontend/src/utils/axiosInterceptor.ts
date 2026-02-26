@@ -10,6 +10,22 @@ import { isTokenExpiringSoon, isTokenValid } from './jwt';
 import { env } from '../config/env';
 import { logger, captureException } from './logger';
 
+type RetryableConfig = NonNullable<AxiosError['config']> & {
+  _retryCount?: number;
+};
+
+const setAuthorizationHeader = (config: RetryableConfig, token: string) => {
+  const headers = config.headers as unknown;
+  if (headers && typeof headers === 'object' && 'set' in headers && typeof (headers as { set: (key: string, value: string) => void }).set === 'function') {
+    (headers as { set: (key: string, value: string) => void }).set('Authorization', `Bearer ${token}`);
+    return;
+  }
+
+  const mutableHeaders = (config.headers ?? {}) as Record<string, string>;
+  mutableHeaders.Authorization = `Bearer ${token}`;
+  config.headers = mutableHeaders;
+};
+
 // Flag para evitar múltiples refresh requests simultáneos
 let isRefreshing = false;
 let refreshSubscribers: Array<(token: string) => void> = [];
@@ -169,7 +185,7 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
   axiosInstance.interceptors.response.use(
     (response) => response,
     async (error: AxiosError) => {
-      const config = error.config as any;
+      const config = error.config as RetryableConfig | undefined;
 
       // Si no hay config, no podemos reintentar
       if (!config) {
@@ -197,7 +213,7 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
 
           if (newToken) {
             onRefreshed(newToken);
-            config.headers.Authorization = `Bearer ${newToken}`;
+            setAuthorizationHeader(config, newToken);
             return axiosInstance(config);
           } else {
             // Refresh falló, logout forzado
@@ -207,7 +223,7 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
           // Esperar a que refresh se complete
           return new Promise((resolve) => {
             addRefreshSubscriber((newToken: string) => {
-              config.headers.Authorization = `Bearer ${newToken}`;
+              setAuthorizationHeader(config, newToken);
               resolve(axiosInstance(config));
             });
           });

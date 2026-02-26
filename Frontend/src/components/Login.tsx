@@ -57,9 +57,18 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
       } else {
         setError(response.data?.message || 'Error al iniciar sesión (token no recibido)');
       }
-    } catch (err: any) {
-      console.error('Error de login:', err?.response?.data || err);
-      setError(err.response?.data?.message || 'Error al iniciar sesión. Verifica tus credenciales.');
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        console.error('Error de login:', err.response?.data || err);
+        const backendMessage =
+          err.response?.data && typeof err.response.data === 'object' && 'message' in err.response.data
+            ? String((err.response.data as { message?: unknown }).message || '')
+            : '';
+        setError(backendMessage || 'Error al iniciar sesión. Verifica tus credenciales.');
+      } else {
+        console.error('Error de login:', err);
+        setError('Error al iniciar sesión. Verifica tus credenciales.');
+      }
     } finally {
       setLoading(false);
     }

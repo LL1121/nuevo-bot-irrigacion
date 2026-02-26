@@ -1,7 +1,30 @@
 // Web Vitals and Performance Monitoring
 import { env } from '../config/env';
 
-let _sentry: any = null;
+type UnknownRecord = Record<string, unknown>;
+
+type SentryTransaction = {
+  finish?: () => void;
+};
+
+type SentryLike = {
+  captureMessage?: (message: string, captureContext?: unknown) => void;
+  setMeasurement?: (name: string, value: number, unit?: string) => void;
+  addBreadcrumb?: (breadcrumb: {
+    type?: string;
+    category?: string;
+    message?: string;
+    data?: UnknownRecord;
+    timestamp?: number;
+    level?: 'debug' | 'info' | 'warning' | 'error' | 'fatal';
+  }) => void;
+  startTransaction?: (context: { name: string; op: string }) => SentryTransaction;
+  setUser?: (user: { id: string; username?: string; email?: string } | null) => void;
+  setTag?: (key: string, value: string) => void;
+  setContext?: (name: string, context: UnknownRecord) => void;
+};
+
+let _sentry: SentryLike | null = null;
 
 export interface PerformanceMetric {
   name: string;
@@ -12,7 +35,7 @@ export interface PerformanceMetric {
 
 export interface CustomEvent {
   name: string;
-  properties?: Record<string, any>;
+  properties?: UnknownRecord;
   timestamp?: number;
 }
 
@@ -47,7 +70,9 @@ export const initPerformanceMonitoring = async () => {
 /**
  * Send Web Vital metric to Sentry
  */
-const sendWebVital = (name: string, metric: any) => {
+type WebVitalMetric = PerformanceMetric & { id?: string };
+
+const sendWebVital = (name: string, metric: WebVitalMetric) => {
   const value = Math.round(name === 'CLS' ? metric.value * 1000 : metric.value);
   
   if (_sentry && _sentry.captureMessage) {
@@ -121,7 +146,7 @@ export const trackPageView = (path: string, title?: string) => {
 /**
  * Track user action
  */
-export const trackAction = (action: string, properties?: Record<string, any>) => {
+export const trackAction = (action: string, properties?: UnknownRecord) => {
   trackEvent({
     name: `action_${action}`,
     properties,
@@ -151,7 +176,7 @@ export const trackApiCall = (endpoint: string, duration: number, status: number)
 /**
  * Track WebSocket events
  */
-export const trackSocketEvent = (event: string, data?: any) => {
+export const trackSocketEvent = (event: string, data?: UnknownRecord) => {
   trackEvent({
     name: `socket_${event}`,
     properties: {
@@ -206,7 +231,7 @@ export const trackErrorRecovery = (error: string, strategy: string) => {
 /**
  * Track feature usage
  */
-export const trackFeatureUsage = (feature: string, metadata?: Record<string, any>) => {
+export const trackFeatureUsage = (feature: string, metadata?: UnknownRecord) => {
   trackEvent({
     name: `feature_${feature}`,
     properties: metadata,
@@ -216,7 +241,10 @@ export const trackFeatureUsage = (feature: string, metadata?: Record<string, any
 /**
  * Set user context for monitoring
  */
-export const setUserContext = (userId: string, operador?: any) => {
+export const setUserContext = (
+  userId: string,
+  operador?: { nombre?: string; email?: string } | null
+) => {
   if (_sentry && _sentry.setUser) {
     _sentry.setUser({
       id: userId,
@@ -251,7 +279,7 @@ export const addTag = (key: string, value: string) => {
 /**
  * Add custom context
  */
-export const addContext = (name: string, context: Record<string, any>) => {
+export const addContext = (name: string, context: UnknownRecord) => {
   if (_sentry && _sentry.setContext) {
     _sentry.setContext(name, context);
   }

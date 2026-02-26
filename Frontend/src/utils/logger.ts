@@ -1,6 +1,12 @@
 import { env } from '../config/env';
 
-let _sentry: any = null;
+type SentryLike = {
+  captureException?: (error: unknown) => void;
+  setContext?: (name: string, context: Record<string, unknown>) => void;
+  captureMessage?: (message: string, level?: 'info' | 'warning' | 'error') => void;
+};
+
+let _sentry: SentryLike | null = null;
 
 export const initLogger = async () => {
   if (!env.sentryDsn) {
@@ -45,14 +51,14 @@ export const initLogger = async () => {
   }
 };
 
-export const captureException = (err: unknown, ctx?: Record<string, any>) => {
+export const captureException = (err: unknown, ctx?: Record<string, unknown>) => {
   console.error(err, ctx || '');
   try {
     if (_sentry && _sentry.captureException) {
       _sentry.captureException(err);
       if (ctx) _sentry.setContext('logger_ctx', ctx);
-    } else if ((window as any).Sentry?.captureException) {
-      (window as any).Sentry.captureException(err);
+    } else if ((window as Window & { Sentry?: SentryLike }).Sentry?.captureException) {
+      (window as Window & { Sentry?: SentryLike }).Sentry?.captureException?.(err);
     }
   } catch (e) {
     console.warn('Logger.captureException failed', e);
@@ -69,10 +75,10 @@ export const captureMessage = (msg: string, level: 'info' | 'warning' | 'error' 
 };
 
 export const logger = {
-  debug: (...args: any[]) => env.enableLogging && console.debug(...args),
-  info: (...args: any[]) => console.info(...args),
-  warn: (...args: any[]) => console.warn(...args),
-  error: (err: unknown, ctx?: Record<string, any>) => captureException(err, ctx),
+  debug: (...args: unknown[]) => env.enableLogging && console.debug(...args),
+  info: (...args: unknown[]) => console.info(...args),
+  warn: (...args: unknown[]) => console.warn(...args),
+  error: (err: unknown, ctx?: Record<string, unknown>) => captureException(err, ctx),
 };
 
 export default logger;
