@@ -1,5 +1,6 @@
 const whatsappService = require('../services/whatsappService');
 const debtScraperService = require('../services/debtScraperService');
+const debtApiService = require('../services/debtApiService');
 const turnadoScraperService = require('../services/turnadoScraperService');
 const mensajeService = require('../services/mensajeService');
 const clienteService = require('../services/clienteService');
@@ -2103,11 +2104,30 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     
     console.log(`⚙️ Ejecutando scraper de ${tipoOperacion} con padrón ${tipoPadron}:`, padronData);
     
-    // Llamar al scraper con padrón - pasar tipoOperacion también
-    const resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
+    // Separación de responsabilidades con fallback:
+    // - deuda superficial: request directo por API
+    // - si la API falla: fallback a scraping
+    // - resto de casos: scraping
+    let resultado;
+    if (tipoOperacion === 'deuda' && tipoPadron === 'superficial') {
+      const resultadoApi = await debtApiService.obtenerDeudaPadronSuperficial(padronData);
+
+      if (resultadoApi.success) {
+        resultado = resultadoApi;
+      } else {
+        console.warn(`⚠️ API de deuda superficial falló, activando fallback scraping: ${resultadoApi.error}`);
+        resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
+
+        if (!resultado.success) {
+          resultado.userMessage = resultadoApi.userMessage || resultado.userMessage;
+        }
+      }
+    } else {
+      resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
+    }
     
     if (!resultado.success) {
-      await sendMessageAndSave(from, buildActionFailedMessage('consultar la deuda del servicio'));
+      await sendMessageAndSave(from, resultado.userMessage || buildActionFailedMessage('consultar la deuda del servicio'));
       await sendMenuList(from, true);
       userStates[from].step = 'MAIN_MENU';
       return;
@@ -2124,7 +2144,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     
     // Formatear mensaje de deuda
     const datos = resultado.data;
-    const deudaMsg = `📊 *Resumen de deuda del padrón ${tipoPadron.toUpperCase()}*\n\n` +
+    const deudaMsg = datos.formattedMessage || (`📊 *Resumen de deuda del padrón ${tipoPadron.toUpperCase()}*\n\n` +
       `👤 *Titular:* ${datos.titular}\n` +
       `🆔 *CUIT:* ${datos.cuit}\n` +
       `🌾 *Hectáreas:* ${datos.hectareas}\n\n` +
@@ -2134,7 +2154,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
       `Apremio: ${datos.apremio}\n` +
       `Eventuales: ${datos.eventuales}\n\n` +
       `*💵 TOTAL A PAGAR: ${datos.total}*\n\n` +
-      `_💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`;
+      `_💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`);
     
     await sendMessageAndSave(from, deudaMsg);
     
