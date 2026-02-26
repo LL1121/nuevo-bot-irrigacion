@@ -4,6 +4,14 @@ import { env } from '../config/env';
 import { trackApiCall } from '../utils/monitoring';
 import { captureException } from '../utils/logger';
 
+type TimingMetadata = {
+  startTime: number;
+};
+
+type ConfigWithMetadata = {
+  metadata?: TimingMetadata;
+};
+
 const api = axios.create({
   baseURL: env.apiUrl,
   timeout: env.requestTimeoutMs,
@@ -12,14 +20,14 @@ const api = axios.create({
 // Request interceptor to track timing
 api.interceptors.request.use((config) => {
   // Store request start time
-  (config as any).metadata = { startTime: performance.now() };
+  (config as ConfigWithMetadata).metadata = { startTime: performance.now() };
   return config;
 });
 
 // Response interceptor to track performance
 api.interceptors.response.use(
   (response) => {
-    const metadata = (response.config as any).metadata;
+    const metadata = (response.config as ConfigWithMetadata).metadata;
     if (metadata?.startTime) {
       const duration = performance.now() - metadata.startTime;
       const endpoint = response.config.url || 'unknown';
@@ -28,7 +36,7 @@ api.interceptors.response.use(
     return response;
   },
   (error: AxiosError) => {
-    const metadata = (error.config as any)?.metadata;
+    const metadata = (error.config as ConfigWithMetadata | undefined)?.metadata;
     if (metadata?.startTime) {
       const duration = performance.now() - metadata.startTime;
       const endpoint = error.config?.url || 'unknown';

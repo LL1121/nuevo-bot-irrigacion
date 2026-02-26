@@ -147,6 +147,8 @@ const bootstrap = async () => {
     console.log('✅ Rutas de health cargadas');
     const cacheTestRoutes = require('./routes/cacheTestRoutes');
     console.log('✅ Rutas de cache test cargadas');
+    const paymentBridgeRoutes = require('./routes/paymentBridgeRoutes');
+    console.log('✅ Rutas de pasarela de pagos cargadas');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -159,6 +161,7 @@ const bootstrap = async () => {
   app.use('/api', auditRoutes);
   app.use('/api', healthRoutes);
   app.use('/api', cacheTestRoutes);
+  app.use('/', paymentBridgeRoutes);
 
   // Swagger/OpenAPI Documentation
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
