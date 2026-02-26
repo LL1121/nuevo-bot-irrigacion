@@ -24,7 +24,7 @@ const USER_TIMEZONE = 'America/Argentina/Buenos_Aires';
  * Parsea cualquier formato de timestamp a dayjs
  * Maneja: ISO 8601, timestamps numéricos, strings, Date objects
  */
-export function parseTimestamp(value: any): dayjs.Dayjs {
+export function parseTimestamp(value: unknown): dayjs.Dayjs {
   if (!value) {
     return dayjs();
   }
@@ -82,7 +82,7 @@ export function parseTimestamp(value: any): dayjs.Dayjs {
  * - Esta semana: "lun", "mar", etc
  * - Más viejo: "DD/MM"
  */
-export function formatMessageTime(timestamp: any): string {
+export function formatMessageTime(timestamp: unknown): string {
   const date = parseTimestamp(timestamp).tz(USER_TIMEZONE);
   const now = dayjs().tz(USER_TIMEZONE);
 
@@ -113,7 +113,7 @@ export function formatMessageTime(timestamp: any): string {
  * - Esta semana: "Lunes a las HH:mm"
  * - Más viejo: "DD/MM/YYYY HH:mm"
  */
-export function formatChatHeaderTime(timestamp: any): string {
+export function formatChatHeaderTime(timestamp: unknown): string {
   const date = parseTimestamp(timestamp).tz(USER_TIMEZONE);
   const now = dayjs().tz(USER_TIMEZONE);
 
@@ -143,21 +143,21 @@ export function formatChatHeaderTime(timestamp: any): string {
 /**
  * Convierte un timestamp a ISO 8601 UTC para almacenamiento
  */
-export function toUTC(timestamp: any): string {
+export function toUTC(timestamp: unknown): string {
   return parseTimestamp(timestamp).utc().toISOString();
 }
 
 /**
  * Convierte un timestamp a la zona horaria del usuario
  */
-export function toUserTimezone(timestamp: any): dayjs.Dayjs {
+export function toUserTimezone(timestamp: unknown): dayjs.Dayjs {
   return parseTimestamp(timestamp).tz(USER_TIMEZONE);
 }
 
 /**
  * Verifica si un timestamp es válido
  */
-export function isValidTimestamp(timestamp: any): boolean {
+export function isValidTimestamp(timestamp: unknown): boolean {
   if (!timestamp) return false;
   const parsed = parseTimestamp(timestamp);
   return parsed.isValid();
@@ -180,7 +180,7 @@ export function now(): dayjs.Dayjs {
 /**
  * Verifica si una sesión de chat está expirada (>24hs)
  */
-export function isSessionExpired(lastInteraction: any): boolean {
+export function isSessionExpired(lastInteraction: unknown): boolean {
   if (!lastInteraction) return false;
   
   const last = parseTimestamp(lastInteraction);
@@ -193,8 +193,8 @@ export function isSessionExpired(lastInteraction: any): boolean {
 /**
  * Agrupa mensajes por día para separadores en UI
  */
-export function groupMessagesByDay(messages: Array<{ date: any }>): Map<string, any[]> {
-  const groups = new Map<string, any[]>();
+export function groupMessagesByDay<T extends { date: unknown }>(messages: T[]): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
 
   messages.forEach((msg) => {
     const date = parseTimestamp(msg.date).tz(USER_TIMEZONE);
@@ -236,7 +236,7 @@ export function formatDaySeparator(dayKey: string): string {
 /**
  * Debug: Muestra información detallada del timestamp
  */
-export function debugTimestamp(timestamp: any): void {
+export function debugTimestamp(timestamp: unknown): void {
   const parsed = parseTimestamp(timestamp);
   console.log('🕐 DEBUG TIMESTAMP:', {
     input: timestamp,

@@ -137,8 +137,9 @@ export function getGoogleAnalyticsTag(measurementId: string): string {
  * Log consent choices to analytics
  */
 export function logConsentChoice(consent: CookieConsent): void {
-  if (typeof window !== 'undefined' && (window as any).gtag) {
-    (window as any).gtag('event', 'consent_update', {
+  const gtag = (window as Window & { gtag?: (...args: unknown[]) => void }).gtag;
+  if (typeof window !== 'undefined' && gtag) {
+    gtag('event', 'consent_update', {
       analytics: consent.analytics,
       marketing: consent.marketing,
       preferences: consent.preferences,

@@ -1,11 +1,7 @@
 import { sortAndDedupeMessages } from '../utils/messageOrder';
+import type { ChatMessage } from '../types/chat';
 
-type QueueMessage = {
-  id?: string | number;
-  date?: string | number | Date;
-  text?: unknown;
-  sent?: boolean;
-};
+type QueueMessage = Pick<ChatMessage, 'id' | 'date' | 'text' | 'sent'>;
 
 export const mergeMessageBatches = <T extends QueueMessage>(...batches: T[][]): T[] => {
   return sortAndDedupeMessages(batches.flat());

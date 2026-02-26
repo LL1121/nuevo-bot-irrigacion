@@ -24,6 +24,11 @@ export const env = {
   socketReconnectAttempts: parseInt(import.meta.env.VITE_SOCKET_RECONNECT_ATTEMPTS || '5', 10),
   sessionTimeoutMs: parseInt(import.meta.env.VITE_SESSION_TIMEOUT_MS || '86400000', 10),
 
+  // Cache policy
+  messageCacheMaxChats: parseInt(import.meta.env.VITE_MESSAGE_CACHE_MAX_CHATS || '250', 10),
+  messageCacheMaxMessagesPerChat: parseInt(import.meta.env.VITE_MESSAGE_CACHE_MAX_MESSAGES_PER_CHAT || '1500', 10),
+  messageCacheTtlMs: parseInt(import.meta.env.VITE_MESSAGE_CACHE_TTL_MS || String(7 * 24 * 60 * 60 * 1000), 10),
+
   // Derived values
   isProduction: import.meta.env.PROD,
   isDevelopment: import.meta.env.DEV,
@@ -43,6 +48,9 @@ if (env.isDevelopment && env.enableLogging) {
     apiUrl: env.apiUrl,
     socketUrl: env.socketUrl,
     enableSentry: env.enableSentry,
-    sessionTimeoutMs: env.sessionTimeoutMs
+    sessionTimeoutMs: env.sessionTimeoutMs,
+    messageCacheMaxChats: env.messageCacheMaxChats,
+    messageCacheMaxMessagesPerChat: env.messageCacheMaxMessagesPerChat,
+    messageCacheTtlMs: env.messageCacheTtlMs
   });
 }

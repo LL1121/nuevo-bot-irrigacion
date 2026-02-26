@@ -3,6 +3,7 @@ const browserPool = require('./browserPool');
 
 const BASE_URL = 'https://irrigacionmalargue.com/login_g/turnado-online.php';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
+const TURNADO_DEBUG = process.env.TURNADO_DEBUG === 'true';
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -16,11 +17,13 @@ function delay(ms) {
 async function capturarHTMLDebug(page) {
   try {
     const html = await page.content();
-    const fs = require('fs');
-    const timestamp = Date.now();
-    const filename = `debug_turno_html_${timestamp}.html`;
-    fs.writeFileSync(filename, html);
-    console.log(`📄 HTML capturado en: ${filename}`);
+    if (TURNADO_DEBUG) {
+      const fs = require('fs');
+      const timestamp = Date.now();
+      const filename = `debug_turno_html_${timestamp}.html`;
+      fs.writeFileSync(filename, html);
+      console.log(`📄 HTML capturado en: ${filename}`);
+    }
     return html;
   } catch (error) {
     console.error('Error capturando HTML:', error);
@@ -361,6 +364,14 @@ async function buscarPorTitular(nombreCompleto) {
     console.log('📝 Texto completo capturado:');
     console.log(turnoInfo.rawText);
     console.log('✅ Información extraída:', turnoInfo);
+
+    turnoInfo.restringido = /RESTRINGIDO/i.test(turnoInfo.rawText || '');
+    if (turnoInfo.restringido && !turnoInfo.inicioTurno) {
+      turnoInfo.inicioTurno = 'RESTRINGIDO';
+    }
+    if (turnoInfo.restringido && !turnoInfo.finTurno) {
+      turnoInfo.finTurno = 'RESTRINGIDO';
+    }
     
     // Validar que se encontraron datos
     if (!turnoInfo.ccpp && !turnoInfo.titular) {
@@ -611,6 +622,14 @@ async function buscarPorCCPP(ccpp) {
     });
     
     console.log('✅ Información extraída:', turnoInfo);
+
+    turnoInfo.restringido = /RESTRINGIDO/i.test(turnoInfo.rawText || '');
+    if (turnoInfo.restringido && !turnoInfo.inicioTurno) {
+      turnoInfo.inicioTurno = 'RESTRINGIDO';
+    }
+    if (turnoInfo.restringido && !turnoInfo.finTurno) {
+      turnoInfo.finTurno = 'RESTRINGIDO';
+    }
     
     if (!turnoInfo.ccpp && !turnoInfo.titular) {
       console.log('❌ No se encontró CC-PP ni Titular');

@@ -7,7 +7,7 @@ interface JWTPayload {
   exp?: number;
   iat?: number;
   sub?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**

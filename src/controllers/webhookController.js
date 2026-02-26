@@ -711,10 +711,23 @@ Por favor contactá a un operador para más información.`;
     }
 
     case 'turnos': {
+      const [lastTitularDB, lastCCPPDB] = await Promise.all([
+        clienteService.obtenerUltimoTitular(from),
+        clienteService.obtenerUltimoCCPP(from)
+      ]);
+
+      if (lastTitularDB) {
+        userStates[from].lastTitular = lastTitularDB;
+      }
+      if (lastCCPPDB) {
+        userStates[from].lastCCPP = lastCCPPDB;
+      }
+
+      const hasMemory = Boolean(userStates[from].lastTitular || userStates[from].lastCCPP);
       // Ofrecer opciones de búsqueda de turno
       const turnosIntro = `🗓️ *Consulta de Turnos*
 
-¿Cómo desea buscar su turno?`;
+¿Cómo desea buscar su turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}`;
       await sendMessageAndSave(from, turnosIntro);
       
       await whatsappService.sendInteractiveButtons(
@@ -1519,6 +1532,39 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
   }
 };
 
+const buildActionFailedMessage = (actionLabel) => {
+  return `❌ No se pudo ${actionLabel} en este momento.\n\nPor favor intentá nuevamente en unos minutos.`;
+};
+
+const buildTurnoLookupFailedMessage = (inputLabel) => {
+  return `❌ No se pudo consultar el turno en este momento.\n\nPodés reintentar ingresando ${inputLabel} nuevamente o escribir *volver*.`;
+};
+
+const formatInicioTurno = (data = {}) => {
+  let inicioTurno = data.inicioTurno || 'No disponible';
+  if (data.fechaInicioCompleta) {
+    const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+    if (fechaMatch) {
+      inicioTurno = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
+    }
+  }
+  return inicioTurno;
+};
+
+const buildTurnoResponse = ({ data = {}, titularFallback = 'No disponible', ccppFallback = 'No disponible', includeHijuela = true }) => {
+  const inicioTurnoFormato = formatInicioTurno(data);
+  const finTurnoFormato = data.finTurno || 'No disponible';
+  const encabezado = data.restringido ? '🚫 *Estado del turno: RESTRINGIDO*\n\n' : '';
+  const hijuelaLine = includeHijuela ? `\n• Hijuela: ${data.hijuela || 'No disponible'}` : '';
+
+  return `${encabezado}✅ *Turno encontrado*\n\n` +
+    `• Inspección de cauce: ${data.inspeccion || 'No disponible'}${hijuelaLine}\n` +
+    `• C.C.-P.P.: ${data.ccpp || ccppFallback}\n` +
+    `• Titular: ${data.titular || titularFallback}\n` +
+    `• Inicio de turno: ${inicioTurnoFormato}\n` +
+    `• Fin de turno: ${finTurnoFormato}`;
+};
+
 /**
  * Manejar selección de método de consulta (DNI vs Padrón)
  */
@@ -2061,7 +2107,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     const resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
     
     if (!resultado.success) {
-      await sendMessageAndSave(from, `❌ Error: ${resultado.error}`);
+      await sendMessageAndSave(from, buildActionFailedMessage('consultar la deuda del servicio'));
       await sendMenuList(from, true);
       userStates[from].step = 'MAIN_MENU';
       return;
@@ -2142,7 +2188,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     const resultado = await debtScraperService.obtenerBoletoPadron(tipoPadron, datosParaScrap, tipoCuota);
     
     if (!resultado.success) {
-      await sendMessageAndSave(from, `❌ Error: ${resultado.error}`);
+      await sendMessageAndSave(from, buildActionFailedMessage('generar el boleto del servicio'));
       await sendMenuList(from, true);
       return;
     }
@@ -2262,10 +2308,10 @@ const handlePagoDeudaChoice = async (from, optionToProcess) => {
         `🔗 ${linkPago}\n\n` +
         `*Instrucciones:*\n` +
         `1️⃣ Ingresá al link\n` +
-        `2️⃣ Seleccioná el/los períodos que deseas pagar\n` +
-        `3️⃣ Hacé click en "Pagar"\n` +
-        `4️⃣ Elegí tu método de pago preferido\n` +
-        `5️⃣ Completá el pago\n\n` +
+        `2️⃣ Seleccioná la/s cuota/s que querés pagar\n` +
+        `3️⃣ Presioná *"Generar Boleto"*\n` +
+        `4️⃣ Confirmá la operación\n` +
+        `5️⃣ Imprimí y pagá en Pago Fácil, Rapipago o sucursal; también podés usar *"Pagar"* para transferencia\n\n` +
         `_💡 Recordá: Si pagás el total de la deuda, tenés 50% de descuento en intereses._`;
       
       await sendMessageAndSave(from, instruccionesMsg);
@@ -2315,7 +2361,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
       );
       
       if (!resultado.success) {
-        await sendMessageAndSave(from, `❌ Error al obtener el link de pago: ${resultado.error}`);
+        await sendMessageAndSave(from, buildActionFailedMessage('obtener el enlace de pago del boleto'));
         await sendMenuList(from, true);
         userStates[from].step = 'MAIN_MENU';
         return;
@@ -2355,7 +2401,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
     
   } catch (error) {
     console.error('❌ Error en handlePagoBoletoChoice:', error);
-    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar el pago. Por favor intenta más tarde.');
+    await sendMessageAndSave(from, buildActionFailedMessage('procesar el pago del boleto'));
     await sendMenuList(from, true);
     userStates[from].step = 'MAIN_MENU';
   }
@@ -2433,37 +2479,20 @@ const handleTurnoTitularChoice = async (from, option) => {
     const result = await turnadoScraperService.buscarPorTitular(lastTitular);
     
     if (!result.success) {
-      const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
-
-Podés reintentar ingresando el titular nuevamente o escribir *volver*.`;
+      const errorMsg = buildTurnoLookupFailedMessage('el titular');
       await sendMessageAndSave(from, errorMsg);
       userStates[from].step = 'AWAITING_TURNO_TITULAR';
       return;
     }
     
     const data = result.data || {};
-    
-    // Formatear los horarios con la fecha si está disponible
-    let inicioTurnoFormato = data.inicioTurno || 'No disponible';
-    let finTurnoFormato = data.finTurno || 'No disponible';
-    
-    // Si tenemos fecha completa, agrégala al inicio
-    if (data.fechaInicioCompleta) {
-      // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
-      const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
-      if (fechaMatch) {
-        inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
-      }
-    }
-    
-    const response = `✅ *Turno encontrado*
-
-• Inspección de cauce: ${data.inspeccion || 'No disponible'}
-• Hijuela: ${data.hijuela || 'No disponible'}
-• C.C.-P.P.: ${data.ccpp || 'No disponible'}
-• Titular: ${data.titular || lastTitular}
-• Inicio de turno: ${inicioTurnoFormato}
-• Fin de turno: ${finTurnoFormato}`;
+    userStates[from].lastTurnoMode = 'titular';
+    const response = buildTurnoResponse({
+      data,
+      titularFallback: lastTitular,
+      ccppFallback: 'No disponible',
+      includeHijuela: true
+    });
     
     await sendMessageAndSave(from, response);
     await sendMenuList(from, true);
@@ -2504,36 +2533,20 @@ const handleTurnoCCPPChoice = async (from, option) => {
     const result = await turnadoScraperService.buscarPorCCPP(lastCCPP);
     
     if (!result.success) {
-      const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
-
-Podés reintentar ingresando el C.C.-P.P. nuevamente o escribir *volver*.`;
+      const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.');
       await sendMessageAndSave(from, errorMsg);
       userStates[from].step = 'AWAITING_TURNO_CCPP';
       return;
     }
     
     const data = result.data || {};
-    
-    // Formatear los horarios con la fecha si está disponible
-    let inicioTurnoFormato = data.inicioTurno || 'No disponible';
-    let finTurnoFormato = data.finTurno || 'No disponible';
-    
-    // Si tenemos fecha completa, agrégala al inicio
-    if (data.fechaInicioCompleta) {
-      // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
-      const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
-      if (fechaMatch) {
-        inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
-      }
-    }
-    
-    const response = `✅ *Turno encontrado*
-
-• Inspección de cauce: ${data.inspeccion || 'No disponible'}
-• C.C.-P.P.: ${data.ccpp || lastCCPP}
-• Titular: ${data.titular || 'No disponible'}
-• Inicio de turno: ${inicioTurnoFormato}
-• Fin de turno: ${finTurnoFormato}`;
+    userStates[from].lastTurnoMode = 'ccpp';
+    const response = buildTurnoResponse({
+      data,
+      titularFallback: 'No disponible',
+      ccppFallback: lastCCPP,
+      includeHijuela: false
+    });
     
     await sendMessageAndSave(from, response);
     await sendMenuList(from, true);
@@ -2567,7 +2580,48 @@ Ej: *8234-1*`;
 const handleTurnoMethodChoice = async (from, option) => {
   const normalized = (option || '').toString().trim().toLowerCase();
 
+  if (normalized === 'mismo' || normalized === 'turno_mismo') {
+    const [lastTitularDB, lastCCPPDB] = await Promise.all([
+      clienteService.obtenerUltimoTitular(from),
+      clienteService.obtenerUltimoCCPP(from)
+    ]);
+
+    const lastTitular = lastTitularDB || userStates[from].lastTitular;
+    const lastCCPP = lastCCPPDB || userStates[from].lastCCPP;
+    const lastMode = userStates[from].lastTurnoMode;
+
+    if (lastMode === 'titular' && lastTitular) {
+      userStates[from].lastTitular = lastTitular;
+      await handleTurnoTitularChoice(from, 'usar_ultimo_titular');
+      return;
+    }
+
+    if (lastMode === 'ccpp' && lastCCPP) {
+      userStates[from].lastCCPP = lastCCPP;
+      await handleTurnoCCPPChoice(from, 'usar_ultimo_ccpp');
+      return;
+    }
+
+    if (lastTitular) {
+      userStates[from].lastTitular = lastTitular;
+      userStates[from].lastTurnoMode = 'titular';
+      await handleTurnoTitularChoice(from, 'usar_ultimo_titular');
+      return;
+    }
+
+    if (lastCCPP) {
+      userStates[from].lastCCPP = lastCCPP;
+      userStates[from].lastTurnoMode = 'ccpp';
+      await handleTurnoCCPPChoice(from, 'usar_ultimo_ccpp');
+      return;
+    }
+
+    await sendMessageAndSave(from, 'ℹ️ No hay una búsqueda previa guardada para reutilizar.');
+    return;
+  }
+
   if (normalized === 'turno_titular') {
+    userStates[from].lastTurnoMode = 'titular';
     // Cargar último titular desde BD
     const lastTitularDB = await clienteService.obtenerUltimoTitular(from);
     const lastTitular = lastTitularDB || userStates[from].lastTitular;
@@ -2606,6 +2660,7 @@ Ej: *GONZALEZ JUAN*`;
   }
 
   if (normalized === 'turno_ccpp') {
+    userStates[from].lastTurnoMode = 'ccpp';
     // Cargar último C.C.-P.P. desde BD
     const lastCCPPDB = await clienteService.obtenerUltimoCCPP(from);
     const lastCCPP = lastCCPPDB || userStates[from].lastCCPP;
@@ -2694,36 +2749,19 @@ const handleTurnoTitularInput = async (from, messageBody) => {
   const result = await turnadoScraperService.buscarPorTitular(raw);
 
   if (!result.success) {
-    const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
-
-Podés reintentar ingresando el titular nuevamente o escribir *volver*.`;
+    const errorMsg = buildTurnoLookupFailedMessage('el titular');
     await sendMessageAndSave(from, errorMsg);
     return;
   }
 
   const data = result.data || {};
-  
-  // Formatear los horarios con la fecha si está disponible
-  let inicioTurnoFormato = data.inicioTurno || 'No disponible';
-  let finTurnoFormato = data.finTurno || 'No disponible';
-  
-  // Si tenemos fecha completa, agrégala al inicio
-  if (data.fechaInicioCompleta) {
-    // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
-    const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
-    if (fechaMatch) {
-      inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
-    }
-  }
-  
-  const response = `✅ *Turno encontrado*
-
-• Inspección de cauce: ${data.inspeccion || 'No disponible'}
-• Hijuela: ${data.hijuela || 'No disponible'}
-• C.C.-P.P.: ${data.ccpp || 'No disponible'}
-• Titular: ${data.titular || raw}
-• Inicio de turno: ${inicioTurnoFormato}
-• Fin de turno: ${finTurnoFormato}`;
+  userStates[from].lastTurnoMode = 'titular';
+  const response = buildTurnoResponse({
+    data,
+    titularFallback: raw,
+    ccppFallback: 'No disponible',
+    includeHijuela: true
+  });
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);
@@ -2794,36 +2832,19 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
   const result = await turnadoScraperService.buscarPorCCPP(normalized);
 
   if (!result.success) {
-    const errorMsg = `❌ ${result.error || 'No se pudo encontrar información del turno.'}
-
-Podés reintentar ingresando el C.C.-P.P. nuevamente o escribir *volver*.`;
+    const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.');
     await sendMessageAndSave(from, errorMsg);
     return;
   }
 
   const data = result.data || {};
-  
-  // Formatear los horarios con la fecha si está disponible
-  let inicioTurnoFormato = data.inicioTurno || 'No disponible';
-  let finTurnoFormato = data.finTurno || 'No disponible';
-  
-  // Si tenemos fecha completa, agrégala al inicio
-  if (data.fechaInicioCompleta) {
-    // Extraer solo la fecha (DD/MM/YYYY) de la fecha completa
-    const fechaMatch = data.fechaInicioCompleta.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
-    if (fechaMatch) {
-      inicioTurnoFormato = `${data.inicioTurno || 'No disponible'} (${fechaMatch[1]})`;
-    }
-  }
-  
-  const response = `✅ *Turno encontrado*
-
-• Inspección de cauce: ${data.inspeccion || 'No disponible'}
-• Hijuela: ${data.hijuela || 'No disponible'}
-• C.C.-P.P.: ${data.ccpp || normalized}
-• Titular: ${data.titular || 'No disponible'}
-• Inicio de turno: ${inicioTurnoFormato}
-• Fin de turno: ${finTurnoFormato}`;
+  userStates[from].lastTurnoMode = 'ccpp';
+  const response = buildTurnoResponse({
+    data,
+    titularFallback: 'No disponible',
+    ccppFallback: normalized,
+    includeHijuela: true
+  });
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);

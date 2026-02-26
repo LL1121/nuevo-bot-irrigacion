@@ -5,6 +5,12 @@
 
 import { authConfig } from './authConfig';
 
+export type OperadorInfo = {
+  nombre?: string;
+  email?: string;
+  [key: string]: unknown;
+};
+
 export const auth = {
   /**
    * Obtener token del localStorage
@@ -37,15 +43,15 @@ export const auth = {
   /**
    * Obtener información del operador
    */
-  getOperador: (): any | null => {
+  getOperador: (): OperadorInfo | null => {
     const stored = localStorage.getItem('operador');
-    return stored ? JSON.parse(stored) : null;
+    return stored ? (JSON.parse(stored) as OperadorInfo) : null;
   },
 
   /**
    * Guardar información del operador
    */
-  setOperador: (operador: any): void => {
+  setOperador: (operador: OperadorInfo): void => {
     localStorage.setItem('operador', JSON.stringify(operador));
   },
 

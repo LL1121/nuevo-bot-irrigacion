@@ -49,10 +49,13 @@ export function validateResponse<T extends z.ZodTypeAny>(
     }
     
     if (opts.trackValidationErrors) {
-      trackEvent('validation_error', {
-        type: 'api_response',
-        errorCount: errorDetails.length,
-        firstError: errorDetails[0]?.message,
+      trackEvent({
+        name: 'validation_error',
+        properties: {
+          type: 'api_response',
+          errorCount: errorDetails.length,
+          firstError: errorDetails[0]?.message,
+        },
       });
     }
     
@@ -60,7 +63,7 @@ export function validateResponse<T extends z.ZodTypeAny>(
       throw new Error(`Validation failed: ${errorDetails[0]?.message || 'Unknown error'}`);
     }
     
-    return undefined as any;
+    return undefined as z.infer<T>;
   }
   
   return result.data as z.infer<T>;
@@ -89,7 +92,7 @@ export async function withValidation<T extends z.ZodTypeAny, R>(
 /**
  * Create validated API client wrapper
  */
-export function createValidatedClient<T extends Record<string, (...args: any[]) => Promise<any>>>(
+export function createValidatedClient<T extends Record<string, (...args: unknown[]) => Promise<unknown>>>(
   client: T,
   schemas: Record<keyof T, z.ZodTypeAny>
 ): T {
@@ -104,7 +107,7 @@ export function createValidatedClient<T extends Record<string, (...args: any[]) 
       continue;
     }
     
-    validatedClient[key] = (async (...args: any[]) => {
+    validatedClient[key] = (async (...args: unknown[]) => {
       const response = await originalMethod(...args);
       return validateResponse(response, ApiResponseSchema(schema));
     }) as T[typeof key];

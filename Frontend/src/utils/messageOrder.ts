@@ -1,11 +1,7 @@
 import { parseTimestamp } from './dateTime';
+import type { ChatMessage } from '../types/chat';
 
-type MessageLike = {
-  id?: string | number;
-  date?: string | number | Date;
-  text?: unknown;
-  sent?: boolean;
-};
+type MessageLike = Pick<ChatMessage, 'id' | 'date' | 'text' | 'sent'>;
 
 const asSafeNumber = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
