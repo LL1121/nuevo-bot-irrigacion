@@ -2205,7 +2205,11 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       datosParaScrap = { numeroContaminacion: padronData };
     }
     
-    const resultado = await debtScraperService.obtenerBoletoPadron(tipoPadron, datosParaScrap, tipoCuota);
+    let resultado = await debtApiService.obtenerBoletoPadron(tipoPadron, datosParaScrap, tipoCuota);
+    if (!resultado.success) {
+      console.warn(`⚠️ API de boleto falló, activando fallback scraping: ${resultado.error}`);
+      resultado = await debtScraperService.obtenerBoletoPadron(tipoPadron, datosParaScrap, tipoCuota);
+    }
     
     if (!resultado.success) {
       await sendMessageAndSave(from, buildActionFailedMessage('generar el boleto del servicio'));
