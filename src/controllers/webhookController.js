@@ -2,6 +2,7 @@ const whatsappService = require('../services/whatsappService');
 const debtScraperService = require('../services/debtScraperService');
 const debtApiService = require('../services/debtApiService');
 const turnadoScraperService = require('../services/turnadoScraperService');
+const turnadoApiService = require('../services/turnadoApiService');
 const mensajeService = require('../services/mensajeService');
 const clienteService = require('../services/clienteService');
 const fs = require('fs');
@@ -2110,13 +2111,16 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     // - resto de casos: scraping
     let resultado;
     if (tipoOperacion === 'deuda' && tipoPadron === 'superficial') {
+      console.log('🧭 [FLOW] Deuda superficial: intentando API directa primero');
       const resultadoApi = await debtApiService.obtenerDeudaPadronSuperficial(padronData);
 
       if (resultadoApi.success) {
+        console.log('✅ [FLOW] Deuda superficial resuelta por API directa');
         resultado = resultadoApi;
       } else {
         console.warn(`⚠️ API de deuda superficial falló, activando fallback scraping: ${resultadoApi.error}`);
         resultado = await debtScraperService.obtenerDeudaPadron(tipoPadron, padronData, tipoOperacion);
+        console.log(`🧭 [FLOW] Resultado fallback deuda: ${resultado.success ? 'OK' : 'ERROR'}`);
 
         if (!resultado.success) {
           resultado.userMessage = resultadoApi.userMessage || resultado.userMessage;
@@ -2206,9 +2210,11 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     }
     
     let resultado = await debtApiService.obtenerBoletoPadron(tipoPadron, datosParaScrap, tipoCuota);
+    console.log(`🧭 [FLOW] Boleto por API: ${resultado.success ? 'OK' : 'FALLÓ'}`);
     if (!resultado.success) {
       console.warn(`⚠️ API de boleto falló, activando fallback scraping: ${resultado.error}`);
       resultado = await debtScraperService.obtenerBoletoPadron(tipoPadron, datosParaScrap, tipoCuota);
+      console.log(`🧭 [FLOW] Boleto fallback scraping: ${resultado.success ? 'OK' : 'ERROR'}`);
     }
     
     if (!resultado.success) {
@@ -2269,12 +2275,25 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       
       await whatsappService.sendButtonReply(from, '¿Desea pagar el boleto?', buttons);
       userStates[from].step = 'AWAITING_PAGO_BOLETO';
+
+      const periBole = resultado?.data?.periBole;
+      const numeBole = resultado?.data?.numeBole;
+      const appBaseUrl = (process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
+      const redirectLink = (periBole && numeBole)
+        ? `${appBaseUrl}/pagar-boleto/${periBole}/${numeBole}`
+        : null;
+      console.log('🧭 [FLOW] Link de redirección de pago generado', {
+        periBole,
+        numeBole,
+        redirectDisponible: Boolean(redirectLink)
+      });
       
       // Guardar datos para el pago
       userStates[from].tempBoletoPago = {
         tipoPadron,
         tipoCuota,
-        datos: datosParaScrap
+        datos: datosParaScrap,
+        redirectLink
       };
       
     } else {
@@ -2376,19 +2395,24 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
       
       const esperaMsg = `⏳ *Generando enlace de pago...*\n\nEste proceso puede demorar unos segundos.`;
       await sendMessageAndSave(from, esperaMsg);
-      
-      // Llamar al scraper para obtener el link de pago
-      const resultado = await debtScraperService.obtenerLinkPagoBoleto(
-        boletoPago.tipoPadron, 
-        boletoPago.datos, 
-        boletoPago.tipoCuota
-      );
-      
-      if (!resultado.success) {
-        await sendMessageAndSave(from, buildActionFailedMessage('obtener el enlace de pago del boleto'));
-        await sendMenuList(from, true);
-        userStates[from].step = 'MAIN_MENU';
-        return;
+
+      let linkPago = boletoPago.redirectLink;
+      console.log(`🧭 [FLOW] Pago boleto: usando ${linkPago ? 'redirect /pagar-boleto' : 'scraper link fallback'}`);
+      if (!linkPago) {
+        const resultado = await debtScraperService.obtenerLinkPagoBoleto(
+          boletoPago.tipoPadron,
+          boletoPago.datos,
+          boletoPago.tipoCuota
+        );
+
+        if (!resultado.success) {
+          await sendMessageAndSave(from, buildActionFailedMessage('obtener el enlace de pago del boleto'));
+          await sendMenuList(from, true);
+          userStates[from].step = 'MAIN_MENU';
+          return;
+        }
+
+        linkPago = resultado.linkPago;
       }
       
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -2396,7 +2420,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
       const instruccionesMsg = 
         `💳 *Enlace de pago del boleto*\n\n` +
         `Podés abonar tu boleto ingresando al siguiente enlace:\n\n` +
-        `🔗 ${resultado.linkPago}\n\n` +
+        `🔗 ${linkPago}\n\n` +
         `*Pasos sugeridos:*\n` +
         `1️⃣ Ingresá al link\n` +
         `2️⃣ Elegí tu método de pago preferido (tarjeta, Mercado Pago, etc.)\n` +
@@ -2554,7 +2578,17 @@ const handleTurnoCCPPChoice = async (from, option) => {
     const lastCCPP = userStates[from].lastCCPP;
     await sendMessageAndSave(from, `🔎 Buscando turno con: *${lastCCPP}*...`);
     
-    const result = await turnadoScraperService.buscarPorCCPP(lastCCPP);
+    // Intentar API primero
+    console.log(`🧭 [FLOW] Turno por CCPP (usar_ultimo): intentando API directa para ${lastCCPP}`);
+    let result = await turnadoApiService.obtenerDetalleTurnoCompleto(lastCCPP);
+    
+    // Si API falla, fallback a scraper
+    if (!result.success) {
+      console.log(`⚠️ API de turno falló para ${lastCCPP}, activando fallback scraping`);
+      result = await turnadoScraperService.buscarPorCCPP(lastCCPP);
+    } else {
+      console.log(`✅ [FLOW] Turno por CCPP (usar_ultimo) resuelta por API directa`);
+    }
     
     if (!result.success) {
       const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.');
@@ -2853,7 +2887,17 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
 
   await sendMessageAndSave(from, `🔎 Buscando turno para C.C.-P.P. ${normalized}...`);
 
-  const result = await turnadoScraperService.buscarPorCCPP(normalized);
+  // Intentar API primero
+  console.log(`🧭 [FLOW] Turno por CCPP: intentando API directa primero para ${normalized}`);
+  let result = await turnadoApiService.obtenerDetalleTurnoCompleto(normalized);
+
+  // Si API falla, fallback a scraper
+  if (!result.success) {
+    console.log(`⚠️ API de turno falló para ${normalized}, activando fallback scraping`);
+    result = await turnadoScraperService.buscarPorCCPP(normalized);
+  } else {
+    console.log(`✅ [FLOW] Turno por CCPP resuelta por API directa`);
+  }
 
   if (!result.success) {
     const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.');

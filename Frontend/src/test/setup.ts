@@ -37,7 +37,10 @@ class LocalStorageMock {
   }
 }
 
-global.localStorage = new LocalStorageMock() as any
+Object.defineProperty(globalThis, 'localStorage', {
+  value: new LocalStorageMock(),
+  writable: true,
+})
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -57,7 +60,7 @@ Object.defineProperty(window, 'matchMedia', {
 // Suppress console.error for expected errors in tests
 const originalError = console.error
 beforeAll(() => {
-  console.error = (...args: any[]) => {
+  console.error = (...args: unknown[]) => {
     if (
       typeof args[0] === 'string' &&
       (args[0].includes('Not wrapped in act') ||

@@ -3,6 +3,7 @@ import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Ima
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import Login from './components/Login';
 import { toast, Toaster } from 'sonner';
 import { env } from './config/env';
@@ -71,24 +72,30 @@ setupAxiosInterceptors(axios);
 // Configurar conexión con backend
 const socket: Socket = io(env.socketUrl, {
   transports: ['websocket', 'polling'],
+  auth: (cb) => cb({ token: localStorage.getItem(env.tokenKey) || undefined }),
   reconnection: true,
   reconnectionDelay: env.socketReconnectDelayMs,
+  reconnectionDelayMax: Math.max(env.socketReconnectDelayMs * 10, 10_000),
   reconnectionAttempts: env.socketReconnectAttempts,
+  timeout: Math.max(env.requestTimeoutMs, 10_000),
   autoConnect: false
 });
 
-// Log de conexión del socket
-socket.on('connect', () => {
-  // Socket conectado
-});
+const refreshSocketAuth = () => {
+  socket.auth = { token: localStorage.getItem(env.tokenKey) || undefined };
+};
 
-socket.on('disconnect', () => {
-  // Socket desconectado
-});
+const isSocketAuthError = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('unauthorized') ||
+    message.includes('auth') ||
+    message.includes('jwt') ||
+    message.includes('token')
+  );
+};
 
-socket.on('connect_error', (error) => {
-  console.error('❌ Error de conexión del socket:', error);
-});
 export default function App() {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -192,6 +199,9 @@ export default function App() {
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const preferencesRef = useRef<HTMLDivElement>(null);
   const chatSearchRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const reconnectFallbackTimerRef = useRef<number | null>(null);
+  const authFailureCountRef = useRef(0);
 
   // Helpers para fechas de ejemplo
   const makeDate = (hours: number, minutes: number, daysOffset = 0) => {
@@ -613,8 +623,34 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
   // ⚡ useEffect para cargar chats desde el backend
   useEffect(() => {
+    const clearReconnectFallback = () => {
+      if (reconnectFallbackTimerRef.current !== null) {
+        window.clearTimeout(reconnectFallbackTimerRef.current);
+        reconnectFallbackTimerRef.current = null;
+      }
+    };
+
+    const scheduleReconnectFallback = () => {
+      if (!isAuthenticated || reconnectFallbackTimerRef.current !== null) return;
+
+      const delay = Math.min(
+        env.socketReconnectDelayMs * Math.max(1, authFailureCountRef.current + 1),
+        30_000
+      );
+
+      reconnectFallbackTimerRef.current = window.setTimeout(() => {
+        reconnectFallbackTimerRef.current = null;
+        if (!isAuthenticated || socket.connected || !navigator.onLine) return;
+
+        refreshSocketAuth();
+        socket.connect();
+      }, delay);
+    };
+
     // Conectar/desconectar socket y cargar datos solo autenticado
     if (!isAuthenticated) {
+      clearReconnectFallback();
+      authFailureCountRef.current = 0;
       if (socket.connected) {
         socket.disconnect();
       }
@@ -622,13 +658,73 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     }
 
     const token = localStorage.getItem(env.tokenKey);
-    if (token) {
-      socket.auth = { token };
-    }
+    refreshSocketAuth();
 
     if (!socket.connected) {
       socket.connect();
     }
+
+    const handleSocketConnect = () => {
+      authFailureCountRef.current = 0;
+      clearReconnectFallback();
+    };
+
+    const handleSocketDisconnect = (reason: Socket.DisconnectReason) => {
+      if (!isAuthenticated) return;
+
+      if (reason === 'io client disconnect') {
+        return;
+      }
+
+      if (reason === 'io server disconnect') {
+        refreshSocketAuth();
+        socket.connect();
+        return;
+      }
+
+      scheduleReconnectFallback();
+    };
+
+    const handleSocketConnectError = (error: Error) => {
+      if (isSocketAuthError(error)) {
+        authFailureCountRef.current += 1;
+
+        if (!localStorage.getItem(env.tokenKey) || authFailureCountRef.current >= 2) {
+          handleLogout();
+          return;
+        }
+
+        refreshSocketAuth();
+      }
+
+      scheduleReconnectFallback();
+    };
+
+    const handleReconnectAttempt = () => {
+      refreshSocketAuth();
+    };
+
+    const handleReconnectFailed = () => {
+      scheduleReconnectFallback();
+    };
+
+    const handleOnline = () => {
+      if (!isAuthenticated || socket.connected) return;
+      refreshSocketAuth();
+      socket.connect();
+    };
+
+    const handleOffline = () => {
+      clearReconnectFallback();
+    };
+
+    socket.on('connect', handleSocketConnect);
+    socket.on('disconnect', handleSocketDisconnect);
+    socket.on('connect_error', handleSocketConnectError);
+    socket.io.on('reconnect_attempt', handleReconnectAttempt);
+    socket.io.on('reconnect_failed', handleReconnectFailed);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
 
     const loadChats = async () => {
       try {
@@ -1000,6 +1096,14 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     
     // Cleanup al desmontar
     return () => {
+      clearReconnectFallback();
+      socket.off('connect', handleSocketConnect);
+      socket.off('disconnect', handleSocketDisconnect);
+      socket.off('connect_error', handleSocketConnectError);
+      socket.io.off('reconnect_attempt', handleReconnectAttempt);
+      socket.io.off('reconnect_failed', handleReconnectFailed);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       socket.off('nuevo_mensaje', handleNewMessage);
       socket.off('bot_mode_changed', handleBotModeChanged);
       socket.off('typing', handleTyping);
@@ -1919,6 +2023,16 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   // Mock isOnline state for connection bar
   const isOnline = true;
 
+  const filteredMessages = useMemo(() => getFilteredMessages(), [selectedChat, conversationsState, chatSearchText]);
+
+  const messageVirtualizer = useVirtualizer({
+    count: filteredMessages.length,
+    getScrollElement: () => messagesContainerRef.current,
+    estimateSize: () => 128,
+    overscan: 10,
+    getItemKey: (index) => filteredMessages[index]?.id ?? index
+  });
+
   const filteredConversations = conversationsState.filter(conv => {
     // Filtrar archivadas
     if (conv.archived) return false;
@@ -2327,7 +2441,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         <div 
           key={selectedChat}
           data-messages-container
-          className="flex-1 overflow-y-auto p-6 space-y-4 relative pb-6 animate-fadeIn"
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto p-6 relative pb-6 animate-fadeIn"
           onContextMenu={openBlankMenu}
           onDragOver={(e) => {
             e.preventDefault();
@@ -2564,8 +2679,18 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               </button>
             </div>
           )}
-          {getFilteredMessages().map((msg, idx) => {
-            const filteredMessages = getFilteredMessages();
+          {filteredMessages.length > 0 && (
+            <div
+              style={{
+                height: `${messageVirtualizer.getTotalSize()}px`,
+                width: '100%',
+                position: 'relative'
+              }}
+            >
+              {messageVirtualizer.getVirtualItems().map((virtualRow) => {
+            const idx = virtualRow.index;
+            const msg = filteredMessages[idx];
+            if (!msg) return null;
             const prev = idx > 0 ? filteredMessages[idx - 1] : null;
             const labelFor = (m: ChatMessage | null) => {
               if (!m?.date) return '';
@@ -2588,8 +2713,11 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             return (
               <div 
                 key={msg.id} 
-                className="space-y-2"
+                ref={messageVirtualizer.measureElement}
+                data-index={virtualRow.index}
+                className="space-y-2 absolute left-0 top-0 w-full"
                 style={{
+                  transform: `translateY(${virtualRow.start}px)`,
                   animation: 'messageSlideIn 0.25s ease-out forwards'
                 }}
               >
@@ -3127,6 +3255,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               </div>
             );
           })}
+            </div>
+          )}
           {/* Indicador de escritura */}
           {currentChat && typingUsers[currentChat.phone] && (
             <div className="flex items-center gap-2 mb-3 ml-4">

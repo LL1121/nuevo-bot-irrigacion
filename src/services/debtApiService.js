@@ -7,6 +7,16 @@ const BASE_URL_CUOTA = 'https://www.irrigacion.gov.ar/boletoonline/ctacte/cuota'
 const BASE_URL_BOLETO_PDF = 'https://serviciosweb.cloud.irrigacion.gov.ar/services/presupuesto/api/public/boletos/boletoPDF';
 const RECAPTCHA_TOKEN = process.env.IRRIGACION_RECAPTCHA_TOKEN || '0';
 const DOWNLOAD_DIR = path.resolve(__dirname, '../../public/temp');
+const FLOW_DEBUG = process.env.PAYMENTS_DEBUG === 'true' || process.env.NODE_ENV !== 'production';
+
+function debugLog(message, data) {
+  if (!FLOW_DEBUG) return;
+  if (typeof data === 'undefined') {
+    console.log(`[DEBT_API] ${message}`);
+    return;
+  }
+  console.log(`[DEBT_API] ${message}`, data);
+}
 
 if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -77,6 +87,8 @@ async function obtenerDeudaPadronSuperficial(datos) {
   const padron1 = String(datos?.codigoCauce || '').trim();
   const padron2Raw = String(datos?.numeroPadron || '').trim();
 
+  debugLog('Iniciando consulta deuda superficial', { padron1, padron2Raw });
+
   if (!padron1 || !padron2Raw) {
     return {
       success: false,
@@ -88,6 +100,8 @@ async function obtenerDeudaPadronSuperficial(datos) {
   const padron2 = padron2Raw.padStart(4, '0');
   const codigoArmado = `A${padron1}${padron2}`;
   const fechaVencimiento = formatDateYmd(new Date());
+
+  debugLog('Parámetros armados para deudaAtencion', { codigoArmado, fechaVencimiento });
 
   try {
     const response = await axios.get(BASE_URL_DEUDA_ATENCION, {
@@ -130,6 +144,7 @@ async function obtenerDeudaPadronSuperficial(datos) {
 
     const sinTotales = !deudaData.total && !deudaData.capitalVencido && !deudaData.capitalVigente;
     if (sinTotales && detalles.length === 0) {
+      debugLog('Consulta sin deuda para código', codigoArmado);
       return {
         success: false,
         error: `Sin deuda para código ${codigoArmado}`,
@@ -146,6 +161,10 @@ async function obtenerDeudaPadronSuperficial(datos) {
       source: 'api-direct'
     };
   } catch (error) {
+    debugLog('Error consultando deudaAtencion', {
+      status: error?.response?.status,
+      message: error?.message
+    });
     const status = error?.response?.status;
     const userMessage = status === 404
       ? '✅ No se encontró deuda para ese padrón.'
@@ -205,6 +224,7 @@ async function descargarPdfBoleto(pdfUrl, tipoPadron, tipoCuota, codigo1, codigo
   ].join('_') + '.pdf';
 
   const pdfPath = path.join(DOWNLOAD_DIR, fileName);
+  debugLog('Descargando PDF de boleto', { pdfUrl, pdfPath });
   const response = await axios.get(pdfUrl, {
     responseType: 'arraybuffer',
     timeout: 25000,
@@ -214,12 +234,15 @@ async function descargarPdfBoleto(pdfUrl, tipoPadron, tipoCuota, codigo1, codigo
   });
 
   await fs.promises.writeFile(pdfPath, response.data);
+  debugLog('PDF de boleto descargado correctamente', { pdfPath });
   return pdfPath;
 }
 
 async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
   const tipoServicio = mapTipoPadronToTipoServicio(tipoPadron);
   const { codigo1, codigo2 } = buildCodigosByTipoPadron(tipoPadron, datos);
+
+  debugLog('Iniciando consulta de boletos por API', { tipoPadron, tipoBoleto, tipoServicio, codigo1, codigo2 });
 
   if (!codigo1 || (tipoServicio !== 'C' && !codigo2)) {
     return {
@@ -252,6 +275,8 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
         ? response.data.data
         : [];
 
+    debugLog('Boletos obtenidos desde API', { cantidad: cuotas.length });
+
     if (!cuotas.length) {
       throw new Error('No se encontraron boletos para este padrón.');
     }
@@ -277,6 +302,13 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
     const periBole = boletoSeleccionado.periBole;
     const numeBole = boletoSeleccionado.numeBole;
 
+    debugLog('Boleto seleccionado', {
+      tipo: normalizedTipo,
+      periBole,
+      numeBole,
+      dataBole: boletoSeleccionado?.dataBole
+    });
+
     if (!periBole || !numeBole) {
       throw new Error('No se pudo construir el PDF del boleto por datos incompletos de la API.');
     }
@@ -292,6 +324,7 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
       source: 'api-direct'
     };
   } catch (error) {
+    debugLog('Error en obtenerBoletoPadron', { message: error?.message });
     return {
       success: false,
       error: error.message || 'Error consultando boletos por API.',
