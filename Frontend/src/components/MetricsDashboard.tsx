@@ -8,6 +8,11 @@ interface Metric {
   rating: 'good' | 'needs-improvement' | 'poor';
 }
 
+type WebVitalMetric = {
+  value: number;
+  rating: 'good' | 'needs-improvement' | 'poor';
+};
+
 export const MetricsDashboard = () => {
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [isVisible, setIsVisible] = useState(false);
@@ -18,7 +23,7 @@ export const MetricsDashboard = () => {
 
     // Cargar Web Vitals
     import('web-vitals').then(({ onCLS, onFID, onFCP, onLCP, onTTFB }) => {
-      const updateMetric = (name: string, metric: any) => {
+      const updateMetric = (name: string, metric: WebVitalMetric) => {
         setMetrics((prev) => {
           const existing = prev.find((m) => m.name === name);
           if (existing) {

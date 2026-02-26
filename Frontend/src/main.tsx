@@ -16,7 +16,8 @@ async function bootstrap() {
 
   // Global handlers for unexpected errors
   window.addEventListener('unhandledrejection', (ev) => {
-    captureException((ev as any).reason || ev, { type: 'unhandledrejection' });
+    const reason = 'reason' in ev ? (ev as PromiseRejectionEvent).reason : ev;
+    captureException(reason || ev, { type: 'unhandledrejection' });
   });
 
   window.addEventListener('error', (ev) => {

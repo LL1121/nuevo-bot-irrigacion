@@ -9,7 +9,7 @@ export const isPWA = (): boolean => {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
   
   // Check iOS Safari specific
-  const isIOSStandalone = (window.navigator as any).standalone === true;
+  const isIOSStandalone = (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
   
   return isStandalone || isIOSStandalone;
 };

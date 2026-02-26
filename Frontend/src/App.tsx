@@ -15,6 +15,51 @@ import { consumePendingByMatch, registerPendingMessage, removePendingMessage } f
 import { useChatStore } from './stores/chatStore';
 import { getTemplateDisplayText, normalizeMessageContent } from './services/messageParser';
 import { useChatSelection } from './hooks/useChatSelection';
+import { useChatMutations } from './hooks/useChatMutations';
+import type { ChatMessage, Conversation, RawApiMessage, RawSocketMessage } from './types/chat';
+
+type MediaFilter = 'all' | 'images' | 'videos' | 'files' | 'urls';
+
+type RawChatSummary = {
+  id: number;
+  telefono: string;
+  nombre_whatsapp?: string;
+  nombre_asignado?: string;
+  ultimo_mensaje?: { cuerpo?: unknown; created_at?: string; fecha?: string } | string;
+  ultimo_mensaje_fecha?: string;
+  ultima_interaccion?: string;
+  mensajes_no_leidos?: number;
+  foto_perfil?: string | null;
+  operador?: string | null;
+  estado?: string;
+  archivado?: boolean;
+  padron?: string;
+  ubicacion?: string;
+  estado_deuda?: string;
+  notas?: string | null;
+};
+
+type InteractiveOption = {
+  id?: string | number;
+  title?: string;
+  description?: string;
+};
+
+type InteractiveSection = {
+  title?: string;
+  rows?: InteractiveOption[];
+};
+
+type InteractiveMessagePayload = {
+  header?: string;
+  body?: string;
+  buttonText?: string;
+  sections?: InteractiveSection[];
+};
+
+type LegacyAudioWindow = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
 
 // Configurar Axios base
 axios.defaults.baseURL = env.apiUrl;
@@ -75,6 +120,9 @@ export default function App() {
     setTypingUsers,
     isLoadingMoreMessages,
     setIsLoadingMoreMessages,
+    markConversationReadById,
+    setConversationArchivedById,
+    deleteConversationById: deleteConversationByIdFromStore,
     resetChatStore
   } = useChatStore();
 
@@ -123,7 +171,7 @@ export default function App() {
   const [editingName, setEditingName] = useState(false);
   const [tempName, setTempName] = useState('');
   const [showMediaMenu, setShowMediaMenu] = useState(false);
-  const [mediaFilter, setMediaFilter] = useState<'all' | 'images' | 'videos' | 'files' | 'urls'>('all');
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all');
   const [expandedMenus, setExpandedMenus] = useState<Set<string>>(new Set()); // Para controlar qué menús de opciones están expandidos
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [videoProgress, setVideoProgress] = useState(0);
@@ -157,6 +205,18 @@ export default function App() {
     conversationsState,
     selectedChat,
     setSelectedChat
+  });
+
+  const {
+    markChatReadById,
+    deleteConversationById,
+    archiveConversationById,
+    unarchiveConversationById
+  } = useChatMutations({
+    setContextMenu,
+    markConversationReadById,
+    setConversationArchivedById,
+    deleteConversationByIdFromStore
   });
 
   // Estado para gestionar reactivación de sesión 24h por chat
@@ -286,7 +346,7 @@ export default function App() {
   };
 
   // Función para normalizar mensajes (convertir JSON a string)
-  const normalizeMessage = (msg: any): string => {
+  const normalizeMessage = (msg: unknown): string => {
     if (typeof msg === 'string') return msg;
     if (typeof msg === 'object' && msg !== null) {
       return msg.cuerpo || msg.text || msg.contenido || msg.body || JSON.stringify(msg).substring(0, 50) || '[Mensaje sin contenido]';
@@ -348,19 +408,20 @@ const isUserSender = (value?: string) => {
   ].includes(v);
 };
 
+const normalizePhoneKey = (value?: string) => (value || '').replace(/\D/g, '');
+
 const phonesMatch = (a?: string, b?: string) => {
-  const norm = (v?: string) => (v || '').replace(/\D/g, '');
-  const na = norm(a);
-  const nb = norm(b);
+  const na = normalizePhoneKey(a);
+  const nb = normalizePhoneKey(b);
   return !!na && !!nb && na === nb;
 };
 
-const normalizeMessageType = (rawType: any, normalizedType: string) => {
+const normalizeMessageType = (rawType: unknown, normalizedType: string) => {
   if (rawType === 'interactive_list') return 'interactive';
-  return rawType || normalizedType || 'text';
+  return (typeof rawType === 'string' ? rawType : '') || normalizedType || 'text';
 };
 
-const parseMessageDate = (value: any) => {
+const parseMessageDate = (value: unknown) => {
   return parseTimestamp(value).toDate();
 };
 
@@ -406,15 +467,41 @@ const buildStableMessageId = (params: {
 };
 
 // Dedupe helper to avoid duplicated IDs in UI
-const dedupeMessages = (msgs: any[]) => {
+const dedupeMessages = (msgs: ChatMessage[]) => {
   return sortAndDedupeMessages(msgs || []);
+};
+
+const parseConversationNotes = (rawNotes: string | null | undefined): Array<{ id: number; text: string }> => {
+  if (!rawNotes || typeof rawNotes !== 'string') return [];
+  try {
+    const parsed = JSON.parse(rawNotes);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((note) => typeof note === 'object' && note !== null)
+      .map((note) => {
+        const candidate = note as { id?: unknown; text?: unknown };
+        return {
+          id: Number(candidate.id) || Date.now(),
+          text: typeof candidate.text === 'string' ? candidate.text : ''
+        };
+      })
+      .filter((note) => note.text.trim().length > 0);
+  } catch {
+    return [];
+  }
 };
 
 // Función para reproducir sonido de notificación
 const playNotificationSound = () => {
   // Sonido beep simple usando Web Audio API
   try {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const AudioContextCtor = window.AudioContext || (window as LegacyAudioWindow).webkitAudioContext;
+    if (!AudioContextCtor) {
+      return;
+    }
+
+    const audioContext = new AudioContextCtor();
     const oscillator = audioContext.createOscillator();
     const gainNode = audioContext.createGain();
     
@@ -474,7 +561,7 @@ const requestNotificationPermission = async () => {
   return false;
 };
 
-const dedupeDisplayMessages = (msgs: any[]) => {
+const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   return sortAndDedupeMessages(msgs || []);
 };
 
@@ -557,7 +644,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         const chats = Array.isArray(response.data) ? response.data : (response.data.data || response.data.chats || []);
         
         // Mapear los datos del backend a la estructura esperada por la UI
-        const mappedChats = chats.map((chat: any) => {
+        const mappedChats: Conversation[] = chats.map((chat: RawChatSummary) => {
           const rawLastMessage = chat.ultimo_mensaje?.cuerpo ?? chat.ultimo_mensaje ?? '';
           const normalizedLast = normalizeMessageContent(rawLastMessage);
           const lastDateRaw = chat.ultimo_mensaje_fecha || chat.ultimo_mensaje?.created_at || chat.ultimo_mensaje?.fecha || null;
@@ -582,14 +669,14 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               location: chat.ubicacion || '',
               debtStatus: chat.estado_deuda || ''
             },
-            notes: chat.notas ? JSON.parse(chat.notas) : [],
+            notes: parseConversationNotes(chat.notas),
             messages: [] // Los mensajes se cargan al seleccionar el chat
           };
         });
         
         setConversationsState(mappedChats);
-      } catch (error: any) {
-        const status = error?.response?.status;
+      } catch (error: unknown) {
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
         // Si el token es inválido/expirado, forzar logout para reautenticar
         if (status === 401 || status === 403) {
           handleLogout();
@@ -600,7 +687,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     loadChats();
     
     // Escuchar mensajes en tiempo real
-    const handleNewMessage = (data: any) => {
+    const handleNewMessage = (data: RawSocketMessage) => {
       // 🔍 DEBUG: Log del mensaje entrante para ver estructura real
       console.log('🔍 DEBUG - Mensaje recibido del socket:', {
         raw_data: data,
@@ -697,7 +784,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             });
             
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
-            const messageExists = chat.messages.some((m: any) => {
+            const messageExists = chat.messages.some((m: ChatMessage) => {
               // Verificar por ID si ambos lo tienen
               if (newMsg.id && m.id === newMsg.id) return true;
               
@@ -721,25 +808,26 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               // y NO reemplazarlo, para mantener el timestamp original
               const isOperatorMessage = ['operador', 'operadora', 'agent', 'agente', 'bot'].includes(emisorLimpio);
               const existingOptimisticMsg = isOperatorMessage 
-                ? chat.messages.find((m: any) => (matchedTempId ? m.id === matchedTempId : (m.text === incomingText && m.sent === true)))
+                ? chat.messages.find((m: ChatMessage) => (matchedTempId ? m.id === matchedTempId : (m.text === incomingText && m.sent === true)))
                 : null;
               
               if (existingOptimisticMsg) {
                 // Actualizar solo el ID, mantener el timestamp original (crear nuevo array)
-                chat.messages = chat.messages.map((m: any) => 
+                chat.messages = chat.messages.map((m: ChatMessage) => 
                   m === existingOptimisticMsg
                     ? { ...existingOptimisticMsg, id: newMsg.id, read: true, status: undefined }
                     : m
                 );
 
                 setAllMessagesCache(prev => {
-                  const phoneCache = prev[chat.phone] || [];
-                  const updatedCache = phoneCache.map((m: any) =>
+                  const phoneKey = normalizePhoneKey(chat.phone);
+                  const phoneCache = prev[phoneKey] || [];
+                  const updatedCache = phoneCache.map((m: ChatMessage) =>
                     m.id === existingOptimisticMsg.id
                       ? { ...m, id: newMsg.id, read: true, status: undefined }
                       : m
                   );
-                  return { ...prev, [chat.phone]: mergeMessageBatches(updatedCache) };
+                  return { ...prev, [phoneKey]: mergeMessageBatches(updatedCache) };
                 });
               } else {
                 // Agregar nuevo mensaje
@@ -766,7 +854,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 });
                 
                 // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
-                const existingIds = new Set(chat.messages.map((m: any) => m.id));
+                const existingIds = new Set(chat.messages.map((m: ChatMessage) => m.id));
                 if (!existingIds.has(mappedMessage.id)) {
                   chat.messages = appendIncomingMessage(chat.messages, mappedMessage, { limit: messagesLimit });
                   
@@ -775,11 +863,12 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   
                   // También agregar al caché de memoria
                   setAllMessagesCache(prev => {
-                    const phoneCache = prev[chat.phone] || [];
-                    const cacheIds = new Set(phoneCache.map((m: any) => m.id));
+                    const phoneKey = normalizePhoneKey(chat.phone);
+                    const phoneCache = prev[phoneKey] || [];
+                    const cacheIds = new Set(phoneCache.map((m: ChatMessage) => m.id));
                     if (!cacheIds.has(mappedMessage.id)) {
                       const updatedCache = mergeMessageBatches(phoneCache, [mappedMessage]);
-                      return { ...prev, [chat.phone]: updatedCache };
+                      return { ...prev, [phoneKey]: updatedCache };
                     }
                     return prev;
                   });
@@ -1054,7 +1143,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           const messages = allMessages.slice(-messagesLimit);
           
           // Mapear mensajes al formato esperado por la UI
-          const mappedMessages = messages.map((msg: any) => {
+          const mappedMessages = messages.map((msg: RawApiMessage) => {
             const tipo = normalizeSenderType(msg.emisor || msg.tipo || '');
             const sent = !isUserSender(tipo);
             
@@ -1098,7 +1187,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           });
           
           // Guardar TODOS los mensajes mapeados en caché de memoria
-          const allMappedMessages = allMessages.map((msg: any) => {
+          const allMappedMessages = allMessages.map((msg: RawApiMessage) => {
             const tipo = normalizeSenderType(msg.emisor || msg.tipo || '');
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
             const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
@@ -1127,7 +1216,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           const sortedAllMessages = mergeMessageBatches(allMappedMessages);
           
           // Guardar en caché de memoria
-          setAllMessagesCache(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages }));
+          setAllMessagesCache(prev => {
+            const phoneKey = normalizePhoneKey(currentChat.phone);
+            return { ...prev, [phoneKey]: sortedAllMessages };
+          });
           setCurrentMessageIndex(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages.length - messagesLimit }));
           
           // Solo mostrar los últimos N
@@ -1156,13 +1248,18 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             };
             return updated;
           });
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const responseStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+          const responseStatusText = axios.isAxiosError(error) ? error.response?.statusText : undefined;
+          const responseData = axios.isAxiosError(error) ? error.response?.data : undefined;
+          const errorMessage = error instanceof Error ? error.message : String(error);
+
           console.error('❌ Error cargando mensajes:', error);
           console.error('❌ Detalles del error:', {
-            status: error.response?.status,
-            statusText: error.response?.statusText,
-            data: error.response?.data,
-            message: error.message
+            status: responseStatus,
+            statusText: responseStatusText,
+            data: responseData,
+            message: errorMessage
           });
           
           // Establecer array vacío para que no quede en loading infinito
@@ -1187,9 +1284,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     
     // Find the audio message to get its duration
     let totalSeconds = 32; // default fallback
-    for (const conv of conversationsState as any[]) {
+    for (const conv of conversationsState) {
       if (conv.messages && Array.isArray(conv.messages)) {
-        const msg = conv.messages.find((m: any) => m.id === audioPlaying);
+        const msg = conv.messages.find((m) => m.id === audioPlaying);
         if (msg && msg.type === 'audio') {
           const duration = msg.duration || '0:32';
           const [mins, secs] = duration.split(':').map(Number);
@@ -1372,9 +1469,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         
         // También agregar al caché de memoria
         setAllMessagesCache(prev => {
-          const phoneCache = prev[currentChat.phone] || [];
+          const phoneKey = normalizePhoneKey(currentChat.phone);
+          const phoneCache = prev[phoneKey] || [];
           const updatedCache = dedupeMessages([...phoneCache, tempMessage]);
-          return { ...prev, [currentChat.phone]: updatedCache };
+          return { ...prev, [phoneKey]: updatedCache };
         });
         
         // Limpiar input
@@ -1410,21 +1508,21 @@ const dedupeDisplayMessages = (msgs: any[]) => {
 
             setConversationsState(prev => {
               const updated = [...prev];
-              const targetChatIndex = updated.findIndex((c: any) => phonesMatch(c.phone, currentChat.phone));
+              const targetChatIndex = updated.findIndex((c) => phonesMatch(c.phone, currentChat.phone));
 
               if (targetChatIndex !== -1 && updated[targetChatIndex].messages) {
                 // Verificar si ya existe un mensaje con el ID real (fue actualizado por el socket)
-                const msgAlreadyUpdated = updated[targetChatIndex].messages.some((m: any) => m.id === realId);
+                const msgAlreadyUpdated = updated[targetChatIndex].messages.some((m) => m.id === realId);
                 
                 if (!msgAlreadyUpdated) {
                   // Solo actualizar si el socket aún no lo hizo
-                  updated[targetChatIndex].messages = updated[targetChatIndex].messages.map((m: any) =>
+                  updated[targetChatIndex].messages = updated[targetChatIndex].messages.map((m) =>
                     m.id === tempId ? { ...m, id: realId, status: undefined, read: true } : m
                   );
                   updated[targetChatIndex].messages = dedupeMessages(updated[targetChatIndex].messages);
                 } else {
                   // Limpiar el status del mensaje temporal si existe
-                  updated[targetChatIndex].messages = updated[targetChatIndex].messages.map((m: any) =>
+                  updated[targetChatIndex].messages = updated[targetChatIndex].messages.map((m) =>
                     m.id === tempId ? { ...m, status: undefined } : m
                   );
                 }
@@ -1434,14 +1532,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             
             // También actualizar en el caché de memoria
             setAllMessagesCache(prev => {
-              const phoneCache = prev[currentChat.phone] || [];
-              const msgAlreadyUpdated = phoneCache.some((m: any) => m.id === realId);
+              const phoneKey = normalizePhoneKey(currentChat.phone);
+              const phoneCache = prev[phoneKey] || [];
+              const msgAlreadyUpdated = phoneCache.some((m) => m.id === realId);
               
               if (!msgAlreadyUpdated) {
                 const updatedCache = dedupeMessages(phoneCache.map(msg => 
                   msg.id === tempId ? { ...msg, id: realId, status: undefined, read: true } : msg
                 ));
-                return { ...prev, [currentChat.phone]: updatedCache };
+                return { ...prev, [phoneKey]: updatedCache };
               } else {
                 return prev;
               }
@@ -1453,9 +1552,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
           // Marcar el mensaje como error
           setConversationsState(prev => {
             const updated = [...prev];
-            const targetChatIndex = updated.findIndex((c: any) => phonesMatch(c.phone, currentChat.phone));
+            const targetChatIndex = updated.findIndex((c) => phonesMatch(c.phone, currentChat.phone));
             if (targetChatIndex !== -1 && updated[targetChatIndex].messages) {
-              const msgIndex = updated[targetChatIndex].messages.findIndex((m: any) => m.id === tempId);
+              const msgIndex = updated[targetChatIndex].messages.findIndex((m) => m.id === tempId);
               if (msgIndex !== -1) {
                 updated[targetChatIndex].messages[msgIndex].error = true;
               }
@@ -1467,7 +1566,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     }
   };
 
-  const handleEmojiClick = (emojiObject: any) => {
+  const handleEmojiClick = (emojiObject: { emoji: string }) => {
     setMessage((prev) => prev + emojiObject.emoji);
     setShowEmojiPicker(false);
   };
@@ -1498,38 +1597,6 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     setContextMenu({ visible: true, x: e.clientX, y: e.clientY, type: 'blank' });
   };
 
-  const markChatReadById = (id: number) => {
-    setConversationsState(prev => prev.map((c: any) => c.id === id ? { ...c, unread: 0 } : c));
-    setContextMenu({ visible: false, x: 0, y: 0, type: null });
-  };
-
-  const deleteConversationById = (id: number) => {
-    setConversationsState(prev => {
-      const indexToDelete = prev.findIndex((c: any) => c.id === id);
-      const filtered = prev.filter((c: any) => c.id !== id);
-
-      setSelectedChat((currentIdx) => {
-        if (currentIdx === null) return null;
-        if (indexToDelete === -1) return currentIdx;
-
-        if (currentIdx === indexToDelete) {
-          if (filtered.length === 0) return null;
-          return Math.min(indexToDelete, filtered.length - 1);
-        }
-
-        if (currentIdx > indexToDelete) {
-          const shifted = currentIdx - 1;
-          return shifted < filtered.length ? shifted : filtered.length - 1;
-        }
-
-        return currentIdx < filtered.length ? currentIdx : filtered.length - 1;
-      });
-
-      return filtered;
-    });
-
-    setContextMenu({ visible: false, x: 0, y: 0, type: null });
-  };
 
   const createNewConversation = () => {
     if (!newConvName.trim() || !newConvPhone.trim()) return;
@@ -1563,18 +1630,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     setNewConvMessage('');
   };
 
-  const archiveConversationById = (id: number) => {
-    setConversationsState(prev => prev.map((c: any) => c.id === id ? { ...c, archived: true } : c));
-    setContextMenu({ visible: false, x: 0, y: 0, type: null });
-  };
-
-  const unarchiveConversationById = (id: number) => {
-    setConversationsState(prev => prev.map((c: any) => c.id === id ? { ...c, archived: false } : c));
-  };
-
   const copyMessageById = (id: number) => {
     if (selectedChat === null) return;
-    const msg: any = conversationsState[selectedChat].messages.find((m: any) => m.id === id);
+    const msg = conversationsState[selectedChat].messages.find((m) => m.id === id);
     if (msg && navigator.clipboard) navigator.clipboard.writeText(msg.text);
     setContextMenu({ visible: false, x: 0, y: 0, type: null });
   };
@@ -1586,7 +1644,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       visible: true,
       message: '¿Eliminar este mensaje?',
       onConfirm: () => {
-        setConversationsState(prev => prev.map(c => c.id === chatId ? { ...c, messages: c.messages.filter((m: any) => m.id !== id) } : c));
+        setConversationsState(prev => prev.map(c => c.id === chatId ? { ...c, messages: c.messages.filter((m) => m.id !== id) } : c));
         setContextMenu({ visible: false, x: 0, y: 0, type: null });
         setConfirmDialog(null);
       }
@@ -1595,7 +1653,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
 
   const replyToMessage = (id: number) => {
     if (selectedChat === null) return;
-    const msg: any = conversationsState[selectedChat].messages.find((m: any) => m.id === id);
+    const msg = conversationsState[selectedChat].messages.find((m) => m.id === id);
     if (msg) {
       let displayText = msg.text;
       if (msg.type === 'image') displayText = '📷 Imagen';
@@ -1615,11 +1673,16 @@ const dedupeDisplayMessages = (msgs: any[]) => {
 
   const confirmForward = (targetChatId: number) => {
     if (selectedChat === null || forwardMessageId === null) return;
-    const msg: any = conversationsState[selectedChat].messages.find((m: any) => m.id === forwardMessageId);
+    const msg = conversationsState[selectedChat].messages.find((m) => m.id === forwardMessageId);
     if (msg) {
       const targetChat = conversationsState.find(c => c.id === targetChatId);
       if (targetChat) {
-        const newMsgId = Math.max(...targetChat.messages.map((m: any) => m.id), 0) + 1;
+        const maxNumericMessageId = targetChat.messages.reduce((maxId, message) => {
+          const numericId = typeof message.id === 'number' ? message.id : Number(message.id);
+          if (!Number.isFinite(numericId)) return maxId;
+          return Math.max(maxId, numericId);
+        }, 0);
+        const newMsgId = maxNumericMessageId + 1;
         setConversationsState(prev => prev.map(c => c.id === targetChatId ? {
           ...c,
           messages: [...c.messages, {
@@ -1643,7 +1706,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
 
   const startEditMessage = (id: number) => {
     if (selectedChat === null) return;
-    const msg: any = conversationsState[selectedChat].messages.find((m: any) => m.id === id);
+    const msg = conversationsState[selectedChat].messages.find((m) => m.id === id);
     if (msg && msg.sent) {
       setEditingMessage({ id: msg.id, text: msg.text });
       setMessage(msg.text);
@@ -1656,7 +1719,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     const chatId = conversationsState[selectedChat].id;
     setConversationsState(prev => prev.map(c => c.id === chatId ? {
       ...c,
-      messages: c.messages.map((m: any) => m.id === editingMessage.id ? { ...m, text: message } : m)
+      messages: c.messages.map((m) => m.id === editingMessage.id ? { ...m, text: message } : m)
     } : c));
     setEditingMessage(null);
     setMessage('');
@@ -1692,15 +1755,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     
     switch (mediaFilter) {
       case 'images':
-        return messages.filter((m: any) => m.type === 'image');
+        return messages.filter((m) => m.type === 'image');
       case 'videos':
-        return messages.filter((m: any) => m.type === 'video');
+        return messages.filter((m) => m.type === 'video');
       case 'files':
-        return messages.filter((m: any) => m.type === 'file');
+        return messages.filter((m) => m.type === 'file');
       case 'urls':
-        return messages.filter((m: any) => m.text && /https?:\/\/[^\s]+/.test(m.text));
+        return messages.filter((m) => m.text && /https?:\/\/[^\s]+/.test(m.text));
       default:
-        return messages.filter((m: any) => m.type === 'image' || m.type === 'video' || m.type === 'file' || (m.text && /https?:\/\/[^\s]+/.test(m.text)));
+        return messages.filter((m) => m.type === 'image' || m.type === 'video' || m.type === 'file' || (m.text && /https?:\/\/[^\s]+/.test(m.text)));
     }
   };
 
@@ -1723,7 +1786,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
 
   const replyFromLightbox = (messageId: number) => {
     if (selectedChat === null) return;
-    const msg: any = conversationsState[selectedChat].messages.find((m: any) => m.id === messageId);
+    const msg = conversationsState[selectedChat].messages.find((m) => m.id === messageId);
     if (msg) {
       let displayText = msg.text;
       if (msg.type === 'image') displayText = '📷 Imagen';
@@ -1767,7 +1830,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     }
     const chat = conversationsState[selectedChat];
     const ownSelectedIds = selectedMessageIds.filter(id => {
-      const m: any = chat.messages.find((mm: any) => mm.id === id);
+      const m = chat.messages.find((mm) => mm.id === id);
       return m?.sent === true;
     });
     if (ownSelectedIds.length === 0) {
@@ -1780,7 +1843,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
       visible: true,
       message: `¿Eliminar ${ownSelectedIds.length} mensaje(s) propios?`,
       onConfirm: () => {
-        setConversationsState(prev => prev.map(c => c.id === chatId ? { ...c, messages: c.messages.filter((m: any) => !ownSelectedIds.includes(m.id)) } : c));
+        setConversationsState(prev => prev.map(c => c.id === chatId ? { ...c, messages: c.messages.filter((m) => !ownSelectedIds.includes(Number(m.id)) ) } : c));
         setSelectedMessageIds([]);
         setSelectionMode(false);
         setContextMenu({ visible: false, x: 0, y: 0, type: null });
@@ -1809,7 +1872,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     const chat = conversationsState[selectedChat];
     const base = !chatSearchText.trim()
       ? chat.messages
-      : chat.messages.filter((msg: any) =>
+      : chat.messages.filter((msg) =>
           msg.text.toLowerCase().includes(chatSearchText.toLowerCase())
         );
     // No aplicar dedupe en display, ya se aplicó al agregar
@@ -1835,14 +1898,14 @@ const dedupeDisplayMessages = (msgs: any[]) => {
   const deleteNote = (noteId: number) => {
     if (selectedChat === null) return;
     const chatId = conversationsState[selectedChat].id;
-    setConversationsState(prev => prev.map(c => c.id === chatId ? { ...c, notes: (c.notes || []).filter((n: any) => n.id !== noteId) } : c));
+    setConversationsState(prev => prev.map(c => c.id === chatId ? { ...c, notes: (c.notes || []).filter((n) => n.id !== noteId) } : c));
   };
 
   const insertQuickText = (text: string) => {
     setMessage((prev) => (prev ? `${prev} ${text}` : text));
   };
 
-  const handleCopyMessage = async (msg: any) => {
+  const handleCopyMessage = async (msg: ChatMessage) => {
     if (!navigator.clipboard || !msg?.text) return;
     try {
       await navigator.clipboard.writeText(msg.text);
@@ -1865,7 +1928,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
     return (
       conv.name.toLowerCase().includes(query) ||
       conv.lastMessage.toLowerCase().includes(query) ||
-      conv.messages.some((msg: any) => msg.text.toLowerCase().includes(query))
+      conv.messages.some((msg) => msg.text.toLowerCase().includes(query))
     );
   });
 
@@ -1917,7 +1980,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
         <div className="p-4 text-white" style={{ background: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)` }}>
           <div className="flex items-center justify-center mb-4">
             <img src="/Marca-IRRIGACIÓN-blanco.png" alt="Irrigación" className="h-24 w-auto" />
-            <div className="flex items-center gap-2 relative absolute left-6" ref={sidebarMenuRef}>
+            <div className="flex items-center gap-2 absolute left-6" ref={sidebarMenuRef}>
               <button 
                 className="text-white hover:bg-white/20 p-2 rounded-lg transition-colors"
                 onClick={() => setShowSidebarMenu((v) => !v)}
@@ -2145,7 +2208,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   </div>
                   {(() => {
                     // Calcular tiempo para expiración
-                    const lastUserMsg = [...(currentChat.messages || [])].reverse().find((m: any) => m.sent === false)?.date;
+                    const lastUserMsg = [...(currentChat.messages || [])].reverse().find((m) => m.sent === false)?.date;
                     if (!lastUserMsg) return null;
                     const lastUser = new Date(lastUserMsg);
                     const diffMs = Date.now() - lastUser.getTime();
@@ -2302,6 +2365,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 onClick={async () => {
                   if (!currentChat || !currentChat.phone) return;
                   const phone = currentChat.phone;
+                  const cachePhone = normalizePhoneKey(phone);
                   
                   if (messagesLoading[phone]) return;
                   
@@ -2314,7 +2378,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   const scrollTopBefore = messagesContainer?.scrollTop || 0;
                   
                   // Primero verificar si hay mensajes en el caché de memoria
-                  const cachedMessages = allMessagesCache[phone] || [];
+                  const cachedMessages = allMessagesCache[cachePhone] || [];
                   const currentIndex = currentMessageIndex[phone] || 0;
                   
                   if (cachedMessages.length > 0 && currentIndex > 0) {
@@ -2332,8 +2396,8 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       const updated = [...prev];
                       const chatIndex = updated.findIndex(c => c.phone === phone);
                       if (chatIndex !== -1) {
-                        const existingIds = new Set(updated[chatIndex].messages.map((m: any) => m.id));
-                        const newMessages = messagesFromCache.filter((m: any) => !existingIds.has(m.id));
+                        const existingIds = new Set(updated[chatIndex].messages.map((m) => m.id));
+                        const newMessages = messagesFromCache.filter((m) => !existingIds.has(m.id));
                         updated[chatIndex].messages = [...newMessages, ...updated[chatIndex].messages];
                       }
                       return updated;
@@ -2374,11 +2438,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         params: { limit: 100, offset: currentOffset },
                         headers: {}
                       });
-                      const newMessages = response.data.mensajes || response.data.messages || [];
+                      const newMessages: RawApiMessage[] = response.data.mensajes || response.data.messages || [];
                       
                       if (newMessages.length > 0) {
                         
-                        const allMappedMessages = newMessages.map((msg: any) => {
+                        const allMappedMessages: ChatMessage[] = newMessages.map((msg) => {
                           const emisor = normalizeSenderType(msg.emisor || msg.tipo || '');
                           return {
                             id: msg.id,
@@ -2397,7 +2461,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         
                         // Añadir al caché (al principio, porque son mensajes más antiguos)
                         const updatedCache = [...allMappedMessages, ...cachedMessages];
-                        setAllMessagesCache(prev => ({ ...prev, [phone]: updatedCache }));
+                        setAllMessagesCache(prev => ({ ...prev, [cachePhone]: updatedCache }));
                         
                         // Mostrar solo los primeros 20 de los nuevos
                         const messagesToShow = allMappedMessages.slice(-messagesLimit);
@@ -2406,8 +2470,8 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                           const updated = [...prev];
                           const chatIndex = updated.findIndex(c => c.phone === phone);
                           if (chatIndex !== -1) {
-                            const existingIds = new Set(updated[chatIndex].messages.map((m: any) => m.id));
-                            const newMessages = messagesToShow.filter((m: any) => !existingIds.has(m.id));
+                            const existingIds = new Set(updated[chatIndex].messages.map((m) => m.id));
+                            const newMessages = messagesToShow.filter((m) => !existingIds.has(m.id));
                             updated[chatIndex].messages = [...newMessages, ...updated[chatIndex].messages];
                           }
                           return updated;
@@ -2476,7 +2540,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 className={`p-2 rounded-full shadow-lg bg-red-600 text-white hover:bg-red-700 transition ${(() => {
                   if (selectedChat === null) return 'opacity-50 cursor-not-allowed';
                   const ownIds = selectedMessageIds.filter(id => {
-                    const m: any = conversationsState[selectedChat].messages.find((mm: any) => mm.id === id);
+                    const m = conversationsState[selectedChat].messages.find((mm) => mm.id === id);
                     return m?.sent === true;
                   });
                   return ownIds.length === 0 ? 'opacity-50 cursor-not-allowed' : '';
@@ -2490,7 +2554,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     {(() => {
                       if (selectedChat === null) return '(0)';
                       const ownIds = selectedMessageIds.filter(id => {
-                        const m: any = conversationsState[selectedChat].messages.find((mm: any) => mm.id === id);
+                        const m = conversationsState[selectedChat].messages.find((mm) => mm.id === id);
                         return m?.sent === true;
                       });
                       return `(${ownIds.length})`;
@@ -2500,10 +2564,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               </button>
             </div>
           )}
-          {getFilteredMessages().map((msg: any, idx: any) => {
+          {getFilteredMessages().map((msg, idx) => {
             const filteredMessages = getFilteredMessages();
             const prev = idx > 0 ? filteredMessages[idx - 1] : null;
-            const labelFor = (m: any) => {
+            const labelFor = (m: ChatMessage | null) => {
               if (!m?.date) return '';
               const d = new Date(m.date);
               const today = new Date();
@@ -2516,7 +2580,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             };
             const currLabel = labelFor(msg);
             const prevLabel = labelFor(prev);
-            const isImage = (msg as any).type === 'image' || (typeof msg.text === 'string' && (msg.text.startsWith('http') || msg.text.startsWith('data:image')));
+            const isImage = msg.type === 'image' || (typeof msg.text === 'string' && (msg.text.startsWith('http') || msg.text.startsWith('data:image')));
             
             // Animación rápida: 0.25s para aparición inmediata, sin delay escalonado
             // Usar key estable (msg.id) evita re-render al actualizar el ID del mensaje
@@ -2570,7 +2634,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       style={selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {}}
                       onContextMenu={(e) => { openContextMenu(e, 'message', msg.id); e.stopPropagation(); }}
                       onClick={() => { 
-                        setLightboxImage(getMediaUrl((msg as any).fileUrl) || msg.text); 
+                        setLightboxImage(getMediaUrl(msg.fileUrl) || msg.text); 
                         setLightboxMessageId(msg.id); 
                       }}
                     >
@@ -2581,13 +2645,13 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       >
                         {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                       </button>
-                      <img src={getMediaUrl((msg as any).fileUrl) || msg.text} alt="imagen" className="w-full h-auto object-cover" />
+                      <img src={getMediaUrl(msg.fileUrl) || msg.text} alt="imagen" className="w-full h-auto object-cover" />
                       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent px-2 py-1 flex items-center justify-end gap-1 text-white/90">
                         <span className="text-[10px] leading-none">{msg.time}</span>
                         {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
                       </div>
                     </div>
-                  ) : (msg as any).type === 'video' ? (
+                  ) : msg.type === 'video' ? (
                     <div
                       className="relative max-w-[280px] sm:max-w-xs rounded-2xl overflow-hidden shadow-sm group"
                       style={selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {}}
@@ -2601,15 +2665,15 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                       </button>
                       <video 
-                        src={getMediaUrl((msg as any).fileUrl)} 
+                        src={getMediaUrl(msg.fileUrl)} 
                         className="w-full h-auto object-cover cursor-pointer"
                         preload="metadata"
-                        onClick={() => { setLightboxVideo(getMediaUrl((msg as any).fileUrl)); setLightboxMessageId(msg.id); }}
+                        onClick={() => { setLightboxVideo(getMediaUrl(msg.fileUrl)); setLightboxMessageId(msg.id); }}
                       />
                       {/* Botón Play centrado */}
                       <div 
                         className="absolute inset-0 flex items-center justify-center cursor-pointer"
-                        onClick={() => { setLightboxVideo(getMediaUrl((msg as any).fileUrl)); setLightboxMessageId(msg.id); }}
+                        onClick={() => { setLightboxVideo(getMediaUrl(msg.fileUrl)); setLightboxMessageId(msg.id); }}
                       >
                         <div className="w-16 h-16 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-110">
                           <Play size={32} className="text-white ml-1" />
@@ -2620,11 +2684,11 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
                       </div>
                     </div>
-                  ) : (msg as any).type === 'audio' ? (
+                  ) : msg.type === 'audio' ? (
                     <>
                       <audio
                         id={`audio-${msg.id}`}
-                        src={getMediaUrl((msg as any).fileUrl)}
+                        src={getMediaUrl(msg.fileUrl)}
                         onLoadedData={(e) => {
                           const audio = e.currentTarget;
                           audio.volume = audioVolume[msg.id] ?? 1;
@@ -2797,7 +2861,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         </div>
                       </div>
                     </>
-                  ) : (msg as any).type === 'interactive' ? (
+                  ) : msg.type === 'interactive' ? (
                     <div
                       className={`relative group max-w-[320px] rounded-2xl shadow-lg overflow-hidden ${
                         msg.sent ? 'text-white rounded-br-sm' : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-bl-sm'
@@ -2818,7 +2882,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       
                       {(() => {
                         try {
-                          const menuData = typeof msg.text === 'string' ? JSON.parse(msg.text) : msg.text;
+                          const menuData = (typeof msg.text === 'string' ? JSON.parse(msg.text) : msg.text) as InteractiveMessagePayload;
                           
                           return (
                             <>
@@ -2844,7 +2908,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                               {/* Secciones con opciones - Compacto por defecto, expandible */}
                               {menuData.sections && menuData.sections.length > 0 && (
                                 <div className="border-t" style={{ borderColor: msg.sent ? 'rgba(255,255,255,0.2)' : (darkMode ? '#374151' : '#e5e7eb') }}>
-                                  {menuData.sections.map((section: any, sIdx: number) => {
+                                  {menuData.sections.map((section: InteractiveSection, sIdx: number) => {
                                     const menuId = `menu_${msg.id}_${sIdx}`;
                                     const isExpanded = expandedMenus.has(menuId);
                                     const totalOptions = (section.rows || []).length;
@@ -2888,7 +2952,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                                                 </h4>
                                               </div>
                                             )}
-                                            {(section.rows || []).map((option: any, oIdx: number) => (
+                                            {(section.rows || []).map((option: InteractiveOption, oIdx: number) => (
                                               <div 
                                                 key={option.id || oIdx}
                                                 className="mx-2 my-1 px-3 py-2.5 rounded-lg cursor-pointer transition-all border"
@@ -2938,9 +3002,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                         }
                       })()}
                     </div>
-                  ) : (msg as any).type === 'file' ? (
+                  ) : msg.type === 'file' ? (
                     <a
-                      href={getMediaUrl((msg as any).fileUrl) || '#'}
+                      href={getMediaUrl(msg.fileUrl) || '#'}
                       target="_blank"
                       rel="noopener noreferrer"
                       className={`relative group max-w-[260px] sm:max-w-sm px-4 py-3 rounded-2xl shadow-sm block hover:opacity-90 transition-opacity ${
@@ -2962,23 +3026,23 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       </button>
                       <div className="flex items-start gap-3">
                         {(() => {
-                          const isPdf = (msg as any).filename?.toLowerCase().endsWith('.pdf');
-                          const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test((msg as any).filename || '');
+                          const isPdf = msg.filename?.toLowerCase().endsWith('.pdf');
+                          const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(msg.filename || '');
                           
-                          if (isPdf && (msg as any).fileUrl) {
+                          if (isPdf && msg.fileUrl) {
                             return (
                               <div className="flex-shrink-0 w-16 h-16 rounded overflow-hidden border border-white/20">
                                 <iframe 
-                                  src={`${getMediaUrl((msg as any).fileUrl)}#page=1&toolbar=0&navpanes=0&scrollbar=0`}
+                                  src={`${getMediaUrl(msg.fileUrl)}#page=1&toolbar=0&navpanes=0&scrollbar=0`}
                                   className="w-full h-full pointer-events-none scale-150 origin-top-left"
                                 />
                               </div>
                             );
-                          } else if (isImage && (msg as any).fileUrl) {
+                          } else if (isImage && msg.fileUrl) {
                             return (
                               <img 
-                                src={getMediaUrl((msg as any).fileUrl)} 
-                                alt={(msg as any).filename}
+                                src={getMediaUrl(msg.fileUrl)} 
+                                alt={msg.filename}
                                 className="flex-shrink-0 w-16 h-16 rounded object-cover"
                               />
                             );
@@ -2987,9 +3051,9 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                           }
                         })()}
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate">{(msg as any).filename || msg.text}</p>
+                          <p className="font-semibold truncate">{msg.filename || msg.text}</p>
                           <p className={`text-xs ${msg.sent ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
-                            {(msg as any).filename?.split('.')?.pop()?.toUpperCase() || 'FILE'} • {(msg as any).size || '0 MB'}
+                            {msg.filename?.split('.')?.pop()?.toUpperCase() || 'FILE'} • {msg.size || '0 MB'}
                           </p>
                         </div>
                       </div>
@@ -3050,7 +3114,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                       <div className={`flex items-center gap-1 justify-end mt-1 ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
                         <span className="text-xs">{msg.time}</span>
                         {msg.sent && (() => {
-                          if ((msg as any).status === 'sending') {
+                          if (msg.status === 'sending') {
                             return <Check size={14} className="opacity-60" />;
                           }
                           return <CheckCheck size={14} />;
@@ -3400,7 +3464,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                 <span className="text-xs" style={{ color: darkMode ? '#f59e0b' : '#b45309' }}>Solo internos</span>
               </div>
               <div className="space-y-2 mb-3">
-                {(currentChat.notes || []).map((note: any) => (
+                {(currentChat.notes || []).map((note) => (
                   <div key={note.id} className="border rounded-md p-2 flex justify-between items-start transition" style={{
                     backgroundColor: darkMode ? '#1f2937' : '#fef3c7',
                     borderColor: darkMode ? '#92400e' : '#fcd34d',
@@ -3430,7 +3494,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                     backgroundColor: darkMode ? '#1f2937' : '#fffbeb',
                     borderColor: darkMode ? '#92400e' : '#fcd34d',
                     color: darkMode ? '#9ca3af' : '#6b7280'
-                  } as any}
+                  }}
                   onFocus={(e) => e.currentTarget.style.boxShadow = `0 0 0 3px ${themeColors[theme].hex}40`}
                   onBlur={(e) => e.currentTarget.style.boxShadow = ''}
                 />
@@ -3513,10 +3577,10 @@ const dedupeDisplayMessages = (msgs: any[]) => {
               {showMediaMenu && (
                 <div className="space-y-3">
                   <div className="flex gap-2 flex-wrap">
-                    {['all', 'images', 'videos', 'files', 'urls'].map((filter) => (
+                    {(['all', 'images', 'videos', 'files', 'urls'] as const).map((filter) => (
                       <button
                         key={filter}
-                        onClick={() => setMediaFilter(filter as any)}
+                        onClick={() => setMediaFilter(filter)}
                         className="px-3 py-1 rounded-full text-xs transition"
                         style={{
                           backgroundColor: mediaFilter === filter ? themeColors[theme].hex : (darkMode ? '#4b5563' : '#e5e7eb'),
@@ -3529,7 +3593,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 max-h-60 overflow-y-auto">
-                    {getMediaMessages().map((msg: any) => (
+                    {getMediaMessages().map((msg) => (
                       <div 
                         key={msg.id}
                         className="aspect-square rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition border"
@@ -3622,7 +3686,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             </div>
           )}
           {contextMenu.type === 'message' && (() => {
-            const msg = selectedChat !== null ? conversationsState[selectedChat].messages.find((m: any) => m.id === contextMenu.targetId) : null;
+            const msg = selectedChat !== null ? conversationsState[selectedChat].messages.find((m) => m.id === contextMenu.targetId) : null;
             const isOwnMessage = msg?.sent === true;
             return (
               <div className="py-1 w-48">
@@ -3868,7 +3932,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
                   No hay conversaciones archivadas
                 </div>
               ) : (
-                archivedConversations.map((conv: any) => (
+                archivedConversations.map((conv) => (
                   <div
                     key={conv.id}
                     className="flex items-center justify-between p-3 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg cursor-pointer border border-gray-200 dark:border-gray-600"
@@ -3926,7 +3990,7 @@ const dedupeDisplayMessages = (msgs: any[]) => {
             </div>
 
             <div className="overflow-y-auto max-h-[350px] space-y-2">
-              {conversationsState.filter(c => !c.archived).map((conv: any) => (
+              {conversationsState.filter(c => !c.archived).map((conv) => (
                 <button
                   key={conv.id}
                   onClick={() => confirmForward(conv.id)}

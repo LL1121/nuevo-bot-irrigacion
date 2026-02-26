@@ -52,33 +52,116 @@ async function cleanOldFiles() {
  */
 async function waitForDownload(downloadDir, targetName, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
   const start = Date.now();
-  const initialFiles = new Set(await fsp.readdir(downloadDir));
+  const targetPath = path.join(downloadDir, targetName);
+
+  // Evitar falsos negativos cuando se reusa el mismo nombre de archivo
+  // en corridas consecutivas: si existe, se borra para forzar aparición nueva.
+  try {
+    await fsp.unlink(targetPath);
+  } catch (_) {
+    // ignore si no existe
+  }
+
+  const initialFileStats = new Map();
+  const initialFiles = await fsp.readdir(downloadDir);
+
+  for (const file of initialFiles) {
+    try {
+      const stat = await fsp.stat(path.join(downloadDir, file));
+      initialFileStats.set(file, { mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size });
+    } catch (_) {
+      // ignore race conditions on startup snapshot
+    }
+  }
 
   while (Date.now() - start < timeoutMs) {
     const files = await fsp.readdir(downloadDir);
-    const newFiles = files.filter((f) => !initialFiles.has(f));
-    if (newFiles.length) {
-      // Tomar el primero nuevo
-      const candidate = newFiles[0];
-      // Esperar a que termine la descarga (.crdownload eliminado)
-      if (candidate.endsWith('.crdownload')) {
-        await delay(120);
-        continue;
-      }
-      const tmpPath = path.join(downloadDir, candidate);
-      const finalPath = path.join(downloadDir, targetName);
 
-      // Sobrescribir si ya existe
+    // Caso 1: Chrome descarga directamente en el nombre final (sobrescribe o actualiza)
+    if (files.includes(targetName)) {
       try {
-        await fsp.unlink(finalPath);
+        const targetStat = await fsp.stat(targetPath);
+        const previous = initialFileStats.get(targetName);
+        const changed = !previous
+          || previous.mtimeMs !== targetStat.mtimeMs
+          || previous.ctimeMs !== targetStat.ctimeMs
+          || previous.size !== targetStat.size;
+        if (changed) {
+          return targetPath;
+        }
       } catch (_) {
-        // ignore si no existe
+        // puede estar en transición, seguir esperando
       }
-
-      await fsp.rename(tmpPath, finalPath);
-      return finalPath;
     }
+
+    // Caso 2: Chrome descarga con nombre temporal/nuevo archivo
+    const newFiles = files.filter((f) => !initialFileStats.has(f));
+    if (newFiles.length) {
+      const candidate = newFiles.find((f) => !f.endsWith('.crdownload'));
+      if (candidate) {
+        const tmpPath = path.join(downloadDir, candidate);
+        const finalPath = targetPath;
+
+        // Sobrescribir si ya existe
+        try {
+          await fsp.unlink(finalPath);
+        } catch (_) {
+          // ignore si no existe
+        }
+
+        await fsp.rename(tmpPath, finalPath);
+        return finalPath;
+      }
+    }
+
     await delay(120);
+  }
+
+  throw new Error('Timeout esperando la descarga del PDF');
+}
+
+async function waitForPdfDownload(page, downloadDir, targetName, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
+  const targetPath = path.join(downloadDir, targetName);
+
+  const fsWait = waitForDownload(downloadDir, targetName, timeoutMs).catch(() => null);
+
+  const responseWait = page
+    .waitForResponse(
+      (response) => {
+        const url = response.url() || '';
+        const headers = response.headers() || {};
+        const contentType = (headers['content-type'] || headers['Content-Type'] || '').toLowerCase();
+        return contentType.includes('application/pdf') || /\.pdf($|\?)/i.test(url);
+      },
+      { timeout: timeoutMs }
+    )
+    .then(async (response) => {
+      const buffer = await response.buffer();
+      if (!buffer || !buffer.length) {
+        return null;
+      }
+      await fsp.writeFile(targetPath, buffer);
+      return targetPath;
+    })
+    .catch(() => null);
+
+  const winner = await Promise.race([
+    fsWait.then((value) => (value ? { source: 'fs', value } : null)),
+    responseWait.then((value) => (value ? { source: 'response', value } : null))
+  ]);
+
+  if (winner?.value) {
+    return winner.value;
+  }
+
+  const fsValue = await fsWait;
+  if (fsValue) {
+    return fsValue;
+  }
+
+  const responseValue = await responseWait;
+  if (responseValue) {
+    return responseValue;
   }
 
   throw new Error('Timeout esperando la descarga del PDF');
@@ -599,7 +682,7 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
     }
     
     // Configurar descarga de PDF
-    const downloadPath = path.resolve(__dirname, '../../temp');
+    const downloadPath = DOWNLOAD_DIR;
     if (!fs.existsSync(downloadPath)) {
       fs.mkdirSync(downloadPath, { recursive: true });
     }
@@ -609,9 +692,13 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
       downloadPath: downloadPath
     });
     
+    const targetPdfName = `boleto_${tipoCuota}_${dni}.pdf`;
+    const pdfPromise = waitForPdfDownload(page, downloadPath, targetPdfName, DOWNLOAD_TIMEOUT_MS);
+
     await imprimirButton.asElement().click();
     console.log('✅ Click en "Imprimir"');
-    const pdfPath = await waitForDownload(downloadPath, `boleto_${tipoCuota}_${dni}.pdf`, DOWNLOAD_TIMEOUT_MS);
+
+    const pdfPath = await pdfPromise;
     console.log(`📄 PDF descargado: ${pdfPath}`);
     
     return {
@@ -731,12 +818,13 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     });
     
     if (!dropdownFound) {
-      // Capturar screenshot y HTML para debug
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_${timestamp}.png`) });
-      const htmlContent = await page.content();
-      await fsp.writeFile(path.join(DOWNLOAD_DIR, `debug_dropdown_${timestamp}.html`), htmlContent, 'utf-8');
-      console.log(`📸 Screenshot y HTML guardados para debug`);
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_${timestamp}.png`) });
+        const htmlContent = await page.content();
+        await fsp.writeFile(path.join(DOWNLOAD_DIR, `debug_dropdown_${timestamp}.html`), htmlContent, 'utf-8');
+        console.log('📸 Screenshot y HTML guardados para debug');
+      }
       throw new Error('No se encontró el dropdown de tipo de servicio');
     }
     
@@ -768,10 +856,11 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     }, tipoCodigo, tipoNombre);
     
     if (!optionClicked) {
-      // Capturar screenshot para debug
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_open_${timestamp}.png`) });
-      console.log(`📸 Screenshot del dropdown abierto guardado`);
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_open_${timestamp}.png`) });
+        console.log('📸 Screenshot del dropdown abierto guardado');
+      }
       throw new Error(`No se pudo seleccionar la opción ${tipoCodigo} - ${tipoNombre}`);
     }
     
@@ -1413,11 +1502,13 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     });
     
     if (!dropdownFound) {
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_boleto_${timestamp}.png`) });
-      const htmlContent = await page.content();
-      fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_dropdown_boleto_${timestamp}.html`), htmlContent, 'utf-8');
-      console.log(`📸 Screenshot guardado para debug`);
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_dropdown_boleto_${timestamp}.png`) });
+        const htmlContent = await page.content();
+        fs.writeFileSync(path.join(DOWNLOAD_DIR, `debug_dropdown_boleto_${timestamp}.html`), htmlContent, 'utf-8');
+        console.log('📸 Screenshot guardado para debug');
+      }
       throw new Error('No se encontró el dropdown de tipo de servicio');
     }
     
@@ -1443,8 +1534,10 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     }, tipoCodigo, tipoNombre);
     
     if (!optionClicked) {
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_option_boleto_${timestamp}.png`) });
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_option_boleto_${timestamp}.png`) });
+      }
       throw new Error(`No se pudo seleccionar la opción ${tipoCodigo}`);
     }
     
@@ -1567,8 +1660,10 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
       console.log('✅ Botón "Buscar" está habilitado');
     } catch (timeoutError) {
       console.log('⚠️ Timeout esperando que se habilite el botón Buscar');
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_buscar_disabled_${timestamp}.png`) });
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_buscar_disabled_${timestamp}.png`) });
+      }
       throw new Error('El botón Buscar no se habilitó después de 10 segundos');
     }
     
@@ -1607,8 +1702,10 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     });
     
     if (!buscarClicked) {
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_buscar_not_clicked_${timestamp}.png`) });
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_buscar_not_clicked_${timestamp}.png`) });
+      }
       throw new Error('No se pudo hacer click en el botón Buscar (aún deshabilitado o no encontrado)');
     }
     
@@ -1651,9 +1748,10 @@ async function _scrapeBoletonPadron(tipoPadron, datos, tipoCuota) {
     });
     
     if (!imprimirButton || imprimirButton.asElement() === null) {
-      // Capturar screenshot para debug
-      const timestamp = Date.now();
-      await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_imprimir_not_found_${timestamp}.png`) });
+      if (SCRAPER_DEBUG) {
+        const timestamp = Date.now();
+        await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_imprimir_not_found_${timestamp}.png`) });
+      }
       
       throw new Error('No se encontró botón "Imprimir" después de hacer click en "Buscar"');
     }
@@ -1816,58 +1914,76 @@ async function obtenerLinkPagoBoleto(tipoPadron, datos, tipoCuota) {
       await new Promise(r => setTimeout(r, 3000));
     }
 
-    // Click en botón "Pagar" de la cuota seleccionada (Anual izquierda / Bimestral derecha)
-    console.log(`💳 Buscando botón "Pagar" para cuota ${tipoCuota}...`);
+    console.log(`💳 Buscando botón/link "Pagar" para cuota ${tipoCuota}...`);
     await page.waitForFunction(() => {
       const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
       return candidates.some(btn => {
         const text = (btn.textContent || '').trim();
-        const isPagar = /Pagar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
+        const isPagar = /Pagar|Abonar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
         const isVisible = btn.offsetParent !== null;
         const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.disabled;
         return isPagar && isVisible && !isDisabled;
       });
     }, { timeout: 15000 }).catch(() => {});
 
-    const pagarButton = await page.evaluateHandle((tipo) => {
-      const cuotaTexto = tipo === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral';
+    const pagarMeta = await page.evaluate((tipo) => {
+      const cuotaTexto = tipo === 'anual' ? ['cuota anual', 'anual'] : ['cuota bimestral', 'bimestral'];
       const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
       const pagarButtons = candidates.filter(btn => {
         const text = (btn.textContent || '').trim();
-        const isPagar = /Pagar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
+        const isPagar = /Pagar|Abonar/i.test(text) && !/Imprimir|PDF|Descargar/i.test(text);
         const isVisible = btn.offsetParent !== null;
         const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.disabled;
         return isPagar && isVisible && !isDisabled;
       });
 
-      if (pagarButtons.length === 0) return null;
-      if (pagarButtons.length === 1) return pagarButtons[0];
+      if (pagarButtons.length === 0) return { found: false };
 
+      let selected = null;
       for (const btn of pagarButtons) {
         let parent = btn.parentElement;
         let depth = 0;
-        while (parent && depth < 7) {
-          const txt = (parent.innerText || '').trim();
-          if (txt.includes(cuotaTexto)) return btn;
+        while (parent && depth < 8) {
+          const txt = (parent.innerText || '').toLowerCase();
+          if (cuotaTexto.some(label => txt.includes(label))) {
+            selected = btn;
+            break;
+          }
           parent = parent.parentElement;
           depth += 1;
         }
+        if (selected) break;
       }
 
-      return tipo === 'anual' ? pagarButtons[0] : pagarButtons[1] || pagarButtons[0];
+      selected = selected || (tipo === 'anual' ? pagarButtons[0] : pagarButtons[1] || pagarButtons[0]);
+      const href = selected.getAttribute('href') || selected.getAttribute('data-href') || '';
+      const target = selected.getAttribute('target') || '';
+
+      selected.scrollIntoView({ block: 'center' });
+      selected.click();
+
+      return {
+        found: true,
+        href,
+        target,
+        text: (selected.textContent || '').trim()
+      };
     }, tipoCuota);
-    
-    if (!pagarButton || pagarButton.asElement() === null) {
+
+    if (!pagarMeta || !pagarMeta.found) {
       throw new Error('No se encontró el botón "Pagar"');
     }
-    
-    await pagarButton.asElement().click();
-    console.log('✅ Click en "Pagar" - Esperando modal o redirección...');
 
+    console.log(`✅ Click en "Pagar" (${pagarMeta.text || 'sin texto'}) - Esperando modal o redirección...`);
+
+    const previousUrl = page.url();
+    const popupPromise = browser.waitForTarget(
+      target => target.type() === 'page' && target.opener() === page.target(),
+      { timeout: 10000 }
+    ).catch(() => null);
     const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
     await delay(1500);
 
-    // Click en segundo botón "Pagar" dentro del modal (si aparece)
     const pagarModalButton = await page.evaluateHandle(() => {
       const modals = Array.from(document.querySelectorAll('[role="dialog"], .modal, .mantine-Modal-root, div[class*="modal"]'));
       for (const modal of modals) {
@@ -1876,24 +1992,48 @@ async function obtenerLinkPagoBoleto(tipoPadron, datos, tipoCuota) {
           const text = (btn.textContent || '').trim();
           const isVisible = btn.offsetParent !== null;
           const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.disabled;
-          return /Pagar/i.test(text) && isVisible && !isDisabled;
+          return /Pagar|Abonar/i.test(text) && isVisible && !isDisabled;
         });
         if (pagarBtn) return pagarBtn;
       }
       return null;
     });
-    
+
     if (pagarModalButton && pagarModalButton.asElement()) {
       await pagarModalButton.asElement().click();
       console.log('✅ Click en segundo "Pagar" - Esperando redirección...');
     } else {
       console.log('ℹ️ No se encontró modal, esperando redirección directa...');
     }
-    
-    await navigationPromise;
+
+    await Promise.allSettled([navigationPromise]);
     await delay(2000);
-    
-    const linkPago = page.url();
+
+    let linkPago = page.url();
+    const popupTarget = await popupPromise;
+    if (popupTarget) {
+      const popupPage = await popupTarget.page();
+      if (popupPage) {
+        await popupPage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
+        const popupUrl = popupPage.url();
+        if (popupUrl && popupUrl !== 'about:blank') {
+          linkPago = popupUrl;
+        }
+      }
+    }
+
+    if (
+      (!linkPago || linkPago === previousUrl || linkPago.includes('/servicio')) &&
+      pagarMeta.href &&
+      /^https?:\/\//i.test(pagarMeta.href)
+    ) {
+      linkPago = pagarMeta.href;
+    }
+
+    if (!linkPago || linkPago === previousUrl || linkPago.includes('/servicio')) {
+      throw new Error('No se pudo capturar el enlace de pago');
+    }
+
     console.log(`🔗 Link de pago capturado: ${linkPago}`);
     
     // Cerrar browser para liberar RAM

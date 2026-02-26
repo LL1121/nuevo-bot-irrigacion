@@ -1,8 +1,9 @@
 import { useCallback, useMemo } from 'react';
 import type { SetStateAction } from 'react';
+import type { Conversation } from '../types/chat';
 
 type UseChatSelectionParams = {
-  conversationsState: any[];
+  conversationsState: Conversation[];
   selectedChat: number | null;
   setSelectedChat: (next: SetStateAction<number | null>) => void;
 };

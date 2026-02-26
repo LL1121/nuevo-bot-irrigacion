@@ -23,7 +23,17 @@ export const getTemplateDisplayText = (templateName?: string) => {
   return templateTextMap[key] || `Plantilla: ${templateName}`;
 };
 
-export const normalizeMessageContent = (input: any): NormalizedMessage => {
+const getRecord = (value: unknown): Record<string, unknown> | null => {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+};
+
+const getStringProp = (obj: Record<string, unknown> | null, key: string): string => {
+  if (!obj) return '';
+  const value = obj[key];
+  return typeof value === 'string' ? value : '';
+};
+
+export const normalizeMessageContent = (input: unknown): NormalizedMessage => {
   const raw = input ?? '';
   const asString = typeof raw === 'string' ? raw : '';
   const trimmed = asString.trim();
@@ -34,12 +44,7 @@ export const normalizeMessageContent = (input: any): NormalizedMessage => {
       ? safeJsonParse(trimmed)
       : null;
 
-  const obj =
-    parsed && typeof parsed === 'object'
-      ? parsed
-      : typeof raw === 'object' && raw !== null
-        ? raw
-        : null;
+  const obj = getRecord(parsed) ?? getRecord(raw);
 
   if (typeof raw === 'string') {
     const templateMatch = raw.match(/Template:\s*([^()]+)\s*(?:\(([^)]+)\))?/i);
@@ -50,8 +55,9 @@ export const normalizeMessageContent = (input: any): NormalizedMessage => {
     }
   }
 
-  if (obj && typeof obj === 'object') {
-    const templateName = (obj as any).templateName || (obj as any).template || (obj as any).name;
+  if (obj) {
+    const templateName =
+      getStringProp(obj, 'templateName') || getStringProp(obj, 'template') || getStringProp(obj, 'name');
     if (templateName) {
       const displayText = getTemplateDisplayText(String(templateName));
       return { text: displayText, preview: displayText, type: 'text' };
@@ -60,16 +66,15 @@ export const normalizeMessageContent = (input: any): NormalizedMessage => {
 
   const isInteractiveList =
     !!obj &&
-    typeof obj === 'object' &&
-    ((obj as any).type === 'interactive_list' ||
-      (obj as any).type === 'interactive' ||
-      (obj as any).sections ||
-      (obj as any).buttonText);
+    (getStringProp(obj, 'type') === 'interactive_list' ||
+      getStringProp(obj, 'type') === 'interactive' ||
+      !!obj.sections ||
+      !!obj.buttonText);
 
   if (isInteractiveList) {
-    const header = (obj as any).header || 'Menú interactivo';
-    const body = (obj as any).body || '';
-    const buttonText = (obj as any).buttonText || '';
+    const header = getStringProp(obj, 'header') || 'Menú interactivo';
+    const body = getStringProp(obj, 'body');
+    const buttonText = getStringProp(obj, 'buttonText');
     const preview = [header, body || buttonText].filter(Boolean).join(' - ').trim();
     return {
       text: typeof raw === 'string' ? raw : JSON.stringify(obj),
@@ -79,12 +84,12 @@ export const normalizeMessageContent = (input: any): NormalizedMessage => {
   }
 
   let fallbackText = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : '';
-  if (obj && typeof obj === 'object') {
+  if (obj) {
     fallbackText =
-      (obj as any).cuerpo ||
-      (obj as any).contenido ||
-      (obj as any).text ||
-      (obj as any).body ||
+      getStringProp(obj, 'cuerpo') ||
+      getStringProp(obj, 'contenido') ||
+      getStringProp(obj, 'text') ||
+      getStringProp(obj, 'body') ||
       fallbackText;
   }
 
