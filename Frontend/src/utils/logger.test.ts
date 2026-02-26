@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { logger, initLogger, captureException, captureMessage } from '@/utils/logger'
 
+type ConsoleSpy = ReturnType<typeof vi.spyOn>
+
 describe('logger utilities', () => {
-  let consoleDebugSpy: any
-  let consoleInfoSpy: any
-  let consoleWarnSpy: any
-  let consoleErrorSpy: any
+  let consoleDebugSpy: ConsoleSpy
+  let consoleInfoSpy: ConsoleSpy
+  let consoleWarnSpy: ConsoleSpy
+  let consoleErrorSpy: ConsoleSpy
 
   beforeEach(() => {
     consoleDebugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})

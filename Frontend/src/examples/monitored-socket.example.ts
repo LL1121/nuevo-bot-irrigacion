@@ -6,6 +6,10 @@ import { captureException } from '../utils/logger';
 
 let socket: Socket | null = null;
 
+type SendMessageAck = {
+  success: boolean;
+};
+
 export const initSocket = (token: string) => {
   if (socket) return socket;
 
@@ -52,7 +56,7 @@ export const sendMessage = (message: string) => {
 
   const start = performance.now();
   
-  socket.emit('send_message', { message }, (ack: any) => {
+  socket.emit('send_message', { message }, (ack: SendMessageAck) => {
     const duration = performance.now() - start;
     
     trackAction('send_message', {

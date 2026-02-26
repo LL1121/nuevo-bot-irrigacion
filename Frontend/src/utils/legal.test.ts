@@ -104,7 +104,7 @@ describe('Legal & Compliance Utilities', () => {
 
     it('should log consent choice', () => {
       const gtagSpy = vi.fn();
-      (window as any).gtag = gtagSpy;
+      (window as Window & { gtag?: (...args: unknown[]) => void }).gtag = gtagSpy;
 
       const consent = acceptAllCookies();
       logConsentChoice(consent);
