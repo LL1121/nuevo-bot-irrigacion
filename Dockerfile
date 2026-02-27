@@ -25,6 +25,9 @@ RUN apk add --no-cache \
 # Establecer Chromium path para Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV TZ=America/Argentina/Buenos_Aires
 
 # Crear directorio de trabajo
 WORKDIR /app
@@ -33,7 +36,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Instalar dependencias de producción
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copiar el resto del código del Backend
 # .dockerignore excluye automáticamente Frontend/, node_modules/, .git, etc
@@ -57,10 +60,6 @@ EXPOSE 3000
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
-
-# Variables de entorno por defecto
-ENV NODE_ENV=production
-ENV PORT=3000
 
 # Comando de inicio
 CMD ["node", "src/index.js"]

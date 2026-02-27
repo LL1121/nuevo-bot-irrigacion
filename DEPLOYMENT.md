@@ -15,8 +15,8 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    CLOUDFLARE TUNNEL (Domain)                   │
-│              chat.irrigacionmalargue.net:443                     │
+│                    DOMINIO PÚBLICO (HTTPS)                       │
+│            api-bot.irrigacionmalargue.net:443                    │
 └────────────────────────┬────────────────────────────────────────┘
                          │
                          ▼
@@ -28,13 +28,13 @@
         ┌────────────────┼────────────────┬──────────────┐
         │                │                │              │
         ▼                ▼                ▼              ▼
-    ┌────────┐     ┌──────────┐    ┌────────┐     ┌────────┐
-    │ Nginx  │     │ Backend  │    │ Postgres│    │ Redis  │
-    │ :80    │     │ :3000    │    │ :5432   │    │ :6379  │
-    │Frontend│     │ Node.js  │    │ DB      │    │ Cache  │
-    └────────┘     └──────────┘    └────────┘     └────────┘
-        ▲                │              │              │
-        └────────────────┴──────────────┴──────────────┘
+    ┌──────────┐    ┌──────────┐    ┌────────┐
+    │ Backend  │    │ Postgres │    │ Redis  │
+    │ :3000    │    │ :5432    │    │ :6379  │
+    │ Node.js  │    │ DB       │    │ Cache  │
+    └──────────┘    └──────────┘    └────────┘
+        │                │              │
+        └────────────────┴──────────────┘
          Comunicación interna (Docker Network)
 ```
 
@@ -45,8 +45,6 @@
 | **db** | postgres:15-alpine | 5432 | postgres_data | Base de datos |
 | **backend** | custom (node:18) | 3000 | uploads, tokens, logs | API Node.js |
 | **redis** | redis:7-alpine | 6379 | redis_data | Cache y sesiones |
-| **nginx** | custom (nginx:alpine) | 80/443 | frontend_cache | Reverse proxy |
-| **tunnel** | cloudflare/cloudflared | - | - | Túnel Cloudflare |
 
 ---
 
@@ -64,9 +62,8 @@
 - **Git**: Para clonar repositorio (opcional)
 
 ### Conectividad
-- ✓ Acceso a internet (para Cloudflare Tunnel)
-- ✓ Puerto 80 disponible (Nginx)
-- ✓ Token de Cloudflare Tunnel generado
+- ✓ Acceso a internet
+- ✓ DNS del dominio `api-bot.irrigacionmalargue.net` apuntando al servidor
 
 ### Credenciales Necesarias
 - Meta Long-Lived Access Token
@@ -81,7 +78,7 @@
 
 ### Paso 1: Conectarse al Servidor
 ```bash
-ssh ubuntu@chat.irrigacionmalargue.net
+ssh ubuntu@api-bot.irrigacionmalargue.net
 # o tu usuario y dirección IP
 ```
 
@@ -98,7 +95,6 @@ sudo bash deploy.sh
 ```
 
 El script solicitará:
-- ✅ URL del Cloudflare Tunnel
 - ✅ Contraseña PostgreSQL
 - ✅ Contraseña Redis
 - ✅ META_ACCESS_TOKEN
@@ -147,14 +143,19 @@ nano .env
 
 **Editar en .env**:
 ```env
-DB_PASSWORD=tu_password_segura
+DB_CLIENT=pg
+DB_HOST=db_central
+DB_PORT=5432
+DB_USER=user_bot_irrigacion
+DB_PASSWORD=l3NDuJOTLs8YFy
+DB_NAME=bot_irrigacion
 REDIS_PASSWORD=tu_password_redis
 META_ACCESS_TOKEN=EAAB...
 WHATSAPP_PHONE_NUMBER_ID=123456789
 META_APP_SECRET=abc123...
 WEBHOOK_VERIFY_TOKEN=webhook_secret...
 JWT_SECRET=$(openssl rand -base64 32)
-TUNNEL_TOKEN=tu_cloudflare_token...
+BASE_URL=https://api-bot.irrigacionmalargue.net
 ```
 
 ### 4. Construir Imágenes
@@ -199,8 +200,7 @@ docker compose ps
 # irrigacion_db      Up 2m       5432/tcp
 # irrigacion_backend Up 2m       3000/tcp
 # irrigacion_redis   Up 2m       6379/tcp
-# irrigacion_frontend Up 2m      80/tcp
-# irrigacion_tunnel  Up 2m
+# (solo backend, db y redis)
 ```
 
 ### Conectividad de Base de Datos
@@ -223,22 +223,13 @@ docker exec irrigacion_redis redis-cli ping
 # Respuesta esperada: PONG
 ```
 
-### Cloudflare Tunnel
-```bash
-# Ver estado del túnel
-docker compose logs tunnel | grep -i connected
-
-# Respuesta esperada:
-# [cloudflared] Tunnel connected successfully to chat.irrigacionmalargue.net
-```
-
 ### Acceso HTTP
 ```bash
 # Desde local o remoto:
-curl https://chat.irrigacionmalargue.net
+curl https://api-bot.irrigacionmalargue.net/health
 
 # O acceder en navegador:
-# https://chat.irrigacionmalargue.net
+# https://api-bot.irrigacionmalargue.net
 ```
 
 ---

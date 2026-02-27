@@ -23,26 +23,17 @@ RUN npm run build
 # ================================
 FROM nginx:alpine
 
-# Copiar archivos estáticos del build al directorio de Nginx
-COPY --from=build /app/dist /usr/share/nginx/html
-
-# Copiar configuración personalizada de Nginx
+# Limpiar configuración default y copiar la nuestra
+RUN rm -f /etc/nginx/conf.d/default.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Exponer puerto 80
+# Copiar artefactos estáticos
+COPY --from=build /app/dist /usr/share/nginx/html
+
+# Healthcheck HTTP local
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+	CMD wget -q -O /dev/null http://127.0.0.1/healthz || exit 1
+
 EXPOSE 80
 
-# Comando por defecto (ya incluido en la imagen nginx:alpine)
-CMD ["nginx", "-g", "daemon off;"]
-
-# Usuario nginx
-USER nginx
-
-# Exponer puerto
-EXPOSE 80 443
-
-# Entrypoint
-ENTRYPOINT ["dumb-init", "--"]
-
-# Comando por defecto
 CMD ["nginx", "-g", "daemon off;"]

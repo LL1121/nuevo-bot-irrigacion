@@ -10,8 +10,11 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
+    "test:critical": "vitest run src/utils/messageOrder.test.ts src/services/messageQueue.test.ts src/services/optimisticUpdates.test.ts src/utils/messageCachePolicy.test.ts",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage"
+    "test:coverage": "vitest --coverage",
+    "release:check": "npm run test:critical && npm run build",
+    "release:check:full": "npm run lint && npm run test && npm run build"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.3",

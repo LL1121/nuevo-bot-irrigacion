@@ -204,16 +204,23 @@ const bootstrap = async () => {
 
   // Start server
   server.listen(PORT, async () => {
+    const publicBaseUrl = (
+      process.env.BASE_URL
+      || process.env.PUBLIC_BASE_URL
+      || process.env.BACKEND_URL
+      || `http://localhost:${PORT}`
+    ).replace(/\/$/, '');
+
     logger.info(`Servidor iniciado en puerto ${PORT}`, {
-      webhook: `http://localhost:${PORT}/webhook`,
-      api: `http://localhost:${PORT}/api`,
-      docs: `http://localhost:${PORT}/api-docs`
+      webhook: `${publicBaseUrl}/webhook`,
+      api: `${publicBaseUrl}/api`,
+      docs: `${publicBaseUrl}/api-docs`
     });
     console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-    console.log(`📱 Webhook URL: http://localhost:${PORT}/webhook`);
+    console.log(`📱 Webhook URL: ${publicBaseUrl}/webhook`);
     console.log(`🔌 Socket.io activo en puerto ${PORT}`);
-    console.log(`🌐 API REST: http://localhost:${PORT}/api`);
-    console.log(`📚 Documentación: http://localhost:${PORT}/api-docs`);
+    console.log(`🌐 API REST: ${publicBaseUrl}/api`);
+    console.log(`📚 Documentación: ${publicBaseUrl}/api-docs`);
     console.log('✅ Sistema de scraping listo');
   });
   

@@ -17,6 +17,7 @@ import { useChatStore } from './stores/chatStore';
 import { getTemplateDisplayText, normalizeMessageContent } from './services/messageParser';
 import { useChatSelection } from './hooks/useChatSelection';
 import { useChatMutations } from './hooks/useChatMutations';
+import { trackAction, trackErrorRecovery, trackSocketEvent } from './utils/monitoring';
 import type { ChatMessage, Conversation, RawApiMessage, RawSocketMessage } from './types/chat';
 
 type MediaFilter = 'all' | 'images' | 'videos' | 'files' | 'urls';
@@ -200,8 +201,16 @@ export default function App() {
   const preferencesRef = useRef<HTMLDivElement>(null);
   const chatSearchRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const conversationsContainerRef = useRef<HTMLDivElement>(null);
   const reconnectFallbackTimerRef = useRef<number | null>(null);
   const authFailureCountRef = useRef(0);
+  const reconnectAttemptRef = useRef(0);
+  const selectedConversationIdRef = useRef<number | null>(null);
+  const prevSelectedChatRef = useRef<number | null>(null);
+  const alertStateRef = useRef<{ lastAt: number; lastKind: string | null }>({
+    lastAt: 0,
+    lastKind: null
+  });
 
   // Helpers para fechas de ejemplo
   const makeDate = (hours: number, minutes: number, daysOffset = 0) => {
@@ -313,38 +322,8 @@ export default function App() {
   };
 
   // Funciones auxiliares para formateo (definidas ANTES de los useEffect)
-  const formatTime = (date: Date): string => {
-    // Siempre mostrar HH:MM para mensajes del mismo día, solo fecha para días anteriores
-    const now = new Date();
-    const messageDate = new Date(date);
-    
-    // Comparar solo día/mes/año (ignorar horas)
-    const isToday = 
-      messageDate.getDate() === now.getDate() &&
-      messageDate.getMonth() === now.getMonth() &&
-      messageDate.getFullYear() === now.getFullYear();
-    
-    if (isToday) {
-      // Mensajes de hoy: mostrar hora (HH:MM) en 24hs
-      const hours = messageDate.getHours().toString().padStart(2, '0');
-      const minutes = messageDate.getMinutes().toString().padStart(2, '0');
-      return `${hours}:${minutes}`;
-    }
-    
-    // Calcular diferencia en días
-    const diffMs = now.getTime() - messageDate.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    
-    if (diffDays === 1) {
-      // Ayer
-      return 'Ayer';
-    } else if (diffDays < 7) {
-      // Esta semana: mostrar día de la semana
-      return messageDate.toLocaleDateString('es-AR', { weekday: 'short' });
-    } else {
-      // Más de una semana: mostrar fecha DD/MM
-      return messageDate.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
-    }
+  const formatTime = (date: Date | string | number): string => {
+    return formatMessageTime(date);
   };
   
   const getInitials = (name: string): string => {
@@ -575,9 +554,39 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   return sortAndDedupeMessages(msgs || []);
 };
 
+  const emitConnectionAlert = (params: {
+    kind: 'warning' | 'error' | 'success';
+    title: string;
+    description?: string;
+  }) => {
+    const now = Date.now();
+    const cooldownMs = 15_000;
+    const last = alertStateRef.current;
+    const sameKind = last.lastKind === params.kind;
+
+    if (sameKind && now - last.lastAt < cooldownMs) {
+      return;
+    }
+
+    alertStateRef.current = { lastAt: now, lastKind: params.kind };
+
+    if (params.kind === 'error') {
+      toast.error(params.title, { description: params.description });
+      return;
+    }
+
+    if (params.kind === 'success') {
+      toast.success(params.title, { description: params.description });
+      return;
+    }
+
+    toast.warning(params.title, { description: params.description });
+  };
+
   // Auth handlers
   const handleLoginSuccess = () => {
     setIsAuthenticated(true);
+    trackAction('login_success');
     requestNotificationPermission().then(granted => {
       if (granted) {
         console.log('✅ Notificaciones push habilitadas');
@@ -586,6 +595,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   };
 
   const handleLogout = async () => {
+    trackAction('logout');
     try {
       // Intentar logout en el backend (no bloquea si falla)
       await axios.post('/api/auth/logout').catch(err => {
@@ -645,6 +655,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         refreshSocketAuth();
         socket.connect();
       }, delay);
+
+      trackSocketEvent('reconnect_fallback_scheduled', { delay_ms: delay });
     };
 
     // Conectar/desconectar socket y cargar datos solo autenticado
@@ -665,11 +677,27 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     }
 
     const handleSocketConnect = () => {
+      const recoveredAfterAttempts = reconnectAttemptRef.current;
       authFailureCountRef.current = 0;
+      reconnectAttemptRef.current = 0;
       clearReconnectFallback();
+      trackSocketEvent('connect', {
+        recovered_after_attempts: recoveredAfterAttempts,
+        socket_id: socket.id,
+        transport: socket.io.engine.transport.name
+      });
+
+      if (recoveredAfterAttempts > 0) {
+        emitConnectionAlert({
+          kind: 'success',
+          title: 'Conexión restablecida',
+          description: 'La mensajería en tiempo real volvió a estar disponible.'
+        });
+      }
     };
 
     const handleSocketDisconnect = (reason: Socket.DisconnectReason) => {
+      trackSocketEvent('disconnect', { reason });
       if (!isAuthenticated) return;
 
       if (reason === 'io client disconnect') {
@@ -677,15 +705,29 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       }
 
       if (reason === 'io server disconnect') {
+        trackErrorRecovery('socket_server_disconnect', 'manual_reconnect');
         refreshSocketAuth();
         socket.connect();
         return;
       }
 
+      emitConnectionAlert({
+        kind: 'warning',
+        title: 'Conexión inestable',
+        description: 'Intentando reconectar al servidor de mensajes...'
+      });
+
       scheduleReconnectFallback();
     };
 
     const handleSocketConnectError = (error: Error) => {
+      const authError = isSocketAuthError(error);
+      trackSocketEvent('connect_error', {
+        message: error.message,
+        is_auth_error: authError,
+        auth_failure_count: authFailureCountRef.current
+      });
+
       if (isSocketAuthError(error)) {
         authFailureCountRef.current += 1;
 
@@ -697,24 +739,49 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         refreshSocketAuth();
       }
 
+      emitConnectionAlert({
+        kind: 'warning',
+        title: 'Problema de conexión',
+        description: 'No se pudo conectar con el socket. Reintentando automáticamente.'
+      });
+
       scheduleReconnectFallback();
     };
 
     const handleReconnectAttempt = () => {
+      reconnectAttemptRef.current += 1;
+      trackSocketEvent('reconnect_attempt', {
+        attempt: reconnectAttemptRef.current
+      });
       refreshSocketAuth();
     };
 
     const handleReconnectFailed = () => {
+      trackSocketEvent('reconnect_failed', {
+        attempts: reconnectAttemptRef.current
+      });
+      emitConnectionAlert({
+        kind: 'error',
+        title: 'No se pudo reconectar',
+        description: 'La conexión en tiempo real quedó interrumpida. Reintentaremos en segundo plano.'
+      });
       scheduleReconnectFallback();
     };
 
     const handleOnline = () => {
+      trackAction('network_online');
       if (!isAuthenticated || socket.connected) return;
       refreshSocketAuth();
       socket.connect();
     };
 
     const handleOffline = () => {
+      trackAction('network_offline');
+      emitConnectionAlert({
+        kind: 'warning',
+        title: 'Sin conexión a internet',
+        description: 'El panel seguirá intentando reconectar cuando vuelva la red.'
+      });
       clearReconnectFallback();
     };
 
@@ -740,14 +807,22 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         const chats = Array.isArray(response.data) ? response.data : (response.data.data || response.data.chats || []);
         
         // Mapear los datos del backend a la estructura esperada por la UI
-        const mappedChats: Conversation[] = chats.map((chat: RawChatSummary) => {
+        const mappedChats: Conversation[] = chats.map((chat: RawChatSummary, chatIndex: number) => {
           const rawLastMessage = chat.ultimo_mensaje?.cuerpo ?? chat.ultimo_mensaje ?? '';
           const normalizedLast = normalizeMessageContent(rawLastMessage);
           const lastDateRaw = chat.ultimo_mensaje_fecha || chat.ultimo_mensaje?.created_at || chat.ultimo_mensaje?.fecha || null;
           const lastDate = lastDateRaw ? parseMessageDate(lastDateRaw) : new Date();
+          const numericChatId = Number(chat.id);
+          const fallbackId = Number.parseInt(
+            hashString(`${chat.telefono || ''}|${chat.nombre_whatsapp || ''}|${chatIndex}`),
+            36
+          );
+          const resolvedChatId = Number.isFinite(numericChatId) && numericChatId > 0
+            ? numericChatId
+            : (Number.isFinite(fallbackId) && fallbackId > 0 ? fallbackId : chatIndex + 1);
           
           return {
-            id: chat.id,
+            id: resolvedChatId,
             name: chat.nombre_whatsapp || chat.nombre_asignado || chat.telefono,
             phone: chat.telefono,
             lastMessage: normalizedLast.preview,
@@ -771,8 +846,10 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         });
         
         setConversationsState(mappedChats);
+        trackAction('chats_loaded', { count: mappedChats.length });
       } catch (error: unknown) {
         const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+        trackAction('chats_load_failed', { status: status || 0 });
         // Si el token es inválido/expirado, forzar logout para reautenticar
         if (status === 401 || status === 403) {
           handleLogout();
@@ -881,8 +958,10 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             
             // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
             const messageExists = chat.messages.some((m: ChatMessage) => {
-              // Verificar por ID si ambos lo tienen
-              if (newMsg.id && m.id === newMsg.id) return true;
+              // Si llega ID real/estable, deduplicar SOLO por ID para evitar falsos positivos
+              if (newMsg.id !== undefined && newMsg.id !== null && newMsg.id !== '') {
+                return m.id === newMsg.id;
+              }
               
               // Verificar por texto y timestamp cercano (mismo mensaje en los últimos 5 seg)
               const mTimestamp = new Date(m.date);
@@ -1204,10 +1283,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
   // Cargar mensajes cuando se selecciona un chat
   useEffect(() => {
-    if (selectedChat === null) return;
-    
-    const currentChat = conversationsState[selectedChat];
-    if (!currentChat || !currentChat.phone) return;
+    if (!currentChat?.id || !currentChat.phone) return;
+    const selectedConversationId = currentChat.id;
     
     // Verificar si necesitamos cargar mensajes (no hay mensajes O el caché expiró)
     const shouldLoadMessages = !currentChat.messages || currentChat.messages.length === 0;
@@ -1340,14 +1417,17 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           
           // Actualizar el chat con los mensajes a mostrar
           setConversationsState(prev => {
+            const targetIndex = prev.findIndex((chat) => chat.id === selectedConversationId);
+            if (targetIndex === -1) return prev;
+
             const updated = [...prev];
-            updated[selectedChat] = {
-              ...updated[selectedChat],
+            updated[targetIndex] = {
+              ...updated[targetIndex],
               messages: messagesToShow,
               ...(lastMsg ? {
-                lastMessage: lastMsgPreview || lastMsg.text || updated[selectedChat].lastMessage,
-                lastMessageDate: lastMsg.date || updated[selectedChat].lastMessageDate,
-                time: lastMsg.date ? formatTime(new Date(lastMsg.date)) : updated[selectedChat].time
+                lastMessage: lastMsgPreview || lastMsg.text || updated[targetIndex].lastMessage,
+                lastMessageDate: lastMsg.date || updated[targetIndex].lastMessageDate,
+                time: lastMsg.date ? formatTime(new Date(lastMsg.date)) : updated[targetIndex].time
               } : {})
             };
             return updated;
@@ -1368,9 +1448,12 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           
           // Establecer array vacío para que no quede en loading infinito
           setConversationsState(prev => {
+            const targetIndex = prev.findIndex((chat) => chat.id === selectedConversationId);
+            if (targetIndex === -1) return prev;
+
             const updated = [...prev];
-            updated[selectedChat] = {
-              ...updated[selectedChat],
+            updated[targetIndex] = {
+              ...updated[targetIndex],
               messages: []
             };
             return updated;
@@ -1380,7 +1463,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       
       loadMessages();
     }
-  }, [selectedChat]);
+  }, [currentChat?.id]);
   
   // Simulate audio playback progress based on real duration
   useEffect(() => {
@@ -1458,14 +1541,50 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
   // Mantener selectedChat válido cuando cambia la lista
   useEffect(() => {
-    if (selectedChat === null) return;
+    if (selectedChat === null) {
+      selectedConversationIdRef.current = null;
+      prevSelectedChatRef.current = null;
+      return;
+    }
+
     if (!conversationsState.length) {
+      selectedConversationIdRef.current = null;
+      prevSelectedChatRef.current = null;
       setSelectedChat(null);
       return;
     }
-    if (!conversationsState[selectedChat]) {
+
+    const selectedByIndex = conversationsState[selectedChat];
+    const selectedChatChanged = prevSelectedChatRef.current !== selectedChat;
+    const selectedIdSnapshot = selectedConversationIdRef.current;
+
+    if (!selectedByIndex) {
       setSelectedChat(Math.max(0, conversationsState.length - 1));
+      prevSelectedChatRef.current = selectedChat;
+      return;
     }
+
+    if (selectedIdSnapshot !== null) {
+      // Si cambió el índice seleccionado, asumir cambio intencional y actualizar snapshot.
+      if (selectedChatChanged && selectedByIndex.id !== selectedIdSnapshot) {
+        selectedConversationIdRef.current = selectedByIndex.id;
+        prevSelectedChatRef.current = selectedChat;
+        return;
+      }
+
+      // Si el índice no cambió pero el id sí, hubo drift por cambios en la lista: restaurar por id.
+      if (!selectedChatChanged && selectedByIndex.id !== selectedIdSnapshot) {
+        const stableIndex = conversationsState.findIndex((chat) => chat.id === selectedIdSnapshot);
+        if (stableIndex !== -1 && stableIndex !== selectedChat) {
+          setSelectedChat(stableIndex);
+          prevSelectedChatRef.current = selectedChat;
+          return;
+        }
+      }
+    }
+
+    selectedConversationIdRef.current = selectedByIndex.id;
+    prevSelectedChatRef.current = selectedChat;
   }, [conversationsState, selectedChat]);
   
   // Funciones para control del bot
@@ -1596,6 +1715,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           }, {
             headers: {}
           });
+
+          trackAction('message_send_success', { phone: currentChat.phone });
           
           // Scroll al final después de enviar
           setTimeout(() => {
@@ -1652,6 +1773,12 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           }
         } catch (error) {
           console.error('❌ Error enviando mensaje:', error);
+          trackAction('message_send_failed', { phone: currentChat.phone });
+          emitConnectionAlert({
+            kind: 'warning',
+            title: 'No se pudo enviar el mensaje',
+            description: 'El mensaje quedó marcado con error para que puedas reintentar.'
+          });
           removePendingMessage(currentChat.phone, tempId);
           // Marcar el mensaje como error
           setConversationsState(prev => {
@@ -2023,15 +2150,17 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   // Mock isOnline state for connection bar
   const isOnline = true;
 
-  const filteredMessages = useMemo(() => getFilteredMessages(), [selectedChat, conversationsState, chatSearchText]);
+  const filteredMessages = useMemo(() => {
+    if (!currentChat) return [];
 
-  const messageVirtualizer = useVirtualizer({
-    count: filteredMessages.length,
-    getScrollElement: () => messagesContainerRef.current,
-    estimateSize: () => 128,
-    overscan: 10,
-    getItemKey: (index) => filteredMessages[index]?.id ?? index
-  });
+    const base = !chatSearchText.trim()
+      ? currentChat.messages
+      : currentChat.messages.filter((msg) =>
+          msg.text.toLowerCase().includes(chatSearchText.toLowerCase())
+        );
+
+    return base;
+  }, [currentChat, chatSearchText]);
 
   const filteredConversations = conversationsState.filter(conv => {
     // Filtrar archivadas
@@ -2047,6 +2176,19 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   });
 
   const archivedConversations = conversationsState.filter(conv => conv.archived);
+
+  const conversationsVirtualizer = useVirtualizer({
+    count: filteredConversations.length,
+    getScrollElement: () => conversationsContainerRef.current,
+    estimateSize: () => 92,
+    overscan: 8,
+    initialRect: {
+      width: 0,
+      height: 900
+    },
+    getItemKey: (index) => filteredConversations[index]?.id ?? index
+  });
+
 
   const markResolved = () => {
     if (selectedChat === null) return;
@@ -2154,8 +2296,17 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         </div>
 
         {/* Conversaciones */}
-        <div className="flex-1 overflow-y-auto">
-          {filteredConversations.map((conv, idx) => {
+        <div ref={conversationsContainerRef} className="flex-1 overflow-y-auto">
+          <div
+            style={{
+              height: `${conversationsVirtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative'
+            }}
+          >
+          {conversationsVirtualizer.getVirtualItems().map((virtualRow) => {
+            const conv = filteredConversations[virtualRow.index];
+            if (!conv) return null;
             // Determinar si la sesión está vencida
             const sessionExpiredForChat = (() => {
               if (conv.lastUserInteraction) {
@@ -2177,24 +2328,28 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
             return (
             <div
-              key={conv.id ?? conv.phone ?? idx}
+              key={conv.id ?? conv.phone ?? virtualRow.index}
+              ref={conversationsVirtualizer.measureElement}
+              data-index={virtualRow.index}
               onContextMenu={(e) => openContextMenu(e, 'chat', conv.id)}
               onClick={() => {
-                selectChatById(conv.id, 0);
+                selectChatById(conv.id);
                 setChatClosed(false);
                 // Marcar como leído cuando se selecciona el chat
                 markChatReadById(conv.id);
               }}
-              className={`p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-700 ${
+              className={`p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-700 absolute left-0 top-0 w-full ${
                 sessionExpiredForChat ? 'opacity-60' : 'opacity-100'
               }`}
               style={selectedId === conv.id ? {
+                transform: `translateY(${virtualRow.start}px)`,
                 backgroundColor: darkMode ? `${themeColors[theme].hex}20` : `${themeColors[theme].hex}10`,
                 borderLeft: `4px solid ${themeColors[theme].hex}`,
                 borderRightWidth: sessionExpiredForChat ? '3px' : '0px',
                 borderRightColor: sessionExpiredForChat ? '#ef4444' : undefined,
                 borderRightStyle: sessionExpiredForChat ? 'solid' : undefined
               } : {
+                transform: `translateY(${virtualRow.start}px)`,
                 borderRightWidth: sessionExpiredForChat ? '3px' : '0px',
                 borderRightColor: sessionExpiredForChat ? '#ef4444' : undefined,
                 borderRightStyle: sessionExpiredForChat ? 'solid' : undefined
@@ -2262,6 +2417,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             </div>
             );
           })}
+          </div>
         </div>
       </div>
 
@@ -2509,7 +2665,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                     // Añadir al principio de los mensajes actuales (deduplicando por ID)
                     setConversationsState(prev => {
                       const updated = [...prev];
-                      const chatIndex = updated.findIndex(c => c.phone === phone);
+                      const chatIndex = updated.findIndex(c => phonesMatch(c.phone, phone));
                       if (chatIndex !== -1) {
                         const existingIds = new Set(updated[chatIndex].messages.map((m) => m.id));
                         const newMessages = messagesFromCache.filter((m) => !existingIds.has(m.id));
@@ -2583,7 +2739,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         
                         setConversationsState(prev => {
                           const updated = [...prev];
-                          const chatIndex = updated.findIndex(c => c.phone === phone);
+                          const chatIndex = updated.findIndex(c => phonesMatch(c.phone, phone));
                           if (chatIndex !== -1) {
                             const existingIds = new Set(updated[chatIndex].messages.map((m) => m.id));
                             const newMessages = messagesToShow.filter((m) => !existingIds.has(m.id));
@@ -2618,6 +2774,12 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       }
                     } catch (error) {
                       console.error('❌ Error al cargar más mensajes:', error);
+                      trackAction('messages_load_more_failed', { phone });
+                      emitConnectionAlert({
+                        kind: 'warning',
+                        title: 'Error al cargar mensajes',
+                        description: 'No se pudieron traer mensajes anteriores. Probá de nuevo.'
+                      });
                       setIsLoadingMoreMessages(false); // Desactivar flag en caso de error
                     } finally {
                       setMessagesLoading(prev => ({ ...prev, [phone]: false }));
@@ -2679,18 +2841,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               </button>
             </div>
           )}
-          {filteredMessages.length > 0 && (
-            <div
-              style={{
-                height: `${messageVirtualizer.getTotalSize()}px`,
-                width: '100%',
-                position: 'relative'
-              }}
-            >
-              {messageVirtualizer.getVirtualItems().map((virtualRow) => {
-            const idx = virtualRow.index;
-            const msg = filteredMessages[idx];
-            if (!msg) return null;
+          {filteredMessages.map((msg, idx) => {
             const prev = idx > 0 ? filteredMessages[idx - 1] : null;
             const labelFor = (m: ChatMessage | null) => {
               if (!m?.date) return '';
@@ -2713,13 +2864,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             return (
               <div 
                 key={msg.id} 
-                ref={messageVirtualizer.measureElement}
-                data-index={virtualRow.index}
-                className="space-y-2 absolute left-0 top-0 w-full"
-                style={{
-                  transform: `translateY(${virtualRow.start}px)`,
-                  animation: 'messageSlideIn 0.25s ease-out forwards'
-                }}
+                className="space-y-2 pb-3"
               >
                 {currLabel && currLabel !== prevLabel && (
                   <div className="flex justify-center my-2 animate-fadeIn">
@@ -3255,8 +3400,6 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               </div>
             );
           })}
-            </div>
-          )}
           {/* Indicador de escritura */}
           {currentChat && typingUsers[currentChat.phone] && (
             <div className="flex items-center gap-2 mb-3 ml-4">
@@ -3809,7 +3952,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         >
           {contextMenu.type === 'chat' && (
             <div className="py-1 w-56">
-              <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => { selectChatById(contextMenu.targetId, 0); setChatClosed(false); setContextMenu({ visible: false, x: 0, y: 0, type: null }); }}>Abrir</button>
+              <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => { selectChatById(contextMenu.targetId); setChatClosed(false); setContextMenu({ visible: false, x: 0, y: 0, type: null }); }}>Abrir</button>
               <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => markChatReadById(contextMenu.targetId!)}>Marcar como leída</button>
               <button className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700" onClick={() => archiveConversationById(contextMenu.targetId!)}>Archivar</button>
               <button className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => deleteConversationById(contextMenu.targetId!)}>Eliminar</button>

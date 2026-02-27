@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { SetStateAction } from 'react';
 import type { Conversation } from '../types/chat';
 
@@ -13,18 +13,36 @@ export const useChatSelection = ({
   selectedChat,
   setSelectedChat
 }: UseChatSelectionParams) => {
+  const selectedIdRef = useRef<number | null>(null);
+
   const currentChat = useMemo(() => {
-    if (selectedChat === null) return null;
-    return conversationsState[selectedChat] ?? null;
+    if (selectedChat === null) {
+      selectedIdRef.current = null;
+      return null;
+    }
+
+    const byIndex = conversationsState[selectedChat] ?? null;
+
+    if (byIndex?.id !== undefined) {
+      selectedIdRef.current = byIndex.id;
+    }
+
+    if (selectedIdRef.current !== null) {
+      const byId = conversationsState.find((chat) => chat.id === selectedIdRef.current) ?? null;
+      if (byId) {
+        return byId;
+      }
+    }
+
+    return byIndex;
   }, [conversationsState, selectedChat]);
 
   const selectedId = useMemo(() => {
-    if (selectedChat === null) return undefined;
-    return conversationsState[selectedChat]?.id;
-  }, [conversationsState, selectedChat]);
+    return currentChat?.id;
+  }, [currentChat]);
 
   const selectChatById = useCallback(
-    (chatId?: number | null, fallbackIndex = 0) => {
+    (chatId?: number | null, fallbackIndex?: number | null) => {
       if (chatId === null || chatId === undefined) {
         setSelectedChat(null);
         return;
@@ -32,11 +50,19 @@ export const useChatSelection = ({
 
       const index = conversationsState.findIndex((chat) => chat.id === chatId);
       if (index !== -1) {
+        selectedIdRef.current = chatId;
         setSelectedChat(index);
         return;
       }
 
       if (conversationsState.length === 0) {
+        selectedIdRef.current = null;
+        setSelectedChat(null);
+        return;
+      }
+
+      if (fallbackIndex === null || fallbackIndex === undefined) {
+        selectedIdRef.current = null;
         setSelectedChat(null);
         return;
       }
@@ -48,6 +74,7 @@ export const useChatSelection = ({
   );
 
   const closeSelectedChat = useCallback(() => {
+    selectedIdRef.current = null;
     setSelectedChat(null);
   }, [setSelectedChat]);
 

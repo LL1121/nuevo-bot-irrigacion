@@ -1,4 +1,5 @@
 const { run, query } = require('../config/db');
+const { isPostgres } = require('../config/db');
 
 /**
  * Servicio de Auditoría - Registra cambios en tablas críticas
@@ -170,18 +171,29 @@ const obtenerLog = async (filtros = {}) => {
  */
 const obtenerResumenUsuario = async (usuario, dias = 7) => {
   try {
-    const queryStr = `
-      SELECT 
-        accion,
-        tabla,
-        COUNT(*) as cantidad
-      FROM audit_log
-      WHERE usuario = ? AND timestamp >= datetime('now', '-' || ? || ' days')
-      GROUP BY accion, tabla
-      ORDER BY cantidad DESC
-    `;
+    const queryStr = isPostgres
+      ? `
+        SELECT 
+          accion,
+          tabla,
+          COUNT(*) as cantidad
+        FROM audit_log
+        WHERE usuario = ? AND timestamp >= (CURRENT_TIMESTAMP - (?::int * INTERVAL '1 day'))
+        GROUP BY accion, tabla
+        ORDER BY cantidad DESC
+      `
+      : `
+        SELECT 
+          accion,
+          tabla,
+          COUNT(*) as cantidad
+        FROM audit_log
+        WHERE usuario = ? AND timestamp >= datetime('now', '-' || ? || ' days')
+        GROUP BY accion, tabla
+        ORDER BY cantidad DESC
+      `;
 
-    const rows = await query(queryStr, [usuario, dias]);
+    const rows = await query(queryStr, [usuario, Number(dias)]);
     
     return {
       usuario,
@@ -201,12 +213,17 @@ const obtenerResumenUsuario = async (usuario, dias = 7) => {
  */
 const limpiarLogAntiguos = async (dias = 90) => {
   try {
-    const queryStr = `
-      DELETE FROM audit_log
-      WHERE timestamp < datetime('now', '-' || ? || ' days')
-    `;
+    const queryStr = isPostgres
+      ? `
+        DELETE FROM audit_log
+        WHERE timestamp < (CURRENT_TIMESTAMP - (?::int * INTERVAL '1 day'))
+      `
+      : `
+        DELETE FROM audit_log
+        WHERE timestamp < datetime('now', '-' || ? || ' days')
+      `;
 
-    const result = await run(queryStr, [dias]);
+    const result = await run(queryStr, [Number(dias)]);
 
     console.log(`🧹 Auditoría: Limpiados ${result.changes} registros antiguos (> ${dias} días)`);
 
