@@ -1,4 +1,4 @@
-const { getDB, run } = require('../config/db');
+const { run, runInTransaction } = require('../config/db');
 
 /**
  * Servicio de Transacciones - Garantiza ACID en operaciones críticas
@@ -25,49 +25,15 @@ const { getDB, run } = require('../config/db');
  * });
  */
 const withTransaction = async (callback) => {
-  const db = getDB();
-
-  return new Promise((resolve, reject) => {
-    // SQLite3 no maneja transacciones con async/await directamente
-    // Así que lo hacemos con callbacks
-    db.serialize(() => {
-      // Iniciar transacción
-      db.run('BEGIN TRANSACTION', async (err) => {
-        if (err) {
-          console.error('❌ Error iniciando transacción:', err);
-          return reject(err);
-        }
-
-        console.log('🔄 INICIANDO TRANSACCIÓN');
-
-        try {
-          // Ejecutar operaciones del callback
-          const result = await callback();
-
-          // Si llegó acá sin errores, confirmar todo
-          db.run('COMMIT', (commitErr) => {
-            if (commitErr) {
-              console.error('❌ Error en COMMIT:', commitErr);
-              return reject(commitErr);
-            }
-            console.log('✅ TRANSACCIÓN COMPLETADA (COMMIT)');
-            resolve(result);
-          });
-        } catch (error) {
-          // Si falla algo, revertir TODO
-          console.error('⏮️  Error en transacción:', error.message);
-          db.run('ROLLBACK', (rollbackErr) => {
-            if (rollbackErr) {
-              console.error('❌ Error durante ROLLBACK:', rollbackErr);
-            } else {
-              console.error('⏮️  TRANSACCIÓN REVERTIDA (ROLLBACK)');
-            }
-            reject(error);
-          });
-        }
-      });
-    });
-  });
+  console.log('🔄 INICIANDO TRANSACCIÓN');
+  try {
+    const result = await runInTransaction(callback);
+    console.log('✅ TRANSACCIÓN COMPLETADA (COMMIT)');
+    return result;
+  } catch (error) {
+    console.error('⏮️  TRANSACCIÓN REVERTIDA (ROLLBACK):', error.message);
+    throw error;
+  }
 };
 
 /**
