@@ -121,7 +121,6 @@ Frontend/
 ```bash
 # Desarrollo
 npm run dev              # Servidor de desarrollo (localhost:5173)
-npm run dev:host         # Servidor accesible en red local
 
 # Build
 npm run build            # Build de producción
@@ -129,15 +128,16 @@ npm run preview          # Preview del build
 
 # Testing
 npm run test             # Ejecutar tests
+npm run test:critical    # Tests críticos de mensajería/cache
 npm run test:ui          # UI de testing
 npm run test:coverage    # Reporte de cobertura
 
 # Calidad de Código
 npm run lint             # Linter ESLint
-npm run type-check       # Verificar tipos TypeScript
 
-# PWA
-npm run sw:build         # Generar service worker
+# Release hardening
+npm run release:check        # Gate mínima (tests críticos + build)
+npm run release:check:full   # Gate completa (lint + tests + build)
 ```
 
 ---
@@ -175,6 +175,7 @@ Ver [.env.example](.env.example) para todas las variables disponibles.
 - **[Guía de Despliegue](docs/DEPLOYMENT.md)** - Cómo desplegar en producción
 - **[Documentación de API](docs/API.md)** - Endpoints y contratos
 - **[Guía de Contribución](docs/CONTRIBUTING.md)** - Cómo contribuir al proyecto
+- **[Release Hardening Checklist](docs/RELEASE_HARDENING_CHECKLIST.md)** - Gate de calidad previa a producción
 - **[Changelog](CHANGELOG.md)** - Historial de cambios
 
 ---

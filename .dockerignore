@@ -10,7 +10,6 @@ node_modules/
 **/node_modules/
 npm-debug.log
 yarn-error.log
-package-lock.json
 yarn.lock
 
 # Archivos de desarrollo
@@ -58,9 +57,7 @@ ecosystem.config.js
 Thumbs.db
 
 # Docker
-Dockerfile
-docker-compose.yml
-.dockerignore
+# Mantener Dockerfile y compose dentro del contexto de build/deploy
 
 # Scripts de desarrollo
 scripts/loadTest.js

@@ -4,6 +4,30 @@ const cheerio = require('cheerio');
 const BASE_URL_TURNADO = 'https://irrigacionmalargue.com/login_g/turno.php';
 const TURNADO_API_DEBUG = process.env.TURNADO_API_DEBUG === 'true' || process.env.NODE_ENV !== 'production';
 
+function buildFormBody(payload) {
+  const params = new URLSearchParams();
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    params.append(key, String(value ?? ''));
+  });
+  return params.toString();
+}
+
+async function postTurnadoForm(payload, extraConfig = {}) {
+  return axios.post(
+    BASE_URL_TURNADO,
+    buildFormBody(payload),
+    {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      timeout: 25000,
+      maxRedirects: 5,
+      ...extraConfig
+    }
+  );
+}
+
 function debugLog(message, data) {
   if (!TURNADO_API_DEBUG) return;
   if (typeof data === 'undefined') {
@@ -11,6 +35,150 @@ function debugLog(message, data) {
     return;
   }
   console.log(`[TURNADO_API] ${message}`, data);
+}
+
+function normalizeCCPP(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
+function extractFirstText($, selectors = []) {
+  for (const selector of selectors) {
+    const value = $(selector).first().text().trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function cleanInlineText(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildPayloadBusquedaTurnos(tipoBusqueda, valor) {
+  const tipo = String(tipoBusqueda || '').trim().toLowerCase();
+  const valorNormalizado = String(valor || '').trim();
+
+  if (!valorNormalizado) {
+    return {
+      error: 'El valor de búsqueda es obligatorio.'
+    };
+  }
+
+  if (tipo === 'ccpp') {
+    return {
+      payload: {
+        buscar_ccpp: valorNormalizado,
+        bccpp: 'Buscar'
+      }
+    };
+  }
+
+  if (tipo === 'titular') {
+    return {
+      payload: {
+        buscar_titular: valorNormalizado,
+        boton: 'Buscar',
+        btitular: 'Buscar'
+      }
+    };
+  }
+
+  return {
+    error: "Tipo de búsqueda inválido. Use 'ccpp' o 'titular'."
+  };
+}
+
+function extraerOpcionesTurnosDesdeHtml(html) {
+  const $ = cheerio.load(html || '');
+  const resultados = [];
+
+  $('.planillas_info-grid-selection-container form').each((_, form) => {
+    const $form = $(form);
+
+    const titularRaw = $form
+      .find('.planilla_grid_selection_hijuela .planillas_info-title')
+      .first()
+      .text();
+
+    const ccppRaw = $form
+      .find('.planilla_grid_selection_ccpp .planillas_info-title')
+      .first()
+      .text();
+
+    const canalHijuelaRaw = $form
+      .find('.planilla_grid_selection_titular .planillas_info-title')
+      .first()
+      .text();
+
+    const idHijuelaOculto = cleanInlineText($form.find('input[name="idhijselecionada"]').val());
+    const ccppOculto = cleanInlineText($form.find('input[name="ccpp_seleccionado"]').val());
+
+    const titular = cleanInlineText(titularRaw).replace(/^Titular:\s*/i, '').trim();
+    const ccpp = cleanInlineText(ccppRaw).replace(/^CC-PP:\s*/i, '').trim();
+    const canalHijuela = cleanInlineText(canalHijuelaRaw);
+
+    if (!titular && !ccpp && !canalHijuela && !idHijuelaOculto && !ccppOculto) {
+      return;
+    }
+
+    resultados.push({
+      titular,
+      ccpp,
+      canal_hijuela: canalHijuela,
+      id_hijuela_oculto: idHijuelaOculto,
+      ccpp_oculto: ccppOculto
+    });
+  });
+
+  return resultados;
+}
+
+async function buscarTurnos(tipoBusqueda, valor) {
+  const config = buildPayloadBusquedaTurnos(tipoBusqueda, valor);
+  if (config.error) {
+    return {
+      success: false,
+      message: config.error
+    };
+  }
+
+  try {
+    debugLog('Iniciando búsqueda unificada de turnos', {
+      tipoBusqueda,
+      valor
+    });
+
+    const response = await postTurnadoForm(config.payload);
+    const resultados = extraerOpcionesTurnosDesdeHtml(response.data);
+
+    if (!resultados.length) {
+      return {
+        success: false,
+        message: 'No se encontraron turnos para esta búsqueda.'
+      };
+    }
+
+    return {
+      success: true,
+      cantidad: resultados.length,
+      resultados
+    };
+  } catch (error) {
+    debugLog('Error en búsqueda unificada de turnos', {
+      message: error?.message,
+      status: error?.response?.status
+    });
+
+    return {
+      success: false,
+      message: 'No se pudieron consultar turnos en este momento.',
+      error: error?.message || 'Error de red en consulta de turnos.'
+    };
+  }
 }
 
 async function obtenerDetalleTurnoCompleto(ccpp) {
@@ -28,70 +196,27 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
   const httpsAgent = new (require('https').Agent)({ keepAlive: true });
 
   try {
-    debugLog('Paso 1: POST con buscar_ccpp', { ccpp });
+    debugLog('Paso 1: POST con buscar_ccpp + bccpp', { ccpp });
 
-    // Paso 1: POST para obtener el ID de hijuela
-    const step1Response = await axios.post(
-      BASE_URL_TURNADO,
-      {
-        buscar_ccpp: ccpp
-      },
-      {
-        httpAgent: agent,
-        httpsAgent: httpsAgent,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        timeout: 25000,
-        maxRedirects: 5
-      }
-    );
-
-    const html1 = step1Response.data;
-    debugLog('Paso 1 completado, parseando HTML para extraer idhijuela');
-
-    // Parsear HTML con Cheerio para extraer idhijuela
-    const $ = cheerio.load(html1);
-    const hiddenInputs = $('input[type="hidden"]');
-    let idhijuela = null;
-
-    for (let i = 0; i < hiddenInputs.length; i++) {
-      const input = hiddenInputs.eq(i);
-      const name = input.attr('name');
-      const value = input.attr('value');
-
-      if (name && name.toLowerCase().includes('hij')) {
-        idhijuela = value;
-        break;
-      }
+    const listadoCcpp = await buscarTurnos('ccpp', ccpp);
+    if (!listadoCcpp.success || !Array.isArray(listadoCcpp.resultados) || !listadoCcpp.resultados.length) {
+      debugLog('Paso 1 sin resultados para CCPP', { ccpp, message: listadoCcpp.message });
+      return {
+        success: false,
+        error: listadoCcpp.message || 'No se encontraron opciones de turno para ese CCPP.',
+        userMessage: '✅ No se encontró turno para ese padrón. Verificá el número de servicio.'
+      };
     }
 
-    // Alternativa: buscar en cualquier input con nombre que contenga "id"
-    if (!idhijuela) {
-      for (let i = 0; i < hiddenInputs.length; i++) {
-        const input = hiddenInputs.eq(i);
-        const name = input.attr('name');
-        if (name === 'idhijselecionada' || name === 'id_hij') {
-          idhijuela = input.attr('value');
-          if (idhijuela) break;
-        }
-      }
-    }
+    const ccppNormalized = normalizeCCPP(ccpp);
+    const opcion = listadoCcpp.resultados.find((entry) => {
+      const visibleNorm = normalizeCCPP(entry?.ccpp);
+      const hiddenNorm = normalizeCCPP(entry?.ccpp_oculto);
+      return visibleNorm === ccppNormalized || hiddenNorm === ccppNormalized;
+    }) || listadoCcpp.resultados[0];
 
-    // Si aún no tenemos idhijuela, intentar buscar en todos los inputs visibles
-    if (!idhijuela) {
-      const allInputs = $('input');
-      for (let i = 0; i < allInputs.length; i++) {
-        const input = allInputs.eq(i);
-        const name = input.attr('name');
-        const value = input.attr('value');
-        if (name && /hij|id/.test(name.toLowerCase()) && value) {
-          idhijuela = value;
-          break;
-        }
-      }
-    }
+    const idhijuela = cleanInlineText(opcion?.id_hijuela_oculto);
+    const ccppSeleccionado = cleanInlineText(opcion?.ccpp_oculto || opcion?.ccpp || ccpp);
 
     if (!idhijuela) {
       debugLog('Error: idhijuela no encontrado en respuesta');
@@ -107,21 +232,14 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
     // Paso 2: POST con idhijuela para obtener detalle del turno
     debugLog('Paso 2: POST con idhijselecionada', { idhijuela });
 
-    const step2Response = await axios.post(
-      BASE_URL_TURNADO,
-      {
-        idhijselecionada: idhijuela
-      },
-      {
-        httpAgent: agent,
-        httpsAgent: httpsAgent,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        timeout: 25000,
-        maxRedirects: 5
-      }
+    const step2Payload = { idhijselecionada: idhijuela };
+    if (ccppSeleccionado) {
+      step2Payload.ccpp_seleccionado = ccppSeleccionado;
+    }
+
+    const step2Response = await postTurnadoForm(
+      step2Payload,
+      { httpAgent: agent, httpsAgent: httpsAgent }
     );
 
     const html2 = step2Response.data;
@@ -132,8 +250,7 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
 
     // Estado: buscar .celda_restrinjida
     const restringido = $h('.celda_restrinjida').length > 0;
-    let estado = restringido ? 'RESTRINGIDO' : 'DISPONIBLE';
-    debugLog('Estado extraído', { estado });
+    debugLog('Estado extraído', { restringido: restringido ? 'RESTRINGIDO' : 'DISPONIBLE' });
 
     // Hijuela: .planilla_grid_hijuela_turno
     let hijuela = 'No disponible';
@@ -143,8 +260,16 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
     }
     debugLog('Hijuela extraído', { hijuela });
 
-    // CCPP
-    let ccppExtracted = ccpp;
+    const ccppExtracted =
+      extractFirstText($h, ['.planilla_grid_ccpp_turno', '.planilla_grid_selection_ccpp .planillas_info-title'])
+        .replace(/^CC-PP:\s*/i, '')
+        .trim() || ccppSeleccionado || ccpp;
+
+    const inspeccion = extractFirstText($h, [
+      '.planilla_grid_inspeccion_turno',
+      '.planilla_grid_cauce_turno',
+      '.planilla_grid_selection_titular .planillas_info-title'
+    ]) || 'No disponible';
 
     // Tomeros: buscar en .planilla_grid_tom1_turno
     let tomeros = {
@@ -182,11 +307,11 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
 
     debugLog('Tomeros extraídos', tomeros);
 
-    // Horarios: fecha y hora exacta de inicio
-    let fechaInicio = 'No disponible';
-    let horaInicio = 'No disponible';
-    let fechaFin = 'No disponible';
-    let horaFin = 'No disponible';
+    // Horarios
+    let fechaInicio = '';
+    let horaInicio = '';
+    let fechaFin = '';
+    let horaFin = '';
 
     // Buscar patrones de fecha/hora en el HTML
     const dateTimePattern = /(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2})/g;
@@ -212,28 +337,32 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
       horaFin
     });
 
-    // Titular: buscar en elementos comunes
-    let titular = 'No disponible';
-    const titularPatterns = ['.titular_turno', '.nombre_titular', '[data-titular]'];
-    for (const selector of titularPatterns) {
-      const element = $h(selector).first();
-      if (element.length > 0) {
-        titular = element.text().trim();
-        if (titular) break;
-      }
-    }
+    const titular = extractFirstText($h, [
+      '.titular_turno',
+      '.nombre_titular',
+      '.planilla_grid_titular_turno',
+      '.planilla_grid_selection_hijuela .planillas_info-title'
+    ])
+      .replace(/^Titular:\s*/i, '')
+      .trim() || 'No disponible';
+
+    const inicioTurno = horaInicio || (restringido ? 'RESTRINGIDO' : 'No disponible');
+    const finTurno = horaFin || (restringido ? 'RESTRINGIDO' : 'No disponible');
+    const fechaInicioCompleta = fechaInicio
+      ? `${fechaInicio}${horaInicio ? ` ${horaInicio}` : ''}`.trim()
+      : null;
 
     const resultado = {
       success: true,
       data: {
+        inspeccion: inspeccion || 'No disponible',
         titular,
-        hijuela,
+        hijuela: hijuela || 'No disponible',
         ccpp: ccppExtracted,
-        estado,
-        fechaInicio,
-        horaInicio,
-        fechaFin,
-        horaFin,
+        inicioTurno,
+        finTurno,
+        fechaInicioCompleta,
+        restringido,
         telAmaya: tomeros.amaya.telefono,
         telContreras: tomeros.contreras.telefono
       },
@@ -256,6 +385,20 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
   }
 }
 
+async function buscarTurnosPorNombre(nombre) {
+  const result = await buscarTurnos('titular', nombre);
+  if (!result.success) {
+    return {
+      success: false,
+      message: result.message || 'No se encontraron turnos'
+    };
+  }
+
+  return result.resultados;
+}
+
 module.exports = {
-  obtenerDetalleTurnoCompleto
+  obtenerDetalleTurnoCompleto,
+  buscarTurnos,
+  buscarTurnosPorNombre
 };

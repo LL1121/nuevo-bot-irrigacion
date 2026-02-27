@@ -1,52 +1,183 @@
 require('dotenv').config();
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const { AsyncLocalStorage } = require('async_hooks');
 
-// Ruta del archivo SQLite
-const DB_PATH = process.env.DB_FILENAME || path.join(__dirname, '../../data/irrigacion.db');
+const DB_CLIENT = String(process.env.DB_CLIENT || 'sqlite').toLowerCase();
+const isPostgres = DB_CLIENT === 'pg' || DB_CLIENT === 'postgres' || DB_CLIENT === 'postgresql';
 
-let db = null;
+let sqliteDb = null;
+let pgPool = null;
+const pgTxStorage = new AsyncLocalStorage();
 
-/**
- * Inicializa la base de datos SQLite y crea tablas si no existen
- */
-const initializeDB = async () => {
-  if (db) return db;
+function transformSqlForPg(sql) {
+  let index = 0;
+  return String(sql || '').replace(/\?/g, () => `$${++index}`);
+}
+
+function getPgExecutor() {
+  const store = pgTxStorage.getStore();
+  return store?.client || pgPool;
+}
+
+async function initializePostgres() {
+  if (pgPool) return pgPool;
+
+  const { Pool } = require('pg');
+
+  pgPool = new Pool({
+    host: process.env.DB_HOST || 'localhost',
+    port: Number(process.env.DB_PORT || 5432),
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'irrigacion_db',
+    max: Number(process.env.DB_POOL_MAX || 20),
+    min: Number(process.env.DB_POOL_MIN || 2),
+    idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT || 60000),
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT || 10000)
+  });
+
+  pgPool.on('error', (err) => {
+    console.error('❌ Error no previsto en pool PostgreSQL:', err);
+  });
+
+  const client = await pgPool.connect();
+  try {
+    await client.query('SELECT 1');
+  } finally {
+    client.release();
+  }
+
+  await createPostgresSchema();
+  console.log('✅ Base de datos PostgreSQL inicializada');
+
+  return pgPool;
+}
+
+async function createPostgresSchema() {
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS clientes (
+      telefono VARCHAR(30) PRIMARY KEY,
+      nombre_whatsapp TEXT DEFAULT 'Sin Nombre',
+      nombre_asignado TEXT,
+      foto_perfil TEXT,
+      padron TEXT,
+      padron_superficial TEXT,
+      padron_subterraneo TEXT,
+      padron_contaminacion TEXT,
+      tipo_consulta_preferido TEXT,
+      estado_deuda TEXT,
+      last_titular TEXT,
+      last_ccpp TEXT,
+      bot_activo INTEGER DEFAULT 1,
+      ultima_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS mensajes (
+      id SERIAL PRIMARY KEY,
+      message_id TEXT UNIQUE,
+      cliente_telefono VARCHAR(30) NOT NULL REFERENCES clientes(telefono) ON DELETE CASCADE,
+      tipo TEXT NOT NULL,
+      cuerpo TEXT NOT NULL,
+      url_archivo TEXT,
+      emisor TEXT DEFAULT 'usuario',
+      leido INTEGER DEFAULT 0,
+      fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS notas_internas (
+      id SERIAL PRIMARY KEY,
+      cliente_telefono VARCHAR(30) NOT NULL REFERENCES clientes(telefono) ON DELETE CASCADE,
+      texto TEXT NOT NULL,
+      autor TEXT,
+      fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS operadores (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT DEFAULT 'operador',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS audit_log (
+      id SERIAL PRIMARY KEY,
+      usuario TEXT NOT NULL,
+      accion TEXT NOT NULL,
+      tabla TEXT NOT NULL,
+      id_registro TEXT NOT NULL,
+      valores_anteriores TEXT,
+      valores_nuevos TEXT,
+      ip_address TEXT,
+      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
+    `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
+    `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_cliente_fecha_notas ON notas_internas(cliente_telefono, fecha)`,
+    `CREATE INDEX IF NOT EXISTS idx_username ON operadores(username)`,
+    `CREATE INDEX IF NOT EXISTS idx_email ON operadores(email)`,
+    `CREATE INDEX IF NOT EXISTS idx_usuario_timestamp ON audit_log(usuario, timestamp)`,
+    `CREATE INDEX IF NOT EXISTS idx_tabla_id ON audit_log(tabla, id_registro)`,
+    `CREATE INDEX IF NOT EXISTS idx_accion ON audit_log(accion)`,
+    `CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp)`,
+
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS last_titular TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS last_ccpp TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS padron_superficial TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS padron_subterraneo TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS padron_contaminacion TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tipo_consulta_preferido TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bot_activo INTEGER DEFAULT 1`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS ultima_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS leido INTEGER DEFAULT 0`,
+    `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS message_id TEXT`
+  ];
+
+  for (const sql of statements) {
+    await pgPool.query(sql);
+  }
+}
+
+function initializeSqlite() {
+  if (sqliteDb) return Promise.resolve(sqliteDb);
+
+  const sqlite3 = require('sqlite3').verbose();
+  const DB_PATH = process.env.DB_FILENAME || path.join(__dirname, '../../data/irrigacion.db');
 
   return new Promise((resolve, reject) => {
-    db = new sqlite3.Database(DB_PATH, (err) => {
+    sqliteDb = new sqlite3.Database(DB_PATH, (err) => {
       if (err) {
         console.error('❌ Error al conectar a SQLite:', err);
         reject(err);
       } else {
         console.log(`✅ Base de datos SQLite "${DB_PATH}" inicializada`);
-        
-        // Habilitar foreign keys
-        db.run('PRAGMA foreign_keys = ON', async (err) => {
-          if (err) {
-            console.error('Error al habilitar foreign keys:', err);
-            reject(err);
-          } else {
-            try {
-              await createTables();
-              await runMigrations();
-              resolve(db);
-            } catch (error) {
-              reject(error);
-            }
+
+        sqliteDb.run('PRAGMA foreign_keys = ON', async (pragmaErr) => {
+          if (pragmaErr) {
+            reject(pragmaErr);
+            return;
+          }
+
+          try {
+            await createSqliteSchema();
+            resolve(sqliteDb);
+          } catch (schemaErr) {
+            reject(schemaErr);
           }
         });
       }
     });
   });
-};
+}
 
-/**
- * Crea las tablas necesarias
- */
-const createTables = async () => {
-  const queries = [
-    // Tabla clientes
+async function createSqliteSchema() {
+  const statements = [
     `CREATE TABLE IF NOT EXISTS clientes (
       telefono TEXT PRIMARY KEY,
       nombre_whatsapp TEXT DEFAULT 'Sin Nombre',
@@ -64,19 +195,8 @@ const createTables = async () => {
       ultima_interaccion DATETIME DEFAULT CURRENT_TIMESTAMP,
       fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-
-    // Crear índice para clientes
     `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
 
-    // Tabla usuarios (legacy)
-    `CREATE TABLE IF NOT EXISTS usuarios (
-      telefono TEXT PRIMARY KEY,
-      dni TEXT,
-      bot_mode TEXT DEFAULT 'active',
-      last_update DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`,
-
-    // Tabla mensajes
     `CREATE TABLE IF NOT EXISTS mensajes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       message_id TEXT UNIQUE,
@@ -89,12 +209,9 @@ const createTables = async () => {
       fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
     )`,
-
-    // Índices para mensajes
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
     `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
 
-    // Tabla notas_internas
     `CREATE TABLE IF NOT EXISTS notas_internas (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cliente_telefono TEXT NOT NULL,
@@ -103,11 +220,8 @@ const createTables = async () => {
       fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE
     )`,
-
-    // Índice para notas
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha_notas ON notas_internas(cliente_telefono, fecha)`,
 
-    // Tabla operadores
     `CREATE TABLE IF NOT EXISTS operadores (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
@@ -117,12 +231,9 @@ const createTables = async () => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-
-    // Índices para operadores
     `CREATE INDEX IF NOT EXISTS idx_username ON operadores(username)`,
     `CREATE INDEX IF NOT EXISTS idx_email ON operadores(email)`,
 
-    // Tabla audit_log
     `CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       usuario TEXT NOT NULL,
@@ -134,132 +245,190 @@ const createTables = async () => {
       ip_address TEXT,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
-
-    // Índices para audit_log
     `CREATE INDEX IF NOT EXISTS idx_usuario_timestamp ON audit_log(usuario, timestamp)`,
     `CREATE INDEX IF NOT EXISTS idx_tabla_id ON audit_log(tabla, id_registro)`,
     `CREATE INDEX IF NOT EXISTS idx_accion ON audit_log(accion)`,
     `CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp)`
   ];
 
-  for (const query of queries) {
-    await new Promise((resolve, reject) => {
-      db.run(query, (err) => {
-        if (err && !err.message.includes('already exists')) {
-          console.error('❌ Error en query:', query);
-          console.error(err);
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
+  for (const sql of statements) {
+    await sqliteRun(sql, []);
+  }
+}
+
+async function initializeDB() {
+  if (isPostgres) {
+    return initializePostgres();
+  }
+  return initializeSqlite();
+}
+
+function ensureInitialized() {
+  if (isPostgres && !pgPool) {
+    throw new Error('Pool PostgreSQL no inicializado. Llama a initializeDB() primero.');
+  }
+  if (!isPostgres && !sqliteDb) {
+    throw new Error('Base de datos SQLite no inicializada. Llama a initializeDB() primero.');
+  }
+}
+
+async function pgQuery(sql, params = []) {
+  ensureInitialized();
+  const executor = getPgExecutor();
+  const transformed = transformSqlForPg(sql);
+  const result = await executor.query(transformed, params);
+  return result.rows || [];
+}
+
+async function pgGet(sql, params = []) {
+  const rows = await pgQuery(sql, params);
+  return rows[0] || null;
+}
+
+async function pgRun(sql, params = []) {
+  ensureInitialized();
+  const executor = getPgExecutor();
+  const transformedBase = transformSqlForPg(sql);
+  let transformed = transformedBase;
+
+  if (/^\s*insert\s+/i.test(transformedBase) && !/\sreturning\s+/i.test(transformedBase)) {
+    transformed = `${transformedBase} RETURNING *`;
   }
 
-  console.log('✅ Tablas clientes, mensajes, notas_internas, operadores y audit_log listas');
-};
+  const result = await executor.query(transformed, params);
+  const firstRow = result.rows && result.rows.length ? result.rows[0] : null;
 
-/**
- * Ejecuta migraciones de base de datos para agregar columnas faltantes
- */
-const runMigrations = async () => {
-  console.log('🔄 Verificando migraciones de base de datos...');
-  
-  // Migración 1: Agregar columnas last_titular y last_ccpp
-  try {
-    // Verificar si la columna ya existe
-    const tableInfo = await query("PRAGMA table_info(clientes)");
-    const hasLastTitular = tableInfo.some(col => col.name === 'last_titular');
-    const hasLastCCPP = tableInfo.some(col => col.name === 'last_ccpp');
-    
-    if (!hasLastTitular) {
-      console.log('  ➕ Agregando columna last_titular a tabla clientes...');
-      await run('ALTER TABLE clientes ADD COLUMN last_titular TEXT');
-      console.log('  ✅ Columna last_titular agregada');
-    }
-    
-    if (!hasLastCCPP) {
-      console.log('  ➕ Agregando columna last_ccpp a tabla clientes...');
-      await run('ALTER TABLE clientes ADD COLUMN last_ccpp TEXT');
-      console.log('  ✅ Columna last_ccpp agregada');
-    }
-    
-    // Migración 2: Agregar columna leido en mensajes
-    const mensajesTableInfo = await query("PRAGMA table_info(mensajes)");
-    const hasLeido = mensajesTableInfo.some(col => col.name === 'leido');
+  return {
+    lastID: firstRow?.id || null,
+    changes: Number(result.rowCount || 0)
+  };
+}
 
-    if (!hasLeido) {
-      console.log('  ➕ Agregando columna leido a tabla mensajes...');
-      await run('ALTER TABLE mensajes ADD COLUMN leido INTEGER DEFAULT 0');
-      console.log('  ✅ Columna leido agregada');
-    }
-
-    if (hasLastTitular && hasLastCCPP && hasLeido) {
-      console.log('  ✅ Todas las migraciones ya están aplicadas');
-    }
-    
-  } catch (error) {
-    console.error('❌ Error ejecutando migraciones:', error);
-  }
-  
-  console.log('✅ Migraciones completadas');
-};
-
-/**
- * Ejecuta una query de lectura (SELECT)
- */
-const query = async (sql, params = []) => {
+function sqliteQuery(sql, params = []) {
+  ensureInitialized();
   return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
+    sqliteDb.all(sql, params, (err, rows) => {
       if (err) reject(err);
       else resolve(rows || []);
     });
   });
-};
+}
 
-/**
- * Ejecuta una query de escritura (INSERT, UPDATE, DELETE)
- */
-const run = async (sql, params = []) => {
+function sqliteRun(sql, params = []) {
+  ensureInitialized();
   return new Promise((resolve, reject) => {
-    db.run(sql, params, function(err) {
+    sqliteDb.run(sql, params, function onRun(err) {
       if (err) reject(err);
       else resolve({ lastID: this.lastID, changes: this.changes });
     });
   });
-};
+}
 
-/**
- * Obtiene una única fila
- */
-const get = async (sql, params = []) => {
+function sqliteGet(sql, params = []) {
+  ensureInitialized();
   return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
+    sqliteDb.get(sql, params, (err, row) => {
       if (err) reject(err);
-      else resolve(row);
+      else resolve(row || null);
     });
   });
-};
+}
 
-const getDB = () => {
-  if (!db) throw new Error('Base de datos no inicializada. Llama a initializeDB() primero.');
-  return db;
-};
+async function query(sql, params = []) {
+  return isPostgres ? pgQuery(sql, params) : sqliteQuery(sql, params);
+}
 
-const getPool = () => {
-  // Compatibilidad con código existente que usa getPool()
+async function run(sql, params = []) {
+  return isPostgres ? pgRun(sql, params) : sqliteRun(sql, params);
+}
+
+async function get(sql, params = []) {
+  return isPostgres ? pgGet(sql, params) : sqliteGet(sql, params);
+}
+
+async function runInTransaction(callback) {
+  ensureInitialized();
+
+  if (!isPostgres) {
+    return new Promise((resolve, reject) => {
+      sqliteDb.serialize(() => {
+        sqliteDb.run('BEGIN TRANSACTION', async (beginErr) => {
+          if (beginErr) return reject(beginErr);
+
+          try {
+            const result = await callback();
+            sqliteDb.run('COMMIT', (commitErr) => {
+              if (commitErr) return reject(commitErr);
+              resolve(result);
+            });
+          } catch (error) {
+            sqliteDb.run('ROLLBACK', () => reject(error));
+          }
+        });
+      });
+    });
+  }
+
+  const client = await pgPool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await pgTxStorage.run({ client }, async () => callback());
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (_) {
+      // ignore rollback errors
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function getPool() {
+  ensureInitialized();
+
+  if (isPostgres) {
+    return {
+      query: async (sql, params = []) => ({ rows: await pgQuery(sql, params) }),
+      execute: async (sql, params = []) => pgRun(sql, params),
+      getConnection: async () => {
+        const client = await pgPool.connect();
+        return {
+          query: async (sql, params = []) => {
+            const transformed = transformSqlForPg(sql);
+            return client.query(transformed, params);
+          },
+          release: () => client.release()
+        };
+      }
+    };
+  }
+
   return {
-    query: (sql, params) => query(sql, params),
-    execute: (sql, params) => run(sql, params)
+    query: (sql, params = []) => sqliteQuery(sql, params),
+    execute: (sql, params = []) => sqliteRun(sql, params),
+    getConnection: async () => ({
+      query: async (sql, params = []) => sqliteQuery(sql, params),
+      release: () => {}
+    })
   };
-};
+}
 
-// Exportar
+function getDB() {
+  ensureInitialized();
+  return isPostgres ? pgPool : sqliteDb;
+}
+
 module.exports = {
   initializeDB,
   query,
   run,
   get,
+  getPool,
   getDB,
-  getPool
+  runInTransaction,
+  isPostgres
 };
