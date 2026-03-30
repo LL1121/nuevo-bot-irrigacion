@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 
+function getSignatureHeader(req) {
+  const headers = req.headers || {};
+  return headers['x-hub-signature-256'] || headers['x-hub-signature'] || null;
+}
+
 /**
  * Verifica la firma X-Hub-Signature-256 de Meta/WhatsApp
  * @param {string} payload - Body raw del request (string)
@@ -8,7 +13,7 @@ const crypto = require('crypto');
  * @returns {boolean}
  */
 function verifyWebhookSignature(payload, signature, secret) {
-  if (!signature || !secret) {
+  if (!payload || !signature || !secret) {
     return false;
   }
 
@@ -46,7 +51,7 @@ function verifyMetaWebhook(req, res, next) {
     return next();
   }
 
-  const signature = req.headers['x-hub-signature-256'];
+  const signature = getSignatureHeader(req);
   const secret = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
 
   if (!secret) {
@@ -64,8 +69,16 @@ function verifyMetaWebhook(req, res, next) {
     });
   }
 
-  // El body debe estar en raw (string o buffer) para verificar la firma
-  const rawBody = req.rawBody || JSON.stringify(req.body);
+  // Evitamos usar req.body serializado para no romper la firma por cambios de formato.
+  if (typeof req.rawBody !== 'string' || !req.rawBody.length) {
+    console.error('❌ rawBody no disponible para verificar firma webhook');
+    return res.status(400).json({
+      success: false,
+      error: 'Missing raw body for signature verification'
+    });
+  }
+
+  const rawBody = req.rawBody;
 
   const isValid = verifyWebhookSignature(rawBody, signature, secret);
 
@@ -83,5 +96,6 @@ function verifyMetaWebhook(req, res, next) {
 
 module.exports = {
   verifyWebhookSignature,
-  verifyMetaWebhook
+  verifyMetaWebhook,
+  getSignatureHeader
 };

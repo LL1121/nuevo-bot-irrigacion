@@ -18,6 +18,7 @@ import { getTemplateDisplayText, normalizeMessageContent } from './services/mess
 import { useChatSelection } from './hooks/useChatSelection';
 import { useChatMutations } from './hooks/useChatMutations';
 import { trackAction, trackErrorRecovery, trackSocketEvent } from './utils/monitoring';
+import { applyMessageCachePolicy } from './utils/messageCachePolicy';
 import type { ChatMessage, Conversation, RawApiMessage, RawSocketMessage } from './types/chat';
 
 type MediaFilter = 'all' | 'images' | 'videos' | 'files' | 'urls';
@@ -1002,7 +1003,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       ? { ...m, id: newMsg.id, read: true, status: undefined }
                       : m
                   );
-                  return { ...prev, [phoneKey]: mergeMessageBatches(updatedCache) };
+                  const nextCache = { ...prev, [phoneKey]: mergeMessageBatches(updatedCache) };
+                  return applyMessageCachePolicy(nextCache);
                 });
               } else {
                 // Agregar nuevo mensaje
@@ -1043,7 +1045,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                     const cacheIds = new Set(phoneCache.map((m: ChatMessage) => m.id));
                     if (!cacheIds.has(mappedMessage.id)) {
                       const updatedCache = mergeMessageBatches(phoneCache, [mappedMessage]);
-                      return { ...prev, [phoneKey]: updatedCache };
+                      const nextCache = { ...prev, [phoneKey]: updatedCache };
+                      return applyMessageCachePolicy(nextCache);
                     }
                     return prev;
                   });
@@ -1399,7 +1402,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           // Guardar en caché de memoria
           setAllMessagesCache(prev => {
             const phoneKey = normalizePhoneKey(currentChat.phone);
-            return { ...prev, [phoneKey]: sortedAllMessages };
+            const nextCache = { ...prev, [phoneKey]: sortedAllMessages };
+            return applyMessageCachePolicy(nextCache);
           });
           setCurrentMessageIndex(prev => ({ ...prev, [currentChat.phone]: sortedAllMessages.length - messagesLimit }));
           
@@ -1765,7 +1769,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 const updatedCache = dedupeMessages(phoneCache.map(msg => 
                   msg.id === tempId ? { ...msg, id: realId, status: undefined, read: true } : msg
                 ));
-                return { ...prev, [phoneKey]: updatedCache };
+                const nextCache = { ...prev, [phoneKey]: updatedCache };
+                return applyMessageCachePolicy(nextCache);
               } else {
                 return prev;
               }
@@ -2732,7 +2737,10 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         
                         // Añadir al caché (al principio, porque son mensajes más antiguos)
                         const updatedCache = [...allMappedMessages, ...cachedMessages];
-                        setAllMessagesCache(prev => ({ ...prev, [cachePhone]: updatedCache }));
+                        setAllMessagesCache(prev => {
+                          const nextCache = { ...prev, [cachePhone]: updatedCache };
+                          return applyMessageCachePolicy(nextCache);
+                        });
                         
                         // Mostrar solo los primeros 20 de los nuevos
                         const messagesToShow = allMappedMessages.slice(-messagesLimit);

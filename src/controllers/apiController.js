@@ -6,6 +6,18 @@ const fs = require('fs');
 const path = require('path');
 const { validateFileIntegrity } = require('../services/fileValidator');
 
+const emitToTenantRoom = async (phone, eventName, payload) => {
+  if (!global.io) return;
+
+  const subdelegacionInfo = await clienteService.obtenerSubdelegacionInfo(phone);
+  const room = subdelegacionInfo?.id ? `zona_${subdelegacionInfo.id}` : null;
+  if (room) {
+    global.io.to(room).emit(eventName, payload);
+  } else {
+    global.io.emit(eventName, payload);
+  }
+};
+
 /**
  * Lista todas las conversaciones activas (chats)
  */
@@ -287,12 +299,10 @@ const activarBot = async (req, res) => {
     }
 
     // Emitir evento en tiempo real
-    if (global.io) {
-      global.io.emit('bot_mode_changed', {
-        telefono: phone,
-        bot_activo: true
-      });
-    }
+    await emitToTenantRoom(phone, 'bot_mode_changed', {
+      telefono: phone,
+      bot_activo: true
+    });
 
     res.json({
       success: true,
@@ -309,6 +319,74 @@ const activarBot = async (req, res) => {
   }
 };
 
+const listarTickets = async (req, res) => {
+  try {
+    const subdelegacionId = req.user?.subdelegacion_id;
+    if (!subdelegacionId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Operador sin subdelegación asignada'
+      });
+    }
+
+    const tickets = await clienteService.listarTicketsPorSubdelegacion(subdelegacionId);
+    return res.json({
+      success: true,
+      tickets,
+      total: tickets.length
+    });
+  } catch (error) {
+    console.error('❌ Error en listarTickets:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al obtener tickets'
+    });
+  }
+};
+
+const asignarSubdelegacionOperador = async (req, res) => {
+  try {
+    const operatorId = Number(req.params.operatorId);
+    const subdelegacionId = Number(req.params.subdelegacionId);
+
+    if (!Number.isInteger(operatorId) || operatorId <= 0 || !Number.isInteger(subdelegacionId) || subdelegacionId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'operatorId y subdelegacionId deben ser enteros positivos'
+      });
+    }
+
+    const { run, get } = require('../config/db');
+    const targetSubdelegacion = await get('SELECT id, nombre FROM subdelegaciones WHERE id = ? LIMIT 1', [subdelegacionId]);
+    if (!targetSubdelegacion?.id) {
+      return res.status(404).json({ success: false, error: 'Subdelegación no encontrada' });
+    }
+
+    const op = await get('SELECT id, username, subdelegacion_id FROM operadores WHERE id = ? LIMIT 1', [operatorId]);
+    if (!op?.id) {
+      return res.status(404).json({ success: false, error: 'Operador no encontrado' });
+    }
+
+    await run(
+      'UPDATE operadores SET subdelegacion_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [subdelegacionId, operatorId]
+    );
+
+    return res.json({
+      success: true,
+      operador: {
+        id: operatorId,
+        username: op.username,
+        subdelegacion_id: subdelegacionId,
+        subdelegacion_nombre: targetSubdelegacion.nombre
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error en asignarSubdelegacionOperador:', error);
+    return res.status(500).json({ success: false, error: 'Error al asignar subdelegación al operador' });
+  }
+};
+
 module.exports = {
   listarChats,
   obtenerMensajes,
@@ -318,5 +396,7 @@ module.exports = {
   pausarBot,
   activarBot,
   descargarMedia,
-  subirArchivo
+  subirArchivo,
+  listarTickets,
+  asignarSubdelegacionOperador
 };

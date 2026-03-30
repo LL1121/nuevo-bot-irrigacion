@@ -14,6 +14,85 @@ const userStates = {};
 // Memoria para deduplicación de mensajes
 const processedMessageIds = new Set();
 
+// Bloqueo temporal de opciones legacy/reducidas del menú principal
+const TEMP_DISABLED_MENU_OPTIONS = new Set([
+  'ubicacion',
+  'vencimientos',
+  'empadronamiento',
+  'perforacion',
+  'renuncia',
+  'operador',
+  'iniciar_perforacion',
+  '4',
+  'option_4'
+]);
+
+const emitToTenantRoom = async (phone, eventName, payload) => {
+  if (!global.io) return;
+
+  const subdelegacionInfo = await clienteService.obtenerSubdelegacionInfo(phone);
+  const room = subdelegacionInfo?.id ? `zona_${subdelegacionInfo.id}` : null;
+  if (room) {
+    global.io.to(room).emit(eventName, payload);
+  } else {
+    global.io.emit(eventName, payload);
+  }
+};
+
+const derivarAHumano = async (from, motivo = 'DERIVACION_BOT') => {
+  const subdelegacionResuelta = await clienteService.resolverSubdelegacionCliente(from);
+
+  await clienteService.actualizarEstadoConversacion(from, 'HUMANO');
+  await clienteService.cambiarEstadoBot(from, false);
+
+  const ticket = await clienteService.crearTicketHumano(
+    from,
+    subdelegacionResuelta?.id || null,
+    motivo
+  );
+
+  await emitToTenantRoom(from, 'bot_mode_changed', {
+    telefono: from,
+    bot_activo: false,
+    estado_conversacion: 'HUMANO',
+    subdelegacion: subdelegacionResuelta?.nombre || null,
+    subdelegacion_id: subdelegacionResuelta?.id || null,
+    ticket_id: ticket?.id || null
+  });
+
+  return {
+    subdelegacion: subdelegacionResuelta?.nombre || null,
+    subdelegacionId: subdelegacionResuelta?.id || null,
+    ticket
+  };
+};
+
+const intentarDerivarOperador = async (from, motivo = 'DERIVACION_BOT') => {
+  const subdelegacionInfo = await clienteService.obtenerSubdelegacionInfo(from);
+  const disponibilidad = await clienteService.validarHorarioAtencionOperador(subdelegacionInfo?.id || null);
+
+  if (!disponibilidad.disponible) {
+    await sendMessageAndSave(from, disponibilidad.mensaje || '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.');
+    return {
+      derivado: false,
+      fueraHorario: true,
+      subdelegacion: subdelegacionInfo?.nombre || null,
+      subdelegacionId: subdelegacionInfo?.id || null,
+      ticket: null
+    };
+  }
+
+  const operatorText = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.${subdelegacionInfo?.nombre ? `\n\n🏢 Subdelegación: *${subdelegacionInfo.nombre}*` : ''}`;
+  await sendMessageAndSave(from, operatorText);
+
+  const handoff = await derivarAHumano(from, motivo);
+  return {
+    derivado: true,
+    fueraHorario: false,
+    ...handoff
+  };
+};
+
 /**
  * Verificación del webhook (GET)
  * Meta envía una petición GET para verificar el webhook
@@ -84,6 +163,10 @@ const receiveMessage = async (req, res) => {
         let esClienteNuevo = false;
         try {
           cliente = await clienteService.obtenerOCrearCliente(from, pushName, fotoPerfil);
+          const displayPhoneNumber = body.entry?.[0]?.changes?.[0]?.value?.metadata?.display_phone_number
+            || body.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id
+            || '';
+          await clienteService.asignarSubdelegacionPorEntradaSiFalta(from, displayPhoneNumber);
           // Detectar si es cliente nuevo: ultima_interaccion ≈ fecha_registro
           if (cliente) {
             const ultimaInteraccion = new Date(cliente.ultima_interaccion).getTime();
@@ -212,6 +295,13 @@ const receiveMessage = async (req, res) => {
 
         // Procesar mensaje según el estado actual
         const optionId = message._optionId || messageBody;
+
+        // Anti-loop: ignorar webhooks sin input util (evita reenviar menú por eventos vacíos)
+        if (!String(optionId || '').trim() && !String(messageBody || '').trim()) {
+          console.log(`🔇 Evento sin contenido útil para ${from}: se ignora para evitar loop de menú`);
+          return res.sendStatus(200);
+        }
+
         await handleUserMessage(from, messageBody, optionId);
       }
 
@@ -378,14 +468,13 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       console.log(`🔵 Opción recibida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
       if (optionToProcess === 'op_si_operador') {
         // User wants to talk with operator
-        const operatorMsg = `👤 *Derivación a un agente*\n\nEn instantes, un operador humano continuará la atención.`;
-        await sendMessageAndSave(from, operatorMsg);
-        await clienteService.cambiarEstadoBot(from, false);
-        if (global.io) {
-          global.io.emit('bot_mode_changed', { telefono: from, bot_activo: false });
-        }
+        const handoff = await intentarDerivarOperador(from, 'SCRAPER_ERROR_OPERATOR_CHOICE');
         userStates[from].step = 'MAIN_MENU';
-        console.log(`👤 Usuario ${from} conectado con operador por error en scraper`);
+        if (handoff.derivado) {
+          console.log(`👤 Usuario ${from} conectado con operador por error en scraper`);
+        } else {
+          console.log(`🕒 Fuera de horario de operador para ${from}`);
+        }
       } else if (optionToProcess === 'op_no_operador') {
         // User wants to do another transaction
         await sendMenuList(from, true);
@@ -440,13 +529,8 @@ Soy el asistente virtual y estoy para ayudarte con tus gestiones hídricas de fo
 const sendMenuList = async (from, isFollowUp = false) => {
   const sections = [
     {
-      title: 'Información y Consultas',
+      title: 'Consultas Disponibles',
       rows: [
-        { 
-          id: 'ubicacion', 
-          title: '📍 Ubicación y Horarios',
-          description: 'Dirección, horarios de atención y contacto'
-        },
         { 
           id: 'deuda', 
           title: '💳 Solicitar Deuda',
@@ -458,44 +542,9 @@ const sendMenuList = async (from, isFollowUp = false) => {
           description: 'Obtener boleto y pagar online'
         },
         { 
-          id: 'vencimientos', 
-          title: '📅 Consultar Vencimientos',
-          description: 'Ver fechas de vencimiento de pagos'
-        },
-        { 
           id: 'turnos', 
           title: '🗓️ Consultar Turnos',
           description: 'Información sobre turnos disponibles'
-        }
-      ]
-    },
-    {
-      title: 'Trámites y Gestiones',
-      rows: [
-        { 
-          id: 'empadronamiento', 
-          title: '🧾 Empadronamiento',
-          description: 'Registrar nuevo padrón o actualizar datos'
-        },
-        { 
-          id: 'perforacion', 
-          title: '🔧 Solicitar Perforación',
-          description: 'Tramitar autorización para perforación'
-        },
-        { 
-          id: 'renuncia', 
-          title: '🧾 Tramitar Renuncia',
-          description: 'Gestionar renuncia a derechos de riego'
-        }
-      ]
-    },
-    {
-      title: 'Asistencia',
-      rows: [
-        { 
-          id: 'operador', 
-          title: '👤 Hablar con Operador',
-          description: 'Conectar con un agente humano'
         }
       ]
     }
@@ -551,9 +600,68 @@ const sendMenuList = async (from, isFollowUp = false) => {
  * Maneja las opciones del menú principal
  */
 const handleMainMenu = async (from, option) => {
+  const normalizedOption = String(option || '').toLowerCase().trim();
+
+  if (TEMP_DISABLED_MENU_OPTIONS.has(normalizedOption)) {
+    await sendMessageAndSave(
+      from,
+      '🔒 Esta opción quedó deshabilitada temporalmente. Por favor elegí una de las opciones disponibles del menú actual.'
+    );
+    await sendMenuList(from, true);
+    console.log(`🔒 Opción temporalmente deshabilitada: ${normalizedOption} | usuario=${from}`);
+    return;
+  }
+
   switch (option) {
     case '1':
     case 'option_1':
+    case 'deuda':
+      // Solicitar Deuda: Consultar deuda y ofrecer pago online
+      await handleConsultarDeuda(from);
+      break;
+
+    case '2':
+    case 'option_2':
+    case 'boleto':
+      // Pago Anual o Bimestral
+      await handlePedirBoleto(from);
+      break;
+
+    case '3':
+    case 'option_3':
+    case 'turnos': {
+      const [lastTitularDB, lastCCPPDB] = await Promise.all([
+        clienteService.obtenerUltimoTitular(from),
+        clienteService.obtenerUltimoCCPP(from)
+      ]);
+
+      if (lastTitularDB) {
+        userStates[from].lastTitular = lastTitularDB;
+      }
+      if (lastCCPPDB) {
+        userStates[from].lastCCPP = lastCCPPDB;
+      }
+
+      const hasMemory = Boolean(userStates[from].lastTitular || userStates[from].lastCCPP);
+      // Ofrecer opciones de búsqueda de turno
+      const turnosIntro = `🗓️ *Consulta de Turnos*\n\n¿Cómo desea buscar su turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}\n\n_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
+      await sendMessageAndSave(from, turnosIntro);
+
+      await whatsappService.sendInteractiveButtons(
+        from,
+        '📋 Seleccione el método de búsqueda:',
+        [
+          { id: 'turno_titular', title: '👤 Por Titular' },
+          { id: 'turno_ccpp', title: '🔢 Por Servicio' },
+          { id: 'volver', title: '↩️ Volver' }
+        ]
+      );
+
+      userStates[from].step = 'AWAITING_TURNO_METHOD';
+      console.log(`🗓️ Opciones de búsqueda de turno enviadas a ${from}`);
+      break;
+    }
+
     case 'ubicacion':
       const locationLat = parseFloat(process.env.UBICACION_LAT || '');
       const locationLon = parseFloat(process.env.UBICACION_LON || '');
@@ -621,19 +729,6 @@ Mismos requisitos (a-i)
       // Reenviar la lista con mensaje de seguimiento
       await sendMenuList(from, true);
       console.log(`📋 Info de empadronamiento enviada a ${from}`);
-      break;
-
-    case '3':
-    case 'option_3':
-    case 'deuda':
-      // Solicitar Deuda: Consultar deuda y ofrecer pago online
-      await handleConsultarDeuda(from);
-      break;
-
-    case 'boleto':
-    case 'option_4':
-      // Pago Anual o Bimestral
-      await handlePedirBoleto(from);
       break;
 
     case 'vencimientos': {
@@ -720,53 +815,15 @@ Por favor contactá a un operador para más información.`;
       break;
     }
 
-    case 'turnos': {
-      const [lastTitularDB, lastCCPPDB] = await Promise.all([
-        clienteService.obtenerUltimoTitular(from),
-        clienteService.obtenerUltimoCCPP(from)
-      ]);
-
-      if (lastTitularDB) {
-        userStates[from].lastTitular = lastTitularDB;
-      }
-      if (lastCCPPDB) {
-        userStates[from].lastCCPP = lastCCPPDB;
-      }
-
-      const hasMemory = Boolean(userStates[from].lastTitular || userStates[from].lastCCPP);
-      // Ofrecer opciones de búsqueda de turno
-      const turnosIntro = `🗓️ *Consulta de Turnos*
-
-¿Cómo desea buscar su turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}`;
-      await sendMessageAndSave(from, turnosIntro);
-      
-      await whatsappService.sendInteractiveButtons(
-        from,
-        '📋 Seleccione el método de búsqueda:',
-        [
-          { id: 'turno_titular', title: '👤 Por Titular' },
-          { id: 'turno_ccpp', title: '🔢 Por Servicio' },
-          { id: 'volver', title: '↩️ Volver' }
-        ]
-      );
-      
-      userStates[from].step = 'AWAITING_TURNO_METHOD';
-      console.log(`🗓️ Opciones de búsqueda de turno enviadas a ${from}`);
-      break;
-    }
-
     case '4':
     case 'option_4':
     case 'operador': {
-      const operatorText = `👤 Derivando a un Agente
-
-Un operador humano te atenderá en breve.`;
-      await sendMessageAndSave(from, operatorText);
-      await clienteService.cambiarEstadoBot(from, false);
-      if (global.io) {
-        global.io.emit('bot_mode_changed', { telefono: from, bot_activo: false });
+      const handoff = await intentarDerivarOperador(from, 'MAIN_MENU_OPERATOR');
+      if (handoff.derivado) {
+        console.log(`👤 Derivado a operador y bot pausado para ${from}`);
+      } else {
+        console.log(`🕒 Fuera de horario de operador para ${from}`);
       }
-      console.log(`👤 Derivado a operador y bot pausado para ${from}`);
       break;
     }
 
@@ -939,14 +996,8 @@ Te confirmaremos el turno por este medio 24hs antes.`;
       break;
 
     case 'auth_contact':
-      const contactText = `👤 Derivando a un Agente
-
-Su consulta ha sido registrada. Un operador humano se pondrá en contacto a la brevedad.
-
-⏳ Tiempo de espera estimado: 5 minutos.`;
-      
-      await whatsappService.sendMessage(from, contactText);
-      console.log(`👤 Mensaje de contacto enviado a ${from}`);
+      await intentarDerivarOperador(from, 'AUTH_MENU_OPERATOR');
+      console.log(`👤 Contacto con operador solicitado por ${from}`);
       break;
 
     case '4':
@@ -976,7 +1027,9 @@ Gracias por usar el sistema de Irrigación Malargüe.
  */
 const handleConsultarDeuda = async (from) => {
   try {
-    const preguntaMsg = `📝 *¿Cómo querés consultar tu deuda?*`;
+    const preguntaMsg = `📝 *¿Cómo querés consultar tu deuda?*
+
+_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
     await sendMessageAndSave(from, preguntaMsg);
 
     const buttons = [
@@ -1008,7 +1061,9 @@ const handleConsultarDeuda = async (from) => {
  */
 const handlePedirBoleto = async (from) => {
   try {
-    const preguntaMsg = `📄 *¿Cómo querés obtener tu boleto?*`;
+    const preguntaMsg = `📄 *¿Cómo querés obtener tu boleto?*
+
+_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
     await sendMessageAndSave(from, preguntaMsg);
 
     const buttons = [
@@ -2594,12 +2649,8 @@ Para más información y requisitos, visitá:
 const handlePerforacionHelpChoice = async (from, optionToProcess) => {
   try {
     if (optionToProcess === 'perforacion_ayuda_si') {
-      const operatorMsg = `👤 *Derivación a un agente*\n\nEn instantes, un operador humano continuará la atención.`;
-      await sendMessageAndSave(from, operatorMsg);
-      await clienteService.cambiarEstadoBot(from, false);
-      if (global.io) {
-        global.io.emit('bot_mode_changed', { telefono: from, bot_activo: false });
-      }
+      await intentarDerivarOperador(from, 'PERFORACION_HELP');
+      userStates[from].step = 'MAIN_MENU';
       return;
     }
 
@@ -2748,7 +2799,9 @@ const handleTurnoTitularChoice = async (from, option) => {
 
 Recordá: *APELLIDO* seguido del *Nombre*
 
-Ej: *GONZALEZ JUAN*`;
+Ej: *GONZALEZ JUAN*
+
+_📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
     await sendMessageAndSave(from, msg);
     userStates[from].step = 'AWAITING_TURNO_TITULAR';
     return;
@@ -2812,7 +2865,9 @@ const handleTurnoCCPPChoice = async (from, option) => {
 
 Recordá: *sin ceros después del guion*
 
-Ej: *8234-1*`;
+Ej: *8234-1*
+
+_📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
     await sendMessageAndSave(from, msg);
     userStates[from].step = 'AWAITING_TURNO_CCPP';
     return;
@@ -2911,7 +2966,9 @@ const handleTurnoMethodChoice = async (from, option) => {
 
 Recordá ingresar *APELLIDO* seguido del *Nombre* como figura en tu turno anterior o boleta de pago.
 
-Ej: *GONZALEZ JUAN*`;
+Ej: *GONZALEZ JUAN*
+
+_📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
       await sendMessageAndSave(from, msg);
       userStates[from].step = 'AWAITING_TURNO_TITULAR';
     }
@@ -2956,7 +3013,9 @@ Ejemplo: 8234-1710
 📝 *Importante:* los ceros después del guion (-) NO se colocan.
 Ej: si tu padrón es *8234-0001* debés ingresar *8234-1*
 
-Ingresá tu número de servicio:`;
+Ingresá tu número de servicio:
+
+_📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
       await sendMessageAndSave(from, msg);
       userStates[from].step = 'AWAITING_TURNO_CCPP';
     }
@@ -2989,11 +3048,11 @@ const handleTurnoTitularInput = async (from, messageBody) => {
   const lower = raw.toLowerCase();
 
   if (!raw) {
-    await sendMessageAndSave(from, '⚠️ Por favor ingresá el titular (APELLIDO Nombre).');
+    await sendMessageAndSave(from, '⚠️ Por favor ingresá el titular (APELLIDO Nombre).\n\n_📌 Para cancelar, escribí *SALIR*_');
     return;
   }
 
-  if (lower === 'volver' || lower === 'menu') {
+  if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
     await sendMenuList(from, true);
     userStates[from].step = 'MAIN_MENU';
     return;
@@ -3115,11 +3174,11 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
   const lower = raw.toLowerCase();
 
   if (!raw) {
-    await sendMessageAndSave(from, '⚠️ Por favor ingresá el C.C.-P.P. (Ej: 8234-1).');
+    await sendMessageAndSave(from, '⚠️ Por favor ingresá el C.C.-P.P. (Ej: 8234-1).\n\n_📌 Para cancelar, escribí *SALIR*_');
     return;
   }
 
-  if (lower === 'volver' || lower === 'menu') {
+  if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
     await sendMenuList(from, true);
     userStates[from].step = 'MAIN_MENU';
     return;

@@ -2,6 +2,52 @@ const { query, run, get } = require('../config/db');
 const { withTransaction } = require('./transactionService');
 const { registrarCambio } = require('./auditService');
 
+const DEFAULT_SUBDELEGACION_NOMBRE = process.env.DEFAULT_SUBDELEGACION_NOMBRE || 'Mendoza Central';
+const DEFAULT_SUBDELEGACION_CODIGO = process.env.DEFAULT_SUBDELEGACION_CODIGO || 'MZA_CENTRAL';
+const DEFAULT_SUBDELEGACION_DISPLAY_PHONE = process.env.DEFAULT_SUBDELEGACION_DISPLAY_PHONE || 'MENDOZA_CENTRAL_DEFAULT';
+const OPERATOR_SCHEDULE_TIMEZONE = process.env.OPERATOR_SCHEDULE_TIMEZONE || 'America/Argentina/Mendoza';
+const DEFAULT_FUERA_HORARIO_MSG = '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.';
+
+const normalizePhone = (value = '') => String(value || '').replace(/\D/g, '');
+
+const parseTimeToMinutes = (value) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (Number.isNaN(hour) || Number.isNaN(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return (hour * 60) + minute;
+};
+
+const getCurrentWeekdayAndMinutes = (date = new Date()) => {
+  const weekdayShort = new Intl.DateTimeFormat('en-US', {
+    timeZone: OPERATOR_SCHEDULE_TIMEZONE,
+    weekday: 'short'
+  }).format(date);
+
+  const hour = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: OPERATOR_SCHEDULE_TIMEZONE,
+    hour: '2-digit',
+    hour12: false
+  }).format(date));
+
+  const minute = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: OPERATOR_SCHEDULE_TIMEZONE,
+    minute: '2-digit'
+  }).format(date));
+
+  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    diaSemana: dayMap[weekdayShort] ?? 0,
+    minutosActuales: (Number.isNaN(hour) ? 0 : hour * 60) + (Number.isNaN(minute) ? 0 : minute)
+  };
+};
+
 /**
  * Servicio para gestión de clientes (auto-registro)
  */
@@ -24,7 +70,7 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
     if (rows && rows.length > 0) {
       // Cliente existe - actualizar ultima_interaccion, nombre y foto si están vacíos
       await run(
-        'UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP, nombre_whatsapp = COALESCE(nombre_whatsapp, ?), foto_perfil = COALESCE(foto_perfil, ?) WHERE telefono = ?',
+        "UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP, nombre_whatsapp = COALESCE(nombre_whatsapp, ?), foto_perfil = COALESCE(foto_perfil, ?), estado_conversacion = COALESCE(estado_conversacion, 'BOT') WHERE telefono = ?",
         [nombre, fotoPerfil, telefono]
       );
       
@@ -39,7 +85,7 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
 
     // Cliente nuevo - crear registro
     await run(
-      'INSERT INTO clientes (telefono, nombre_whatsapp, foto_perfil, bot_activo, fecha_registro, ultima_interaccion) VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+      "INSERT INTO clientes (telefono, nombre_whatsapp, foto_perfil, bot_activo, estado_conversacion, fecha_registro, ultima_interaccion) VALUES (?, ?, ?, 1, 'BOT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
       [telefono, nombre, fotoPerfil]
     );
 
@@ -368,6 +414,244 @@ const obtenerUltimoCCPP = async (telefono) => {
   }
 };
 
+const ensureDefaultSubdelegacion = async () => {
+  const existing = await get(
+    'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1',
+    [DEFAULT_SUBDELEGACION_NOMBRE]
+  );
+
+  if (existing?.id) return existing;
+
+  await run(
+    'INSERT INTO subdelegaciones (nombre, codigo, display_phone_number, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+    [DEFAULT_SUBDELEGACION_NOMBRE, DEFAULT_SUBDELEGACION_CODIGO, DEFAULT_SUBDELEGACION_DISPLAY_PHONE]
+  );
+
+  return get(
+    'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1',
+    [DEFAULT_SUBDELEGACION_NOMBRE]
+  );
+};
+
+const actualizarSubdelegacion = async (telefono, subdelegacion) => {
+  await run(
+    'UPDATE clientes SET subdelegacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
+    [subdelegacion, telefono]
+  );
+  return true;
+};
+
+const actualizarEstadoConversacion = async (telefono, estado = 'BOT') => {
+  await run(
+    'UPDATE clientes SET estado_conversacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
+    [estado, telefono]
+  );
+  return true;
+};
+
+const obtenerSubdelegacion = async (telefono) => {
+  const row = await get('SELECT subdelegacion FROM clientes WHERE telefono = ? LIMIT 1', [telefono]);
+  return row?.subdelegacion || null;
+};
+
+const resolverSubdelegacionPorNumeroEntrada = async (displayPhoneNumber = '') => {
+  const normalizedInput = normalizePhone(displayPhoneNumber);
+  if (!normalizedInput) return ensureDefaultSubdelegacion();
+
+  const rows = await query('SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones', []);
+  const matched = (rows || []).find((row) => normalizePhone(row.display_phone_number) === normalizedInput);
+  return matched || ensureDefaultSubdelegacion();
+};
+
+const asignarSubdelegacionPorEntradaSiFalta = async (telefono, displayPhoneNumber = '') => {
+  const actual = await obtenerSubdelegacion(telefono);
+  if (actual) {
+    return get('SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1', [actual]);
+  }
+
+  const resolved = await resolverSubdelegacionPorNumeroEntrada(displayPhoneNumber);
+  await actualizarSubdelegacion(telefono, resolved.nombre);
+  return resolved;
+};
+
+const resolverSubdelegacionCliente = async (telefono) => {
+  const subdelegacionNombre = await obtenerSubdelegacion(telefono);
+  if (!subdelegacionNombre) {
+    const fallback = await ensureDefaultSubdelegacion();
+    await run(
+      'UPDATE clientes SET subdelegacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
+      [fallback.nombre, telefono]
+    );
+    return {
+      ...fallback,
+      usedFallback: true
+    };
+  }
+
+  const found = await get(
+    'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1',
+    [subdelegacionNombre]
+  );
+
+  if (found?.id) {
+    return {
+      ...found,
+      usedFallback: false
+    };
+  }
+
+  const fallback = await ensureDefaultSubdelegacion();
+  await run(
+    'UPDATE clientes SET subdelegacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
+    [fallback.nombre, telefono]
+  );
+  return {
+    ...fallback,
+    usedFallback: true
+  };
+};
+
+const crearTicketHumano = async (telefono, subdelegacionId, motivo = 'DERIVACION_HUMANO') => {
+  const abierto = await get(
+    `SELECT id, cliente_telefono, subdelegacion_id, estado, motivo, created_at
+     FROM tickets
+     WHERE cliente_telefono = ? AND estado = 'ABIERTO'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [telefono]
+  );
+
+  if (abierto?.id) {
+    return {
+      ...abierto,
+      created: false
+    };
+  }
+
+  const result = await run(
+    `INSERT INTO tickets (cliente_telefono, subdelegacion_id, estado, motivo, created_at, updated_at)
+     VALUES (?, ?, 'ABIERTO', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [telefono, subdelegacionId || null, motivo]
+  );
+
+  const ticket = await get(
+    `SELECT id, cliente_telefono, subdelegacion_id, estado, motivo, created_at
+     FROM tickets
+     WHERE id = ? LIMIT 1`,
+    [result.lastID]
+  );
+
+  return {
+    ...ticket,
+    created: true
+  };
+};
+
+const obtenerSubdelegacionInfo = async (telefono) => {
+  const subdelegacionNombre = await obtenerSubdelegacion(telefono);
+  if (!subdelegacionNombre) {
+    const fallback = await ensureDefaultSubdelegacion();
+    return {
+      id: fallback?.id || null,
+      nombre: fallback?.nombre || DEFAULT_SUBDELEGACION_NOMBRE,
+      usedFallback: true
+    };
+  }
+
+  const found = await get('SELECT id, nombre FROM subdelegaciones WHERE nombre = ? LIMIT 1', [subdelegacionNombre]);
+  if (found?.id) {
+    return {
+      id: found.id,
+      nombre: found.nombre,
+      usedFallback: false
+    };
+  }
+
+  const fallback = await ensureDefaultSubdelegacion();
+  return {
+    id: fallback?.id || null,
+    nombre: fallback?.nombre || DEFAULT_SUBDELEGACION_NOMBRE,
+    usedFallback: true
+  };
+};
+
+const listarTicketsPorSubdelegacion = async (subdelegacionId) => {
+  if (!subdelegacionId) return [];
+
+  const rows = await query(
+    `SELECT
+      t.id,
+      t.cliente_telefono,
+      t.subdelegacion_id,
+      t.estado AS ticket_estado,
+      t.motivo,
+      t.created_at AS ticket_created_at,
+      c.telefono,
+      c.nombre_whatsapp,
+      c.nombre_asignado,
+      c.foto_perfil,
+      c.padron,
+      c.subdelegacion,
+      c.estado_conversacion,
+      c.estado_deuda,
+      c.bot_activo,
+      c.ultima_interaccion,
+      c.fecha_registro,
+      (SELECT cuerpo FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje,
+      (SELECT fecha FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje_fecha,
+      (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono) as total_mensajes,
+      (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono AND leido = 0 AND emisor = 'usuario') as mensajes_no_leidos
+    FROM tickets t
+    INNER JOIN clientes c ON c.telefono = t.cliente_telefono
+    WHERE t.subdelegacion_id = ?
+      AND t.estado = 'ABIERTO'
+    ORDER BY t.created_at DESC`,
+    [subdelegacionId]
+  );
+
+  return rows || [];
+};
+
+const validarHorarioAtencionOperador = async (subdelegacionId = null, now = new Date()) => {
+  const { diaSemana, minutosActuales } = getCurrentWeekdayAndMinutes(now);
+
+  const row = await get(
+    `SELECT id, subdelegacion_id, dia_semana, hora_inicio, hora_fin, habilitado, mensaje_fuera_horario
+     FROM horarios_atencion
+     WHERE dia_semana = ?
+       AND habilitado = 1
+       AND (subdelegacion_id = ? OR subdelegacion_id IS NULL)
+     ORDER BY CASE WHEN subdelegacion_id = ? THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [diaSemana, subdelegacionId, subdelegacionId]
+  );
+
+  if (!row) {
+    return {
+      disponible: false,
+      mensaje: DEFAULT_FUERA_HORARIO_MSG,
+      horario: null
+    };
+  }
+
+  const inicio = parseTimeToMinutes(row.hora_inicio);
+  const fin = parseTimeToMinutes(row.hora_fin);
+  if (inicio === null || fin === null || fin <= inicio) {
+    return {
+      disponible: false,
+      mensaje: row.mensaje_fuera_horario || DEFAULT_FUERA_HORARIO_MSG,
+      horario: row
+    };
+  }
+
+  const disponible = minutosActuales >= inicio && minutosActuales < fin;
+  return {
+    disponible,
+    mensaje: disponible ? null : (row.mensaje_fuera_horario || DEFAULT_FUERA_HORARIO_MSG),
+    horario: row
+  };
+};
+
 module.exports = {
   obtenerOCrearCliente,
   obtenerTodosLosClientes,
@@ -382,5 +666,15 @@ module.exports = {
   guardarUltimoTitular,
   obtenerUltimoTitular,
   guardarUltimoCCPP,
-  obtenerUltimoCCPP
+  obtenerUltimoCCPP,
+  actualizarSubdelegacion,
+  actualizarEstadoConversacion,
+  obtenerSubdelegacion,
+  resolverSubdelegacionPorNumeroEntrada,
+  asignarSubdelegacionPorEntradaSiFalta,
+  resolverSubdelegacionCliente,
+  crearTicketHumano,
+  obtenerSubdelegacionInfo,
+  listarTicketsPorSubdelegacion,
+  validarHorarioAtencionOperador
 };

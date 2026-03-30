@@ -25,7 +25,7 @@ const login = async (req, res) => {
 
     const pool = getPool();
     const rows = await pool.query(
-      'SELECT id, username, email, password_hash, role FROM operadores WHERE username = ?',
+      'SELECT id, username, email, password_hash, role, subdelegacion_id FROM operadores WHERE username = ?',
       [username]
     );
 
@@ -52,7 +52,8 @@ const login = async (req, res) => {
         id: operador.id,
         username: operador.username,
         email: operador.email,
-        role: operador.role
+        role: operador.role,
+        subdelegacion_id: operador.subdelegacion_id || null
       },
       JWT_SECRET,
       { expiresIn: TOKEN_EXPIRY }
@@ -64,7 +65,8 @@ const login = async (req, res) => {
       user: {
         id: operador.id,
         email: operador.email,
-        role: operador.role
+        role: operador.role,
+        subdelegacion_id: operador.subdelegacion_id || null
       }
     });
   } catch (error) {
