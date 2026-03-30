@@ -14,7 +14,7 @@ Panel de operador para gestionar conversaciones de WhatsApp con clientes de irri
 
 - Node.js 18+
 - npm o yarn
-- Backend corriendo en `https://chat.irrigacionmalargue.net`
+- Backend corriendo en `https://whatsapp.irrigacionmalargue.net`
 
 ### Instalación
 
@@ -147,8 +147,8 @@ npm run release:check:full   # Gate completa (lint + tests + build)
 ### Producción (`.env.production`)
 
 ```env
-VITE_API_URL=https://chat.irrigacionmalargue.net
-VITE_SOCKET_URL=https://chat.irrigacionmalargue.net
+VITE_API_URL=https://whatsapp.irrigacionmalargue.net
+VITE_SOCKET_URL=https://whatsapp.irrigacionmalargue.net
 VITE_TOKEN_KEY=token
 VITE_OPERADOR_KEY=operador
 VITE_JWT_EXPIRY_MS=3600000
@@ -268,7 +268,7 @@ const [darkMode, setDarkMode] = useState(
 
 ```bash
 # Verificar que el backend esté corriendo
-curl https://chat.irrigacionmalargue.net/health
+curl https://whatsapp.irrigacionmalargue.net/health
 
 # Verificar variables de entorno
 cat .env.local
@@ -332,7 +332,7 @@ Este proyecto está bajo la Licencia MIT - ver [LICENSE](LICENSE) para detalles.
 Desarrollado por el equipo de Irrigación Malargüe.
 
 - **Contacto**: info@irrigacionmalargue.net
-- **Website**: https://chat.irrigacionmalargue.net
+- **Website**: https://whatsapp.irrigacionmalargue.net
 - **Soporte**: Crear issue en GitHub
 
 ---
@@ -340,7 +340,7 @@ Desarrollado por el equipo de Irrigación Malargüe.
 ## 🔗 Enlaces Útiles
 
 - [Documentación Backend](../Backend/README.md)
-- [API Swagger](https://chat.irrigacionmalargue.net/api-docs)
+- [API Swagger](https://whatsapp.irrigacionmalargue.net/api-docs)
 - [WhatsApp Business API](https://developers.facebook.com/docs/whatsapp)
 - [React Docs](https://react.dev)
 - [Vite Docs](https://vitejs.dev)

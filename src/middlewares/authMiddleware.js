@@ -76,7 +76,28 @@ const verifyRole = (allowedRoles) => {
   };
 };
 
+const verifyInternalAdminKey = (req, res, next) => {
+  const configuredKey = process.env.INTERNAL_ADMIN_KEY;
+  if (!configuredKey) {
+    return res.status(503).json({
+      success: false,
+      message: 'INTERNAL_ADMIN_KEY no configurado'
+    });
+  }
+
+  const providedKey = req.headers['x-internal-admin-key'];
+  if (!providedKey || providedKey !== configuredKey) {
+    return res.status(403).json({
+      success: false,
+      message: 'Clave interna inválida'
+    });
+  }
+
+  return next();
+};
+
 module.exports = {
   verifyToken,
-  verifyRole
+  verifyRole,
+  verifyInternalAdminKey
 };
