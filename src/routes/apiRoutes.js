@@ -3,7 +3,7 @@ const router = express.Router();
 const apiController = require('../controllers/apiController');
 const chatController = require('../controllers/chatController');
 const authController = require('../controllers/authController');
-const { verifyToken } = require('../middlewares/authMiddleware');
+const { verifyToken, verifyRole, verifyInternalAdminKey } = require('../middlewares/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
 const { validate, sendMessageSchema, reactivateSchema, phoneSchema, phoneParamSchema } = require('../validators/messageValidators');
 const { operatorRateLimiter } = require('../middlewares/rateLimiters');
@@ -188,6 +188,9 @@ router.post('/mark-read/:telefono', verifyToken, apiController.marcarLeido);
 // Estadísticas del panel (protegido)
 router.get('/stats', verifyToken, apiController.obtenerEstadisticas);
 
+// Tickets abiertos de la subdelegación del operador autenticado
+router.get('/tickets', verifyToken, apiController.listarTickets);
+
 /**
  * @swagger
  * /api/chats/{phone}/pause:
@@ -279,5 +282,14 @@ router.post('/upload', verifyToken, upload.single('file'), apiController.subirAr
  */
 // Proxy de media (descarga/visualización) (protegido)
 router.get('/media/:mediaId', verifyToken, apiController.descargarMedia);
+
+// Endpoint interno/oculto para administración puntual de subdelegaciones de operadores
+router.post(
+	'/internal/admin/operators/:operatorId/subdelegacion/:subdelegacionId',
+	verifyToken,
+	verifyRole(['admin']),
+	verifyInternalAdminKey,
+	apiController.asignarSubdelegacionOperador
+);
 
 module.exports = router;

@@ -13,11 +13,11 @@ Guía completa para desplegar el frontend del Bot de Irrigación Malargüe en pr
 - **Nginx** o **Apache** para servir archivos estáticos
 
 ### Dominio y SSL
-- Dominio configurado: `chat.irrigacionmalargue.net`
+- Dominio configurado: `whatsapp.irrigacionmalargue.net`
 - Certificado SSL válido (Let's Encrypt recomendado)
 
 ### Backend
-- Backend corriendo en `https://chat.irrigacionmalargue.net`
+- Backend corriendo en `https://whatsapp.irrigacionmalargue.net`
 - Endpoints `/api/*` y WebSocket `/socket.io` funcionando
 - CORS configurado para permitir el frontend
 
@@ -31,8 +31,8 @@ Editar `.env.production`:
 
 ```env
 # API Configuration
-VITE_API_URL=https://chat.irrigacionmalargue.net
-VITE_SOCKET_URL=https://chat.irrigacionmalargue.net
+VITE_API_URL=https://whatsapp.irrigacionmalargue.net
+VITE_SOCKET_URL=https://whatsapp.irrigacionmalargue.net
 
 # Auth
 VITE_TOKEN_KEY=token
@@ -97,7 +97,7 @@ Crear `/etc/nginx/sites-available/irrigacion-frontend`:
 server {
     listen 80;
     listen [::]:80;
-    server_name chat.irrigacionmalargue.net;
+    server_name whatsapp.irrigacionmalargue.net;
     
     # Redirigir HTTP a HTTPS
     return 301 https://$server_name$request_uri;
@@ -106,11 +106,11 @@ server {
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name chat.irrigacionmalargue.net;
+    server_name whatsapp.irrigacionmalargue.net;
 
     # SSL Configuration
-    ssl_certificate /etc/letsencrypt/live/chat.irrigacionmalargue.net/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/chat.irrigacionmalargue.net/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/whatsapp.irrigacionmalargue.net/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/whatsapp.irrigacionmalargue.net/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
@@ -149,7 +149,7 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://chat.irrigacionmalargue.net wss://chat.irrigacionmalargue.net;" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://whatsapp.irrigacionmalargue.net wss://whatsapp.irrigacionmalargue.net;" always;
 }
 ```
 
@@ -176,18 +176,18 @@ Crear `/etc/apache2/sites-available/irrigacion-frontend.conf`:
 
 ```apache
 <VirtualHost *:80>
-    ServerName chat.irrigacionmalargue.net
-    Redirect permanent / https://chat.irrigacionmalargue.net/
+    ServerName whatsapp.irrigacionmalargue.net
+    Redirect permanent / https://whatsapp.irrigacionmalargue.net/
 </VirtualHost>
 
 <VirtualHost *:443>
-    ServerName chat.irrigacionmalargue.net
+    ServerName whatsapp.irrigacionmalargue.net
     
     DocumentRoot /var/www/irrigacion/frontend
     
     SSLEngine on
-    SSLCertificateFile /etc/letsencrypt/live/chat.irrigacionmalargue.net/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/chat.irrigacionmalargue.net/privkey.pem
+    SSLCertificateFile /etc/letsencrypt/live/whatsapp.irrigacionmalargue.net/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/whatsapp.irrigacionmalargue.net/privkey.pem
     
     <Directory /var/www/irrigacion/frontend>
         Options -Indexes +FollowSymLinks
@@ -368,7 +368,7 @@ sudo apt install certbot python3-certbot-nginx
 ### Obtener Certificado
 
 ```bash
-sudo certbot --nginx -d chat.irrigacionmalargue.net
+sudo certbot --nginx -d whatsapp.irrigacionmalargue.net
 ```
 
 ### Renovación Automática
@@ -389,13 +389,13 @@ sudo certbot renew --dry-run
 
 ```bash
 # Verificar que el sitio responde
-curl -I https://chat.irrigacionmalargue.net
+curl -I https://whatsapp.irrigacionmalargue.net
 
 # Verificar SSL
-curl -vI https://chat.irrigacionmalargue.net 2>&1 | grep -i ssl
+curl -vI https://whatsapp.irrigacionmalargue.net 2>&1 | grep -i ssl
 
 # Verificar archivos estáticos
-curl https://chat.irrigacionmalargue.net/manifest.webmanifest
+curl https://whatsapp.irrigacionmalargue.net/manifest.webmanifest
 ```
 
 ### Logs
@@ -416,7 +416,7 @@ sudo tail -f /var/log/apache2/error.log
 
 ```bash
 # Lighthouse CI (requiere npm install -g @lhci/cli)
-lhci autorun --collect.url=https://chat.irrigacionmalargue.net
+lhci autorun --collect.url=https://whatsapp.irrigacionmalargue.net
 
 # WebPageTest
 # https://www.webpagetest.org/

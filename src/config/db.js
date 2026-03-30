@@ -55,12 +55,23 @@ async function initializePostgres() {
 
 async function createPostgresSchema() {
   const statements = [
+    `CREATE TABLE IF NOT EXISTS subdelegaciones (
+      id SERIAL PRIMARY KEY,
+      nombre TEXT NOT NULL UNIQUE,
+      codigo TEXT,
+      display_phone_number TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
     `CREATE TABLE IF NOT EXISTS clientes (
       telefono VARCHAR(30) PRIMARY KEY,
       nombre_whatsapp TEXT DEFAULT 'Sin Nombre',
       nombre_asignado TEXT,
       foto_perfil TEXT,
       padron TEXT,
+      subdelegacion TEXT,
+      estado_conversacion TEXT DEFAULT 'BOT',
       padron_superficial TEXT,
       padron_subterraneo TEXT,
       padron_contaminacion TEXT,
@@ -71,6 +82,30 @@ async function createPostgresSchema() {
       bot_activo INTEGER DEFAULT 1,
       ultima_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS tickets (
+      id SERIAL PRIMARY KEY,
+      cliente_telefono VARCHAR(30) NOT NULL REFERENCES clientes(telefono) ON DELETE CASCADE,
+      subdelegacion_id INTEGER REFERENCES subdelegaciones(id),
+      estado TEXT NOT NULL DEFAULT 'ABIERTO',
+      motivo TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      closed_at TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS horarios_atencion (
+      id SERIAL PRIMARY KEY,
+      subdelegacion_id INTEGER REFERENCES subdelegaciones(id) ON DELETE CASCADE,
+      dia_semana INTEGER NOT NULL,
+      hora_inicio TEXT NOT NULL,
+      hora_fin TEXT NOT NULL,
+      habilitado INTEGER NOT NULL DEFAULT 1,
+      mensaje_fuera_horario TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (subdelegacion_id, dia_semana)
     )`,
 
     `CREATE TABLE IF NOT EXISTS mensajes (
@@ -98,6 +133,7 @@ async function createPostgresSchema() {
       username TEXT NOT NULL UNIQUE,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      subdelegacion_id INTEGER,
       role TEXT DEFAULT 'operador',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -115,7 +151,12 @@ async function createPostgresSchema() {
       timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`,
 
+    `CREATE INDEX IF NOT EXISTS idx_subdelegaciones_display_phone ON subdelegaciones(display_phone_number)`,
+    `CREATE INDEX IF NOT EXISTS idx_subdelegaciones_nombre ON subdelegaciones(nombre)`,
     `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_cliente ON tickets(cliente_telefono, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_estado ON tickets(estado)`,
+    `CREATE INDEX IF NOT EXISTS idx_horarios_lookup ON horarios_atencion(subdelegacion_id, dia_semana, habilitado)`,
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
     `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha_notas ON notas_internas(cliente_telefono, fecha)`,
@@ -128,6 +169,8 @@ async function createPostgresSchema() {
 
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS last_titular TEXT`,
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS last_ccpp TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS subdelegacion TEXT`,
+    `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS estado_conversacion TEXT DEFAULT 'BOT'`,
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS padron_superficial TEXT`,
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS padron_subterraneo TEXT`,
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS padron_contaminacion TEXT`,
@@ -136,11 +179,22 @@ async function createPostgresSchema() {
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS ultima_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
     `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS leido INTEGER DEFAULT 0`,
-    `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS message_id TEXT`
+    `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS message_id TEXT`,
+    `ALTER TABLE operadores ADD COLUMN IF NOT EXISTS subdelegacion_id INTEGER`
   ];
 
   for (const sql of statements) {
     await pgPool.query(sql);
+  }
+
+  const defaultScheduleRows = [1, 2, 3, 4, 5];
+  for (const dia of defaultScheduleRows) {
+    await pgPool.query(
+      `INSERT INTO horarios_atencion (subdelegacion_id, dia_semana, hora_inicio, hora_fin, habilitado, mensaje_fuera_horario)
+       VALUES (NULL, $1, '08:00', '13:30', 1, '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.')
+       ON CONFLICT (subdelegacion_id, dia_semana) DO NOTHING`,
+      [dia]
+    );
   }
 }
 
@@ -178,12 +232,25 @@ function initializeSqlite() {
 
 async function createSqliteSchema() {
   const statements = [
+    `CREATE TABLE IF NOT EXISTS subdelegaciones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL UNIQUE,
+      codigo TEXT,
+      display_phone_number TEXT NOT NULL UNIQUE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_subdelegaciones_display_phone ON subdelegaciones(display_phone_number)`,
+    `CREATE INDEX IF NOT EXISTS idx_subdelegaciones_nombre ON subdelegaciones(nombre)`,
+
     `CREATE TABLE IF NOT EXISTS clientes (
       telefono TEXT PRIMARY KEY,
       nombre_whatsapp TEXT DEFAULT 'Sin Nombre',
       nombre_asignado TEXT,
       foto_perfil TEXT,
       padron TEXT,
+      subdelegacion TEXT,
+      estado_conversacion TEXT DEFAULT 'BOT',
       padron_superficial TEXT,
       padron_subterraneo TEXT,
       padron_contaminacion TEXT,
@@ -196,6 +263,36 @@ async function createSqliteSchema() {
       fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
+
+    `CREATE TABLE IF NOT EXISTS tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cliente_telefono TEXT NOT NULL,
+      subdelegacion_id INTEGER,
+      estado TEXT NOT NULL DEFAULT 'ABIERTO',
+      motivo TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      closed_at DATETIME,
+      FOREIGN KEY (cliente_telefono) REFERENCES clientes(telefono) ON DELETE CASCADE,
+      FOREIGN KEY (subdelegacion_id) REFERENCES subdelegaciones(id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_cliente ON tickets(cliente_telefono, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_estado ON tickets(estado)`,
+
+    `CREATE TABLE IF NOT EXISTS horarios_atencion (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subdelegacion_id INTEGER,
+      dia_semana INTEGER NOT NULL,
+      hora_inicio TEXT NOT NULL,
+      hora_fin TEXT NOT NULL,
+      habilitado INTEGER NOT NULL DEFAULT 1,
+      mensaje_fuera_horario TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (subdelegacion_id, dia_semana),
+      FOREIGN KEY (subdelegacion_id) REFERENCES subdelegaciones(id) ON DELETE CASCADE
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_horarios_lookup ON horarios_atencion(subdelegacion_id, dia_semana, habilitado)`,
 
     `CREATE TABLE IF NOT EXISTS mensajes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,6 +324,7 @@ async function createSqliteSchema() {
       username TEXT NOT NULL UNIQUE,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      subdelegacion_id INTEGER,
       role TEXT DEFAULT 'operador',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -253,6 +351,31 @@ async function createSqliteSchema() {
 
   for (const sql of statements) {
     await sqliteRun(sql, []);
+  }
+
+  const sqliteMigrations = [
+    `ALTER TABLE clientes ADD COLUMN subdelegacion TEXT`,
+    `ALTER TABLE clientes ADD COLUMN estado_conversacion TEXT DEFAULT 'BOT'`,
+    `ALTER TABLE operadores ADD COLUMN subdelegacion_id INTEGER`
+  ];
+
+  for (const migrationSql of sqliteMigrations) {
+    try {
+      await sqliteRun(migrationSql, []);
+    } catch (error) {
+      if (!/duplicate column name/i.test(String(error?.message || ''))) {
+        throw error;
+      }
+    }
+  }
+
+  const defaultScheduleRows = [1, 2, 3, 4, 5];
+  for (const dia of defaultScheduleRows) {
+    await sqliteRun(
+      `INSERT OR IGNORE INTO horarios_atencion (subdelegacion_id, dia_semana, hora_inicio, hora_fin, habilitado, mensaje_fuera_horario)
+       VALUES (NULL, ?, '08:00', '13:30', 1, '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.')`,
+      [dia]
+    );
   }
 }
 

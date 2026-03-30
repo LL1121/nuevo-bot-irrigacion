@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const compression = require('compression');
+const jwt = require('jsonwebtoken');
 // Optional Sentry for error monitoring
 let Sentry;
 if (process.env.SENTRY_DSN) {
@@ -33,6 +34,10 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const JWT_SECRET = process.env.JWT_SECRET;
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 30000);
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
+const WEBHOOK_BODY_LIMIT = process.env.WEBHOOK_BODY_LIMIT || '512kb';
 
 const socketCorsWhitelist = [
   'http://localhost:5173',
@@ -83,13 +88,27 @@ app.use(cors({
 
 // Middleware para capturar raw body (necesario para verificar firma webhook)
 app.use('/webhook', express.json({
+  limit: WEBHOOK_BODY_LIMIT,
   verify: (req, res, buf) => {
     req.rawBody = buf.toString('utf8');
   }
 }));
 
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json({ limit: JSON_BODY_LIMIT }));
+app.use(bodyParser.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
+
+app.use((req, res, next) => {
+  res.setTimeout(REQUEST_TIMEOUT_MS, () => {
+    logger.warn('Request timeout', { method: req.method, path: req.originalUrl });
+    if (!res.headersSent) {
+      res.status(408).json({
+        success: false,
+        error: 'La solicitud demoró demasiado. Intenta nuevamente.'
+      });
+    }
+  });
+  next();
+});
 app.use(ipMiddleware);
 app.use(requestLogger);
 
@@ -189,6 +208,24 @@ const bootstrap = async () => {
   });
 
   // Socket.io - Manejo de conexiones
+  io.use((socket, next) => {
+    try {
+      const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace(/^Bearer\s+/i, '');
+      if (!token || !JWT_SECRET) {
+        return next();
+      }
+
+      const decoded = jwt.verify(token, JWT_SECRET);
+      socket.user = decoded;
+      if (decoded?.subdelegacion_id) {
+        socket.join(`zona_${decoded.subdelegacion_id}`);
+      }
+      return next();
+    } catch (_) {
+      return next();
+    }
+  });
+
   io.on('connection', (socket) => {
     console.log('👤 Cliente conectado:', socket.id);
 
