@@ -5,7 +5,7 @@ const chatController = require('../controllers/chatController');
 const authController = require('../controllers/authController');
 const { verifyToken, verifyRole, verifyInternalAdminKey } = require('../middlewares/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
-const { validate, sendMessageSchema, reactivateSchema, phoneSchema, phoneParamSchema } = require('../validators/messageValidators');
+const { validate, sendMessageSchema, reactivateSchema, transferTicketSchema, phoneSchema, phoneParamSchema } = require('../validators/messageValidators');
 const { operatorRateLimiter } = require('../middlewares/rateLimiters');
 
 /**
@@ -193,6 +193,7 @@ router.get('/stats', verifyToken, apiController.obtenerEstadisticas);
 router.get('/tickets', verifyToken, apiController.listarTickets);
 router.post('/tickets/:phone/accept', verifyToken, operatorRateLimiter, validate(phoneSchema, 'params'), apiController.aceptarTicketOperador);
 router.post('/tickets/:phone/complete', verifyToken, operatorRateLimiter, validate(phoneSchema, 'params'), apiController.finalizarTicketOperador);
+router.post('/tickets/:phone/transfer', verifyToken, operatorRateLimiter, validate(phoneSchema, 'params'), validate(transferTicketSchema), apiController.transferirTicketOperador);
 
 /**
  * @swagger
