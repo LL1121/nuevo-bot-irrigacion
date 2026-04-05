@@ -148,56 +148,28 @@ docker system prune -a
 
 ---
 
-## 💾 Migración de BD
-
-### Opción 1: Migración desde MySQL a PostgreSQL
-
-Si tienes datos en MySQL que quieres migrar:
-
-```bash
-# 1. Instalar dependencias (si no están)
-npm install pg
-
-# 2. Configurar variables de entorno
-export MYSQL_HOST=localhost
-export MYSQL_USER=root
-export MYSQL_PASSWORD=tu_pass
-export MYSQL_DB=irrigacion
-
-export DB_HOST=tu_servidor.com
-export DB_USER=postgres
-export DB_PASSWORD=tu_pass_pg
-export DB_NAME=irrigacion_bot
-
-# 3. Ejecutar migración
-node migrate-db.js
-
-# 4. Verificar migraci
-
-ón
 echo "SELECT COUNT(*) FROM clientes" | psql -h tu_servidor.com -U postgres -d irrigacion_bot
-```
+## 💾 PostgreSQL
 
-### Opción 2: Usar BD existente en servidor
+### Crear tablas en una base existente
 
-Si ya tienes una BD PostgreSQL en el servidor con datos:
-
-```bash
-# Solo asegúrate que las credenciales en .env sean correctas
-# El contenedor se conectará a esa BD automáticamente
-```
-
-### Crear tablas en BD existente
-
-Si la BD existe pero está vacía:
+Si ya tienes una base PostgreSQL creada, solo configura las credenciales en `.env` y ejecuta:
 
 ```bash
-# El contenedor ejecutará las migraciones automáticamente al iniciar
-docker-compose up -d app
-
-# Verificar que se crearon las tablas
-docker-compose exec app psql -h tu_servidor.com -U postgres -d irrigacion_bot -c "\dt"
+npm run setup-db
 ```
+
+### Verificar conexión
+
+```bash
+psql -h localhost -U bot_irrigacion_app -d bot_irrigacion_prod -c "SELECT 1;"
+```
+
+### Notas de despliegue
+
+- La app usa `DB_CLIENT=pg`.
+- El esquema se crea automáticamente con `npm run setup-db` o al iniciar la app.
+- El modelo de tablas está documentado en [ESQUEMA_BD.md](ESQUEMA_BD.md).
 
 ---
 

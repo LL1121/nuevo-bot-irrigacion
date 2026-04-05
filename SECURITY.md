@@ -7,8 +7,8 @@ This document summarizes actions taken and recommended next steps to improve sec
 - Updated `.env.example` to include `WEBHOOK_APP_SECRET`, `SENTRY_DSN`, and `REDIS_URL`.
 - Added optional Sentry initialization in `src/index.js` (enabled when `SENTRY_DSN` is set).
 - Created GitHub Actions CI workflow at `.github/workflows/ci.yml` to run a security smoke test (`scripts/test_security.js`).
-- Added `docker-compose.yml` with `redis` (and optional `mysql`) for local testing.
-- Removed `mysqldump` package (unused) to eliminate critical vulnerabilities caused by nested `mysql2` versions.
+- Added `docker-compose.yml` with `redis` for local testing.
+- Migrated the data layer to PostgreSQL and removed the legacy database setup scripts.
 - Ran `npm audit` and applied non-breaking fixes (`npm audit fix`).
 
 ## Current audit summary
@@ -21,15 +21,14 @@ This document summarizes actions taken and recommended next steps to improve sec
 Files: `audit-current.json` and `audit-after-uninstall.json` contain the full reports.
 
 Key remaining issues:
-- `tar` (indirect) — high severity (affects `cacache`, `node-gyp`, `sqlite3`).
-- `sqlite3` — high (used by `src/database/setup.js`).
+- `tar` (indirect) — high severity (affects transitive install tooling).
 - `node-gyp` / `make-fetch-happen` transitive issues.
 
 ## Recommended next steps
 
 1. Review the `audit-after-uninstall.json` report and decide whether to run `npm audit fix --force`. This may introduce breaking changes; test in a branch.
 
-2. If `sqlite3` is not needed in production, consider removing it; otherwise pin and test a version that addresses `tar` transitive vuln.
+2. Continue reviewing the remaining transitive package issues with `npm audit` and test any forced upgrade in a branch.
 
 3. Use `npm ci` in CI to ensure reproducible installs and fail on vulnerabilities if desired.
 
@@ -45,8 +44,8 @@ Key remaining issues:
 ## Commands used
 
 ```bash
-# Remove unused package
-npm uninstall mysqldump
+# Remove unused package(s)
+npm uninstall <unused-package>
 
 # Automatic non-breaking fixes
 npm audit fix

@@ -5,8 +5,177 @@ const turnadoScraperService = require('../services/turnadoScraperService');
 const turnadoApiService = require('../services/turnadoApiService');
 const mensajeService = require('../services/mensajeService');
 const clienteService = require('../services/clienteService');
+const { compressPdfForFrontend } = require('../services/pdfCompressionService');
 const fs = require('fs');
 const path = require('path');
+
+const BOLETOS_PUBLIC_DIR = path.join(__dirname, '../../public/uploads/boletos');
+const BOLETOS_RETENTION_HOURS = Number(process.env.BOLETOS_RETENTION_HOURS || 24);
+const BOLETOS_PREVIEW_PDFSETTINGS = process.env.BOLETOS_PREVIEW_PDFSETTINGS || 'ebook';
+const INVALID_PROFILE_NAMES = new Set([
+  '',
+  '.',
+  '..',
+  '...',
+  '-',
+  '--',
+  '_',
+  '__',
+  'sin nombre',
+  'no name',
+  'unknown',
+  'anonimo',
+  'anónimo',
+  'ninguno',
+  'n/a'
+]);
+
+const normalizePersonName = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
+
+const formatPersonName = (value = '') => {
+  const normalized = normalizePersonName(value).toLowerCase();
+  if (!normalized) return '';
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
+
+const isLikelyValidPersonName = (value = '') => {
+  const normalized = normalizePersonName(value);
+  if (!normalized) return false;
+
+  const lowered = normalized.toLowerCase();
+  if (INVALID_PROFILE_NAMES.has(lowered)) return false;
+
+  if (normalized.length < 2 || normalized.length > 60) return false;
+  if (!/[A-Za-zÁÉÍÓÚáéíóúÑñ]/.test(normalized)) return false;
+
+  const lettersOnly = normalized.replace(/[^A-Za-zÁÉÍÓÚáéíóúÑñ]/g, '');
+  if (lettersOnly.length < 2) return false;
+
+  return true;
+};
+
+const slugifyForFileName = (value = '') => {
+  const normalized = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return normalized || 'sin_nombre';
+};
+
+const formatFileDate = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}${month}${day}_${hours}${minutes}`;
+};
+
+const buildBoletoPdfFileName = ({ tipoBoleto = 'boleto', nombrePersona = 'Usuario', createdAt = new Date() }) => {
+  const tipoSegment = slugifyForFileName(tipoBoleto);
+  const nombreSegment = slugifyForFileName(nombrePersona);
+  const dateSegment = formatFileDate(createdAt);
+  return `${tipoSegment}_${nombreSegment}_${dateSegment}.pdf`;
+};
+
+const resolveNombrePersona = async (from) => {
+  const fromState = formatPersonName(userStates[from]?.nombreCliente || '');
+  if (isLikelyValidPersonName(fromState)) return fromState;
+
+  try {
+    const cliente = await clienteService.obtenerCliente(from);
+    const fromDb = formatPersonName(cliente?.nombre_whatsapp || '');
+    if (isLikelyValidPersonName(fromDb)) return fromDb;
+  } catch (error) {
+    console.warn(`⚠️ No se pudo resolver nombre para naming de PDF (${from}):`, error.message);
+  }
+
+  return 'Usuario';
+};
+
+const cleanupOldBoletos = () => {
+  try {
+    if (!fs.existsSync(BOLETOS_PUBLIC_DIR)) return;
+
+    const retentionMs = Math.max(1, BOLETOS_RETENTION_HOURS) * 60 * 60 * 1000;
+    const now = Date.now();
+    const files = fs.readdirSync(BOLETOS_PUBLIC_DIR);
+
+    for (const fileName of files) {
+      const filePath = path.join(BOLETOS_PUBLIC_DIR, fileName);
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) continue;
+
+        if (now - stat.mtimeMs > retentionMs) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (fileErr) {
+        console.warn('⚠️ No se pudo revisar/eliminar boleto antiguo:', fileErr.message);
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️ Error en limpieza de boletos retenidos:', error.message);
+  }
+};
+
+const saveBoletoPublicCopy = async (sourcePdfPath, targetFileName = '') => {
+  if (!fs.existsSync(sourcePdfPath)) return null;
+
+  if (!fs.existsSync(BOLETOS_PUBLIC_DIR)) {
+    fs.mkdirSync(BOLETOS_PUBLIC_DIR, { recursive: true });
+  }
+
+  cleanupOldBoletos();
+
+  const rawName = String(targetFileName || '').trim().replace(/\.pdf$/i, '');
+  const safeBaseName = slugifyForFileName(rawName || `boleto_${Date.now()}`);
+  let fileName = `${safeBaseName}.pdf`;
+  let destinationPath = path.join(BOLETOS_PUBLIC_DIR, fileName);
+  let duplicateCounter = 1;
+
+  while (fs.existsSync(destinationPath)) {
+    fileName = `${safeBaseName}_${duplicateCounter}.pdf`;
+    destinationPath = path.join(BOLETOS_PUBLIC_DIR, fileName);
+    duplicateCounter += 1;
+  }
+
+  const compressionResult = await compressPdfForFrontend({
+    inputPath: sourcePdfPath,
+    outputPath: destinationPath,
+    preset: BOLETOS_PREVIEW_PDFSETTINGS
+  });
+
+  if (compressionResult.compressed) {
+    console.log('🗜️ PDF para frontend comprimido', {
+      method: compressionResult.method,
+      sourceSize: compressionResult.sourceSize,
+      outputSize: compressionResult.outputSize
+    });
+  } else {
+    console.log('📄 PDF para frontend guardado sin compresión efectiva', {
+      method: compressionResult.method,
+      reason: compressionResult.reason
+    });
+  }
+
+  return `/uploads/boletos/${fileName}`;
+};
+
+const LOCALIDADES_PROMPT = [
+  { id: 'mendoza', title: 'Mendoza', description: 'Seleccionar esta localidad' },
+  { id: 'general_alvear', title: 'General Alvear', description: 'Seleccionar esta localidad' },
+  { id: 'malargue', title: 'Malargüe', description: 'Seleccionar esta localidad' },
+  { id: 'san_rafael', title: 'San Rafael', description: 'Seleccionar esta localidad' }
+];
 
 // Memoria temporal para estados de usuarios
 const userStates = {};
@@ -14,7 +183,7 @@ const userStates = {};
 // Memoria para deduplicación de mensajes
 const processedMessageIds = new Set();
 
-// Bloqueo temporal de opciones legacy/reducidas del menú principal
+// Bloqueo temporal de opciones deshabilitadas del menú principal
 const TEMP_DISABLED_MENU_OPTIONS = new Set([
   'ubicacion',
   'vencimientos',
@@ -37,6 +206,86 @@ const emitToTenantRoom = async (phone, eventName, payload) => {
   } else {
     global.io.emit(eventName, payload);
   }
+};
+
+const sendSubdelegacionPrompt = async (from) => {
+  const sections = [];
+  for (let index = 0; index < LOCALIDADES_PROMPT.length; index += 10) {
+    sections.push({
+      title: index === 0 ? 'Localidades' : 'Más opciones',
+      rows: LOCALIDADES_PROMPT.slice(index, index + 10)
+    });
+  }
+
+  await whatsappService.sendInteractiveList(
+    from,
+    'Tu localidad',
+    'Antes de seguir, decime de qué localidad sos.',
+    'Elegir localidad',
+    sections
+  );
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify({
+      type: 'interactive_list',
+      header: 'Tu localidad',
+      body: 'Antes de seguir, decime de qué localidad sos.',
+      buttonText: 'Elegir localidad',
+      sections
+    }),
+    emisor: 'bot',
+    url_archivo: null
+  });
+
+  if (global.io) {
+    const menuData = {
+      type: 'interactive_list',
+      header: 'Tu localidad',
+      body: 'Antes de seguir, decime de qué localidad sos.',
+      buttonText: 'Elegir localidad',
+      sections
+    };
+
+    global.io.emit('nuevo_mensaje', {
+      id: mensajeGuardado.id,
+      telefono: from,
+      mensaje: JSON.stringify(menuData),
+      emisor: 'bot',
+      tipo: 'interactive',
+      timestamp: mensajeGuardado.fecha
+    });
+  }
+};
+
+const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = '') => {
+  const selection = await clienteService.resolverSubdelegacionDesdeEntrada(optionToProcess || messageBody);
+
+  if (!selection?.id) {
+    await sendMessageAndSave(
+      from,
+      'No pude identificar tu localidad. Elegí una opción de la lista o escribila tal como aparece.'
+    );
+    await sendSubdelegacionPrompt(from);
+    return;
+  }
+
+  const subdelegacion = await clienteService.asignarSubdelegacionCliente(from, selection);
+  if (!subdelegacion?.nombre) {
+    await sendMessageAndSave(from, 'No pude guardar tu localidad. Probá nuevamente en un momento.');
+    return;
+  }
+
+  userStates[from].subdelegacion = subdelegacion.nombre;
+  userStates[from].subdelegacionId = subdelegacion.id;
+  userStates[from].step = 'MAIN_MENU';
+
+  await sendMessageAndSave(
+    from,
+    `Perfecto, te registramos como *${subdelegacion.nombre}*. Ahora sí, podés elegir una opción del menú.`
+  );
+  await sendMenuList(from, false);
 };
 
 const derivarAHumano = async (from, motivo = 'DERIVACION_BOT') => {
@@ -82,7 +331,7 @@ const intentarDerivarOperador = async (from, motivo = 'DERIVACION_BOT') => {
     };
   }
 
-  const operatorText = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.${subdelegacionInfo?.nombre ? `\n\n🏢 Subdelegación: *${subdelegacionInfo.nombre}*` : ''}`;
+  const operatorText = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.${subdelegacionInfo?.nombre ? `\n\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}`;
   await sendMessageAndSave(from, operatorText);
 
   const handoff = await derivarAHumano(from, motivo);
@@ -163,10 +412,6 @@ const receiveMessage = async (req, res) => {
         let esClienteNuevo = false;
         try {
           cliente = await clienteService.obtenerOCrearCliente(from, pushName, fotoPerfil);
-          const displayPhoneNumber = body.entry?.[0]?.changes?.[0]?.value?.metadata?.display_phone_number
-            || body.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id
-            || '';
-          await clienteService.asignarSubdelegacionPorEntradaSiFalta(from, displayPhoneNumber);
           // Detectar si es cliente nuevo: ultima_interaccion ≈ fecha_registro
           if (cliente) {
             const ultimaInteraccion = new Date(cliente.ultima_interaccion).getTime();
@@ -271,12 +516,17 @@ const receiveMessage = async (req, res) => {
         
         if (!userStates[from]) {
           // Usuario nuevo
+          const nombreDetectado = cliente?.nombre_whatsapp || pushName;
+          const requiereNombreManual = !Boolean(cliente?.nombre_validado);
+
           userStates[from] = { 
-            step: 'START', 
+            step: requiereNombreManual ? 'AWAITING_USER_NAME' : 'START', 
             padron: null, 
-            nombreCliente: cliente?.nombre_whatsapp || pushName, 
+            nombreCliente: isLikelyValidPersonName(nombreDetectado) ? formatPersonName(nombreDetectado) : '',
             esClienteNuevo,
-            lastMessageTime: now
+            subdelegacion: cliente?.subdelegacion || null,
+            lastMessageTime: now,
+            namePromptSent: false
           };
         } else {
           // Usuario existente: verificar tiempo de inactividad
@@ -291,6 +541,11 @@ const receiveMessage = async (req, res) => {
           
           // Actualizar el timestamp del último mensaje
           userStates[from].lastMessageTime = now;
+
+          if (!Boolean(cliente?.nombre_validado) && userStates[from].step !== 'AWAITING_USER_NAME') {
+            userStates[from].step = 'AWAITING_USER_NAME';
+            userStates[from].namePromptSent = false;
+          }
         }
 
         // Procesar mensaje según el estado actual
@@ -299,6 +554,13 @@ const receiveMessage = async (req, res) => {
         // Anti-loop: ignorar webhooks sin input util (evita reenviar menú por eventos vacíos)
         if (!String(optionId || '').trim() && !String(messageBody || '').trim()) {
           console.log(`🔇 Evento sin contenido útil para ${from}: se ignora para evitar loop de menú`);
+          return res.sendStatus(200);
+        }
+
+        if (userStates[from].step === 'AWAITING_USER_NAME' && !userStates[from].namePromptSent) {
+          const askNameMsg = '👋 Antes de continuar, ¿me compartís tu nombre y apellido para registrarte?\n\nEjemplo: Juan Perez';
+          await sendMessageAndSave(from, askNameMsg);
+          userStates[from].namePromptSent = true;
           return res.sendStatus(200);
         }
 
@@ -355,6 +617,11 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
         await sendWelcomeMessage(from, userStates[from].nombreCliente, userStates[from].esClienteNuevo);
         userStates[from].shouldGreet = false; // Resetear el flag
       }
+      if (!userStates[from].subdelegacion) {
+        await sendSubdelegacionPrompt(from);
+        userStates[from].step = 'AWAITING_SUBDELEGACION';
+        break;
+      }
       await sendMenuList(from, false); // false = es la primera vez
       userStates[from].step = 'MAIN_MENU';
       break;
@@ -365,6 +632,10 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
 
     case 'AWAITING_DNI':
       await handleDniInput(from, messageBody);
+      break;
+
+    case 'AWAITING_SUBDELEGACION':
+      await handleSubdelegacionChoice(from, optionToProcess, messageBody);
       break;
 
     case 'AWAITING_DNI_BOLETO':
@@ -401,6 +672,10 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
 
     case 'AWAITING_PADRON_CONTAMINACION':
       await handlePadronContaminacion(from, messageBody);
+      break;
+
+    case 'AWAITING_USER_NAME':
+      await handleUserNameInput(from, messageBody);
       break;
 
     case 'AWAITING_TIPO_CUOTA':
@@ -521,6 +796,42 @@ Soy el asistente virtual y estoy para ayudarte con tus gestiones hídricas de fo
   console.log(`👋 Mensaje de bienvenida enviado a ${from}`);
 };
 
+const handleUserNameInput = async (from, messageBody) => {
+  try {
+    const nombre = formatPersonName(messageBody);
+
+    if (!isLikelyValidPersonName(nombre)) {
+      const invalidNameMsg = '⚠️ Ese nombre no parece válido.\n\nPor favor escribí tu nombre real (mínimo 2 letras).\nEjemplo: Maria Gomez';
+      await sendMessageAndSave(from, invalidNameMsg);
+      userStates[from].step = 'AWAITING_USER_NAME';
+      userStates[from].namePromptSent = true;
+      return;
+    }
+
+    await clienteService.actualizarNombreWhatsapp(from, nombre, true);
+    userStates[from].nombreCliente = nombre;
+    userStates[from].esClienteNuevo = false;
+    userStates[from].step = 'START';
+    userStates[from].namePromptSent = false;
+
+    await sendMessageAndSave(from, `✅ ¡Gracias ${nombre.split(' ')[0]}! Ya guardé tu nombre.`);
+    await sendWelcomeMessage(from, nombre, false);
+
+    if (!userStates[from].subdelegacion) {
+      await sendSubdelegacionPrompt(from);
+      userStates[from].step = 'AWAITING_SUBDELEGACION';
+      return;
+    }
+
+    await sendMenuList(from, false);
+    userStates[from].step = 'MAIN_MENU';
+  } catch (error) {
+    console.error('❌ Error en handleUserNameInput:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error al guardar tu nombre. Intentá nuevamente.');
+    userStates[from].step = 'AWAITING_USER_NAME';
+  }
+};
+
 /**
  * Envía la lista interactiva del menú principal
  * @param {string} from - Número de teléfono del usuario
@@ -596,6 +907,68 @@ const sendMenuList = async (from, isFollowUp = false) => {
   console.log(`📋 Lista de menú enviada a ${from} (ID: ${mensajeGuardado.id})`);
 };
 
+const sendButtonReplyAndSave = async (from, body, buttons) => {
+  await whatsappService.sendButtonReply(from, body, buttons);
+
+  const payload = {
+    type: 'interactive_buttons',
+    body,
+    buttons
+  };
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(payload),
+    emisor: 'bot',
+    url_archivo: null
+  });
+
+  if (global.io) {
+    global.io.emit('nuevo_mensaje', {
+      id: mensajeGuardado.id,
+      telefono: from,
+      mensaje: JSON.stringify(payload),
+      emisor: 'bot',
+      tipo: 'interactive',
+      timestamp: mensajeGuardado.fecha
+    });
+  }
+
+  return mensajeGuardado;
+};
+
+const sendInteractiveButtonsAndSave = async (from, body, buttons) => {
+  await whatsappService.sendInteractiveButtons(from, body, buttons);
+
+  const payload = {
+    type: 'interactive_buttons',
+    body,
+    buttons
+  };
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(payload),
+    emisor: 'bot',
+    url_archivo: null
+  });
+
+  if (global.io) {
+    global.io.emit('nuevo_mensaje', {
+      id: mensajeGuardado.id,
+      telefono: from,
+      mensaje: JSON.stringify(payload),
+      emisor: 'bot',
+      tipo: 'interactive',
+      timestamp: mensajeGuardado.fecha
+    });
+  }
+
+  return mensajeGuardado;
+};
+
 /**
  * Maneja las opciones del menú principal
  */
@@ -647,7 +1020,7 @@ const handleMainMenu = async (from, option) => {
       const turnosIntro = `🗓️ *Consulta de Turnos*\n\n¿Cómo desea buscar su turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}\n\n_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       await sendMessageAndSave(from, turnosIntro);
 
-      await whatsappService.sendInteractiveButtons(
+      await sendInteractiveButtonsAndSave(
         from,
         '📋 Seleccione el método de búsqueda:',
         [
@@ -801,6 +1174,28 @@ Por favor contactá a un operador para más información.`;
         if (fs.existsSync(docPath)) {
           await whatsappService.sendDocument(from, docPath, 'Formulario de Renuncia.doc');
           console.log(`📎 Formulario de renuncia enviado a ${from}`);
+          
+          // 💾 GUARDAR el formulario en BD y emitir al frontend
+          const mensajeGuardado = await mensajeService.guardarMensaje({
+            telefono: from,
+            tipo: 'document',
+            cuerpo: 'Formulario de Renuncia',
+            url_archivo: docPath,
+            emisor: 'bot'
+          });
+          
+          // Emitir al frontend via Socket.IO
+          if (global.io) {
+            global.io.emit('nuevo_mensaje', {
+              id: mensajeGuardado.id,
+              telefono: from,
+              mensaje: 'Formulario de Renuncia.doc',
+              emisor: 'bot',
+              tipo: 'document',
+              url_archivo: docPath,
+              timestamp: mensajeGuardado.fecha
+            });
+          }
         } else {
           const infoText = `📎 El formulario estará disponible en oficinas.`;
           await sendMessageAndSave(from, infoText);
@@ -908,7 +1303,7 @@ Padrón: *${padron}* vinculado correctamente.
 
 Seleccioná una opción:`;
 
-    await whatsappService.sendInteractiveButtons(from, bodyText, buttons);
+    await sendInteractiveButtonsAndSave(from, bodyText, buttons);
     
     // Enviar más opciones (contactar operador y salir)
     setTimeout(async () => {
@@ -916,7 +1311,7 @@ Seleccioná una opción:`;
         { id: 'auth_contact', title: '👤 Contactar Operador' },
         { id: 'auth_salir', title: '↩️ Volver al menú' }
       ];
-      await whatsappService.sendInteractiveButtons(
+      await sendInteractiveButtonsAndSave(
         from,
         'Otras opciones:',
         moreButtons
@@ -1038,7 +1433,7 @@ _📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await whatsappService.sendButtonReply(
+    await sendButtonReplyAndSave(
       from,
       'Elegí una opción:',
       buttons
@@ -1072,7 +1467,7 @@ _📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await whatsappService.sendButtonReply(
+    await sendButtonReplyAndSave(
       from,
       'Elegí una opción:',
       buttons
@@ -1166,7 +1561,7 @@ const handleDniInputBoleto = async (from, messageBody) => {
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
     
-    await whatsappService.sendButtonReply(
+    await sendButtonReplyAndSave(
       from,
       'Elige el tipo de cuota:',
       buttons
@@ -1211,10 +1606,50 @@ const handleTipoCuota = async (from, option) => {
     
     if (option === 'cuota_anual') {
       tipoCuota = 'anual';
-      tipoCuotaTexto = 'Cuota Anual';
+      tipoCuotaTexto = '📅 Cuota Anual';
+      
+      // 💾 GUARDAR la selección del usuario en BD y emitir al frontend
+      const mensajeGuardado = await mensajeService.guardarMensaje({
+        telefono: from,
+        tipo: 'interactive',
+        cuerpo: tipoCuotaTexto,
+        emisor: 'usuario',
+        url_archivo: null
+      });
+      
+      if (global.io) {
+        global.io.emit('nuevo_mensaje', {
+          id: mensajeGuardado.id,
+          telefono: from,
+          mensaje: tipoCuotaTexto,
+          emisor: 'usuario',
+          tipo: 'interactive',
+          timestamp: mensajeGuardado.fecha
+        });
+      }
     } else if (option === 'cuota_bimestral') {
       tipoCuota = 'bimestral';
-      tipoCuotaTexto = 'Cuota Bimestral';
+      tipoCuotaTexto = '📆 Cuota Bimestral';
+      
+      // 💾 GUARDAR la selección del usuario en BD y emitir al frontend
+      const mensajeGuardado = await mensajeService.guardarMensaje({
+        telefono: from,
+        tipo: 'interactive',
+        cuerpo: tipoCuotaTexto,
+        emisor: 'usuario',
+        url_archivo: null
+      });
+      
+      if (global.io) {
+        global.io.emit('nuevo_mensaje', {
+          id: mensajeGuardado.id,
+          telefono: from,
+          mensaje: tipoCuotaTexto,
+          emisor: 'usuario',
+          tipo: 'interactive',
+          timestamp: mensajeGuardado.fecha
+        });
+      }
     } else {
       const errorMsg = '❌ Opción no válida. Por favor intenta nuevamente.';
       await sendMessageAndSave(from, errorMsg);
@@ -1268,10 +1703,50 @@ const handleTipoCuotaPadron = async (from, option) => {
     
     if (option === 'cuota_anual') {
       tipoCuota = 'anual';
-      tipoCuotaTexto = 'Cuota Anual';
+      tipoCuotaTexto = '📅 Cuota Anual';
+      
+      // 💾 GUARDAR la selección del usuario en BD y emitir al frontend
+      const mensajeGuardado = await mensajeService.guardarMensaje({
+        telefono: from,
+        tipo: 'interactive',
+        cuerpo: tipoCuotaTexto,
+        emisor: 'usuario',
+        url_archivo: null
+      });
+      
+      if (global.io) {
+        global.io.emit('nuevo_mensaje', {
+          id: mensajeGuardado.id,
+          telefono: from,
+          mensaje: tipoCuotaTexto,
+          emisor: 'usuario',
+          tipo: 'interactive',
+          timestamp: mensajeGuardado.fecha
+        });
+      }
     } else if (option === 'cuota_bimestral') {
       tipoCuota = 'bimestral';
-      tipoCuotaTexto = 'Cuota Bimestral';
+      tipoCuotaTexto = '📆 Cuota Bimestral';
+      
+      // 💾 GUARDAR la selección del usuario en BD y emitir al frontend
+      const mensajeGuardado = await mensajeService.guardarMensaje({
+        telefono: from,
+        tipo: 'interactive',
+        cuerpo: tipoCuotaTexto,
+        emisor: 'usuario',
+        url_archivo: null
+      });
+      
+      if (global.io) {
+        global.io.emit('nuevo_mensaje', {
+          id: mensajeGuardado.id,
+          telefono: from,
+          mensaje: tipoCuotaTexto,
+          emisor: 'usuario',
+          tipo: 'interactive',
+          timestamp: mensajeGuardado.fecha
+        });
+      }
     } else {
       const errorMsg = '❌ Opción no válida. Por favor intenta nuevamente.';
       await sendMessageAndSave(from, errorMsg);
@@ -1330,20 +1805,47 @@ const handleDescargarBoleto = async (from) => {
     
     // Subir PDF a WhatsApp
     const mediaId = await whatsappService.uploadMedia(pdfPath, 'application/pdf');
-    
-    // Extraer DNI del nombre del archivo
-    const dniMatch = pdfPath.match(/boleto_(\d+)\.pdf/);
-    const dni = dniMatch ? dniMatch[1] : 'usuario';
+
+    const nombrePersona = await resolveNombrePersona(from);
+    const fileNameForDelivery = buildBoletoPdfFileName({
+      tipoBoleto: 'deuda',
+      nombrePersona,
+      createdAt: new Date()
+    });
     
     // Enviar documento
     await whatsappService.sendDocument(
       from,
       mediaId,
-      `Boleto_${dni}.pdf`,
-      `Boleto de pago - DNI ${dni}`
+      fileNameForDelivery,
+      `Boleto de pago - ${nombrePersona}`
     );
     
     console.log(`📄 PDF enviado a ${from}`);
+    
+    const retainedPdfUrl = await saveBoletoPublicCopy(pdfPath, fileNameForDelivery);
+
+    // 💾 GUARDAR el PDF en BD y emitir al frontend
+    const mensajeGuardado = await mensajeService.guardarMensaje({
+      telefono: from,
+      tipo: 'document',
+      cuerpo: `Boleto de pago - ${nombrePersona}`,
+      url_archivo: retainedPdfUrl,
+      emisor: 'bot'
+    });
+    
+    // Emitir al frontend via Socket.IO
+    if (global.io) {
+      global.io.emit('nuevo_mensaje', {
+        id: mensajeGuardado.id,
+        telefono: from,
+        mensaje: fileNameForDelivery,
+        emisor: 'bot',
+        tipo: 'document',
+        url_archivo: retainedPdfUrl,
+        timestamp: mensajeGuardado.fecha
+      });
+    }
     
     // Eliminar archivo temporal
     fs.unlinkSync(pdfPath);
@@ -1387,7 +1889,7 @@ const handlePostDeudaBoletoChoice = async (from, option) => {
       { id: 'cuota_bimestral', title: '📆 Cuota Bimestral' }
     ];
 
-    await whatsappService.sendButtonReply(
+    await sendButtonReplyAndSave(
       from,
       'Elige el tipo de cuota:',
       buttons
@@ -1624,7 +2126,7 @@ const handleModoConsulta = async (from, option) => {
           { id: 'volver_menu', title: '↩️ Volver' }
         ];
 
-        await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+        await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
         userStates[from].ultimoDni = ultimoDni;
         userStates[from].step = 'AWAITING_DNI_CHOICE';
       } else {
@@ -1669,7 +2171,7 @@ const handleModoConsulta = async (from, option) => {
           { id: 'volver_menu', title: '↩️ Volver' }
         ];
 
-        await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+        await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
         userStates[from].step = 'AWAITING_PADRON_GLOBAL_CHOICE';
       } else {
         const msg = '📋 *Seleccioná el tipo de servicio:*';
@@ -1681,7 +2183,7 @@ const handleModoConsulta = async (from, option) => {
           { id: 'tipo_padron_c', title: '🛢️ C) Contaminación' }
         ];
 
-        await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+        await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
         userStates[from].step = 'AWAITING_TIPO_PADRON';
       }
 
@@ -1727,7 +2229,7 @@ const handleDniChoice = async (from, option) => {
           { id: 'volver_menu', title: '↩️ Volver' }
         ];
 
-        await whatsappService.sendButtonReply(from, 'Elegí el tipo de cuota:', buttons);
+        await sendButtonReplyAndSave(from, 'Elegí el tipo de cuota:', buttons);
         userStates[from].step = 'AWAITING_TIPO_CUOTA';
       } else {
         await sendMessageAndSave(from, `✅ Usando DNI guardado: *${dni}*`);
@@ -1788,7 +2290,7 @@ const handlePadronGlobalChoice = async (from, option) => {
         { id: 'tipo_padron_c', title: '🛢️ C) Contaminación' }
       ];
 
-      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+      await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
       userStates[from].step = 'AWAITING_TIPO_PADRON';
       return;
     }
@@ -1807,7 +2309,7 @@ const handlePadronGlobalChoice = async (from, option) => {
           { id: 'volver_menu', title: '↩️ Volver' }
         ];
 
-        await whatsappService.sendButtonReply(from, 'Elegí el tipo de cuota:', buttons);
+        await sendButtonReplyAndSave(from, 'Elegí el tipo de cuota:', buttons);
         userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
       } else {
         const clienteMock = {
@@ -1842,7 +2344,7 @@ const handlePadronGlobalChoice = async (from, option) => {
       if (guardados.subterraneo) buttons.push({ id: 'usar_guardado_subterraneo', title: '💧 B) Subterráneo' });
       if (guardados.contaminacion) buttons.push({ id: 'usar_guardado_contaminacion', title: '🛢️ C) Contaminación' });
 
-      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons.slice(0, 3));
+      await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons.slice(0, 3));
       userStates[from].step = 'AWAITING_PADRON_GLOBAL_CHOICE';
       return;
     }
@@ -1975,7 +2477,7 @@ const handlePadronChoice = async (from, option) => {
           { id: 'volver_menu', title: '↩️ Volver' }
         ];
 
-        await whatsappService.sendButtonReply(from, 'Elegí el tipo de cuota:', buttons);
+        await sendButtonReplyAndSave(from, 'Elegí el tipo de cuota:', buttons);
         userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
       } else {
         const cliente = await clienteService.obtenerCliente(from);
@@ -2044,7 +2546,7 @@ const handlePadronSuperficial = async (from, messageBody) => {
         { id: 'volver_menu', title: '↩️ Volver' }
       ];
       
-      await whatsappService.sendButtonReply(from, preguntaMsg, buttons);
+      await sendButtonReplyAndSave(from, preguntaMsg, buttons);
       userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
     }
   } catch (error) {
@@ -2099,7 +2601,7 @@ const handlePadronSubterraneo = async (from, messageBody) => {
         { id: 'volver_menu', title: '↩️ Volver' }
       ];
       
-      await whatsappService.sendButtonReply(
+      await sendButtonReplyAndSave(
         from,
         'Elige el tipo de cuota:',
         buttons
@@ -2160,7 +2662,7 @@ const handlePadronContaminacion = async (from, messageBody) => {
         { id: 'volver_menu', title: '↩️ Volver' }
       ];
       
-      await whatsappService.sendButtonReply(
+      await sendButtonReplyAndSave(
         from,
         'Elige el tipo de cuota:',
         buttons
@@ -2326,7 +2828,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await whatsappService.sendButtonReply(from, 'Elige una opción:', buttons);
+    await sendButtonReplyAndSave(from, 'Elige una opción:', buttons);
     userStates[from].step = 'AWAITING_PAGO_DEUDA';
     
   } catch (error) {
@@ -2382,15 +2884,46 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       
       try {
         const mediaId = await whatsappService.uploadMedia(resultado.pdfPath, 'application/pdf');
+        const nombrePersona = await resolveNombrePersona(from);
+        const tipoBoleto = tipoCuota === 'anual' ? 'cuota_anual' : 'cuota_bimestral';
+        const docFileName = buildBoletoPdfFileName({
+          tipoBoleto,
+          nombrePersona,
+          createdAt: new Date()
+        });
         
         // Enviar documento con mediaId
         await whatsappService.sendDocument(
           from,
           mediaId,
-          `boleto_${tipoCuota}.pdf`,
+          docFileName,
           `Boleto de pago - ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'}`
         );
         console.log(`✅ Boleto PDF enviado: ${resultado.pdfPath}`);
+
+        const retainedPdfUrl = await saveBoletoPublicCopy(resultado.pdfPath, docFileName);
+        
+        // 💾 GUARDAR el PDF en BD y emitir al frontend
+        const mensajeGuardado = await mensajeService.guardarMensaje({
+          telefono: from,
+          tipo: 'document',
+          cuerpo: `Boleto de pago - ${tipoCuota === 'anual' ? 'Cuota Anual' : 'Cuota Bimestral'} - ${nombrePersona}`,
+          url_archivo: retainedPdfUrl,
+          emisor: 'bot'
+        });
+        
+        // Emitir al frontend via Socket.IO
+        if (global.io) {
+          global.io.emit('nuevo_mensaje', {
+            id: mensajeGuardado.id,
+            telefono: from,
+            mensaje: docFileName,
+            emisor: 'bot',
+            tipo: 'document',
+            url_archivo: retainedPdfUrl,
+            timestamp: mensajeGuardado.fecha
+          });
+        }
         
         // Limpiar archivo después de enviar
         try {
@@ -2422,7 +2955,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         { id: 'volver_menu', title: '🚪 Salir' }
       ];
       
-      await whatsappService.sendButtonReply(from, '¿Desea pagar el boleto?', buttons);
+      await sendButtonReplyAndSave(from, '¿Desea pagar el boleto?', buttons);
       userStates[from].step = 'AWAITING_PAGO_BOLETO';
 
       const periBole = resultado?.data?.periBole;
@@ -2590,7 +3123,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
         { id: 'volver_menu', title: '↩️ Volver al Menú' }
       ];
       
-      await whatsappService.sendButtonReply(from, 'Elegí una opción:', buttons);
+      await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
       userStates[from].step = 'MAIN_MENU';
       
       // Limpiar datos temporales
@@ -2636,7 +3169,7 @@ Para más información y requisitos, visitá:
       { id: 'perforacion_ayuda_no', title: '❌ No' }
     ];
 
-    await whatsappService.sendButtonReply(from, '¿Necesitás mas ayuda?', buttons);
+    await sendButtonReplyAndSave(from, '¿Necesitás mas ayuda?', buttons);
     userStates[from].step = 'AWAITING_PERFORACION_HELP';
     
     console.log(`🔧 Info de perforación de subterránea enviada a ${from}`);
@@ -2949,7 +3482,7 @@ const handleTurnoMethodChoice = async (from, option) => {
 ¿Querés buscar con el mismo titular?`;
       await sendMessageAndSave(from, msg);
       
-      await whatsappService.sendInteractiveButtons(
+      await sendInteractiveButtonsAndSave(
         from,
         'Elegí una opción:',
         [
@@ -2989,7 +3522,7 @@ _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
 ¿Querés buscar con el mismo servicio?`;
       await sendMessageAndSave(from, msg);
       
-      await whatsappService.sendInteractiveButtons(
+      await sendInteractiveButtonsAndSave(
         from,
         'Elegí una opción:',
         [
@@ -3029,7 +3562,7 @@ _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
   }
 
   await sendMessageAndSave(from, '❌ Opción no válida. Por favor elegí una opción del menú:');
-  await whatsappService.sendInteractiveButtons(
+  await sendInteractiveButtonsAndSave(
     from,
     '📋 Seleccione el método de búsqueda:',
     [
