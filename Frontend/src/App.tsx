@@ -20,6 +20,7 @@ import { useChatMutations } from './hooks/useChatMutations';
 import { trackAction, trackErrorRecovery, trackSocketEvent } from './utils/monitoring';
 import { applyMessageCachePolicy } from './utils/messageCachePolicy';
 import type { ChatMessage, Conversation, RawApiMessage, RawSocketMessage } from './types/chat';
+import type { OperadorInfo } from './config/auth';
 
 type MediaFilter = 'all' | 'images' | 'videos' | 'files' | 'urls';
 
@@ -126,6 +127,20 @@ type BotModeChangedPayload = {
   estado_conversacion?: string;
   ticket_id?: string | number;
   subdelegacion_id?: string | number;
+};
+
+type AuthMeResponse = {
+  id?: string | number;
+  username?: string;
+  email?: string;
+  role?: string;
+  subdelegacion_id?: string | number | null;
+  subdelegacion_nombre?: string | null;
+  subdelegacion_codigo?: string | null;
+  permissions?: {
+    queueScope?: string;
+    [key: string]: unknown;
+  } | string[];
 };
 
 // Configurar Axios base
@@ -311,6 +326,7 @@ export default function App() {
   const [reactivationSent, setReactivationSent] = useState<Record<string, boolean>>({});
   const [pendingOperatorTickets, setPendingOperatorTickets] = useState<OperatorHandoffTicket[]>([]);
   const [handoffActionLoading, setHandoffActionLoading] = useState<Record<string, 'accept' | 'complete' | undefined>>({});
+  const [operatorProfile, setOperatorProfile] = useState<OperadorInfo | null>(() => auth.getOperador());
 
   // Determinar si la sesión (24h) está vencida según el último mensaje del usuario (cliente)
   const sessionExpired = useMemo(() => {
@@ -392,9 +408,9 @@ export default function App() {
   };
 
   const getOperatorName = () => {
-    const operador = auth.getOperador();
+    const operador = operatorProfile || auth.getOperador();
     if (!operador) return undefined;
-    const candidate = [operador.nombre, operador.email].find((value) => typeof value === 'string' && value.trim().length > 0);
+    const candidate = [operador.username, operador.nombre, operador.email].find((value) => typeof value === 'string' && value.trim().length > 0);
     return candidate?.trim();
   };
 
@@ -464,6 +480,13 @@ export default function App() {
 
   const acceptOperatorChat = async (phone: string) => {
     if (!phone) return;
+    if (!canTakeOperatorQueue) {
+      toast.warning('Sin permiso para tomar chats', {
+        description: 'Tu perfil actual no permite tomar tickets de la cola.'
+      });
+      return;
+    }
+
     const chat = conversationsState.find((item) => phonesMatch(item.phone, phone));
     const lockInfo = getChatLockInfo(chat || null);
     if (lockInfo.isLockedByAnotherOperator) {
@@ -821,6 +844,20 @@ const getStatusBadgeMeta = (status?: string | null, botActive?: boolean | null) 
   return null;
 };
 
+const normalizeQueueScope = (scope?: string | null) => (scope || '').trim().toUpperCase();
+
+const canViewQueueByScope = (scope?: string | null) => {
+  const normalized = normalizeQueueScope(scope);
+  if (!normalized) return true;
+  return !['NONE', 'NO_QUEUE', 'DISABLED', 'OFF'].includes(normalized);
+};
+
+const canTakeQueueByScope = (scope?: string | null) => {
+  const normalized = normalizeQueueScope(scope);
+  if (!normalized) return true;
+  return !['READ_ONLY', 'VIEW_ONLY', 'NONE', 'NO_QUEUE', 'DISABLED', 'OFF'].includes(normalized);
+};
+
 const FILE_URL_REGEX = /(https?:\/\/[^\s"']+\.(pdf|doc|docx|xls|xlsx|ppt|pptx|csv|txt|zip|rar|7z|jpg|jpeg|png|gif|webp|mp3|wav|ogg|mp4|mov|avi|mkv))(?:\?[^\s"']*)?/i;
 
 const extractFileUrlFromText = (text?: string) => {
@@ -1147,6 +1184,32 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     const token = localStorage.getItem(env.tokenKey);
     refreshSocketAuth();
 
+    const loadAuthProfile = async () => {
+      try {
+        const response = await axios.get('/api/auth/me', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+
+        const profile = (response.data?.data || response.data || {}) as AuthMeResponse;
+        const mappedProfile: OperadorInfo = {
+          ...profile,
+          nombre: typeof profile.username === 'string' ? profile.username : undefined,
+          email: profile.email,
+          permissions: profile.permissions
+        };
+
+        auth.setOperador(mappedProfile);
+        setOperatorProfile(mappedProfile);
+      } catch (error: unknown) {
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+        if (status === 401 || status === 403) {
+          handleLogout();
+          return;
+        }
+        console.error('Error cargando perfil /api/auth/me:', error);
+      }
+    };
+
     if (!socket.connected) {
       socket.connect();
     }
@@ -1333,6 +1396,16 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     };
 
     const loadPendingTickets = async () => {
+      const storedOperator = auth.getOperador();
+      const scope = (storedOperator?.permissions && !Array.isArray(storedOperator.permissions))
+        ? storedOperator.permissions.queueScope
+        : undefined;
+
+      if (!canViewQueueByScope(scope)) {
+        setPendingOperatorTickets([]);
+        return;
+      }
+
       try {
         const response = await axios.get('/api/tickets', {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
@@ -1393,6 +1466,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     };
     
     loadChats();
+    loadAuthProfile();
     loadPendingTickets();
 
     const pendingTicketsInterval = window.setInterval(() => {
@@ -3031,6 +3105,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   }, [conversationsState, selectedId, selectedChat, chatSearchText]);
 
   const currentChatLock = getChatLockInfo(currentChat);
+  const queueScope = useMemo(() => {
+    const permissions = operatorProfile?.permissions;
+    if (!permissions || Array.isArray(permissions)) return undefined;
+    return typeof permissions.queueScope === 'string' ? permissions.queueScope : undefined;
+  }, [operatorProfile]);
+  const canViewOperatorQueue = canViewQueueByScope(queueScope);
+  const canTakeOperatorQueue = canTakeQueueByScope(queueScope);
 
   const filteredConversations = conversationsState.filter(conv => {
     // Filtrar archivadas
@@ -3166,12 +3247,17 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         </div>
 
         {/* Conversaciones */}
-        {pendingOperatorTickets.length > 0 && (
+        {canViewOperatorQueue && pendingOperatorTickets.length > 0 && (
           <div className="mx-3 mt-3 rounded-xl border border-amber-300 bg-amber-50/90 dark:bg-amber-950/40 dark:border-amber-800 p-3 shadow-sm">
             <div className="flex items-center justify-between gap-2 mb-2">
               <p className="text-sm font-semibold text-amber-800 dark:text-amber-100">
                 Clientes esperando operador: {pendingOperatorTickets.length}
               </p>
+              {operatorProfile?.subdelegacion_nombre && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-100">
+                  {operatorProfile.subdelegacion_nombre}
+                </span>
+              )}
             </div>
             <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
               {pendingOperatorTickets.map((ticket) => {
@@ -3191,11 +3277,11 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       <button
                         type="button"
                         onClick={() => void acceptOperatorChat(ticket.phone)}
-                        disabled={loading}
+                        disabled={loading || !canTakeOperatorQueue}
                         className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white disabled:opacity-60"
                         style={{ backgroundColor: themeColors[theme].hex }}
                       >
-                        {loading ? 'Tomando...' : 'Tomar chat'}
+                        {!canTakeOperatorQueue ? 'Solo lectura' : (loading ? 'Tomando...' : 'Tomar chat')}
                       </button>
                     </div>
                   </div>
@@ -3457,11 +3543,11 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                     <button
                       type="button"
                       onClick={() => void acceptOperatorChat(currentChat.phone)}
-                      disabled={actionState !== undefined}
+                      disabled={actionState !== undefined || !canTakeOperatorQueue}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-60"
                       style={{ backgroundColor: themeColors[theme].hex }}
                     >
-                      {actionState === 'accept' ? 'Tomando...' : 'Tomar chat'}
+                      {!canTakeOperatorQueue ? 'Solo lectura' : (actionState === 'accept' ? 'Tomando...' : 'Tomar chat')}
                     </button>
                   )}
                   {isHuman && (
@@ -3537,9 +3623,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         <button
                           className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700"
                           onClick={() => void acceptOperatorChat(currentChat.phone)}
-                          disabled={actionState !== undefined}
+                          disabled={actionState !== undefined || !canTakeOperatorQueue}
                         >
-                          {actionState === 'accept' ? 'Tomando chat...' : 'Tomar chat'}
+                          {!canTakeOperatorQueue ? 'Solo lectura' : (actionState === 'accept' ? 'Tomando chat...' : 'Tomar chat')}
                         </button>
                       )}
                       {isHuman && (

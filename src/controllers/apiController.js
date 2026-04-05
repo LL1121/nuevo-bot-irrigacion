@@ -18,6 +18,15 @@ const emitToTenantRoom = async (phone, eventName, payload) => {
   }
 };
 
+const emitToSubdelegacionRoom = (subdelegacionId, eventName, payload) => {
+  if (!global.io) return;
+  if (!subdelegacionId) {
+    global.io.emit(eventName, payload);
+    return;
+  }
+  global.io.to(`zona_${subdelegacionId}`).emit(eventName, payload);
+};
+
 const emitMessageToFrontend = (mensajeGuardado, telefono, cuerpo, tipo = 'text', extra = {}) => {
   if (!global.io || !mensajeGuardado?.id) return;
 
@@ -615,6 +624,139 @@ const finalizarTicketOperador = async (req, res) => {
   }
 };
 
+const transferirTicketOperador = async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const targetSubdelegacionId = Number(req.body?.subdelegacion_id);
+    const motivoRaw = String(req.body?.motivo || '').trim();
+    const operadorCtx = await clienteService.obtenerContextoOperador(req.user || {});
+    const role = String(operadorCtx?.role || req.user?.role || 'operador').toLowerCase();
+    const isAdmin = role === 'admin';
+
+    if (!phone) {
+      return res.status(400).json({ success: false, error: 'Número de teléfono requerido' });
+    }
+
+    if (!Number.isInteger(targetSubdelegacionId) || targetSubdelegacionId <= 0) {
+      return res.status(400).json({ success: false, error: 'subdelegacion_id inválida' });
+    }
+
+    if (!operadorCtx?.id) {
+      return res.status(403).json({ success: false, error: 'Operador no identificado' });
+    }
+
+    const { get } = require('../config/db');
+    const targetSubdelegacion = await get(
+      'SELECT id, nombre, codigo FROM subdelegaciones WHERE id = ? LIMIT 1',
+      [targetSubdelegacionId]
+    );
+    if (!targetSubdelegacion?.id) {
+      return res.status(404).json({ success: false, error: 'Subdelegación destino no encontrada' });
+    }
+
+    const ticketActual = await clienteService.obtenerTicketAbiertoPorTelefono(phone);
+    if (!ticketActual?.id) {
+      return res.status(404).json({ success: false, error: 'No hay ticket abierto para transferir' });
+    }
+
+    const sourceSubdelegacionId = Number(ticketActual.subdelegacion_id || 0) || null;
+    if (!isAdmin && Number(sourceSubdelegacionId || 0) !== Number(operadorCtx.subdelegacion_id || 0)) {
+      return res.status(403).json({ success: false, error: 'No podés transferir tickets de otra subdelegación' });
+    }
+
+    if (Number(sourceSubdelegacionId || 0) === Number(targetSubdelegacionId)) {
+      return res.status(409).json({ success: false, error: 'El ticket ya pertenece a esa subdelegación' });
+    }
+
+    const motivoTransferencia = [
+      `TRANSFERENCIA:${sourceSubdelegacionId || 'sin_subdelegacion'}->${targetSubdelegacionId}`,
+      `por:${operadorCtx.username || operadorCtx.email || operadorCtx.id}`,
+      motivoRaw ? `motivo:${motivoRaw}` : null
+    ].filter(Boolean).join(' ');
+
+    const ticketTransferido = await clienteService.transferirTicketSubdelegacion({
+      telefono: phone,
+      targetSubdelegacionId,
+      sourceSubdelegacionId,
+      actorOperatorId: operadorCtx.id,
+      actorOperatorUsername: operadorCtx.username,
+      motivo: motivoTransferencia,
+      isAdmin
+    });
+
+    if (!ticketTransferido?.id) {
+      return res.status(409).json({
+        success: false,
+        error: 'No se pudo transferir el ticket (puede haber sido tomado/cerrado por otro operador)'
+      });
+    }
+
+    await clienteService.actualizarSubdelegacion(phone, targetSubdelegacion.nombre);
+    await clienteService.actualizarEstadoConversacion(phone, 'ESPERA_OPERADOR');
+    await clienteService.cambiarEstadoBot(phone, true, operadorCtx.username || 'SYSTEM');
+
+    const payload = {
+      telefono: phone,
+      ticket_id: ticketTransferido.id,
+      from_subdelegacion_id: sourceSubdelegacionId,
+      to_subdelegacion_id: targetSubdelegacionId,
+      to_subdelegacion_nombre: targetSubdelegacion.nombre,
+      transferred_by: operadorCtx.username || operadorCtx.email || `operator_${operadorCtx.id}`,
+      motivo: motivoRaw || null,
+      transferred_at: new Date().toISOString()
+    };
+
+    emitToSubdelegacionRoom(sourceSubdelegacionId, 'ticket_transferred_out', payload);
+    emitToSubdelegacionRoom(targetSubdelegacionId, 'ticket_transferred_in', payload);
+
+    await emitToTenantRoom(phone, 'operator_handoff_requested', {
+      telefono: phone,
+      subdelegacion: targetSubdelegacion.nombre,
+      subdelegacion_id: targetSubdelegacionId,
+      ticket_id: ticketTransferido.id,
+      motivo: 'TRANSFERENCIA_OPERADOR',
+      requested_at: new Date().toISOString(),
+      transfer: {
+        from_subdelegacion_id: sourceSubdelegacionId,
+        transferred_by: operadorCtx.username || operadorCtx.email || `operator_${operadorCtx.id}`
+      }
+    });
+
+    await emitToTenantRoom(phone, 'bot_mode_changed', {
+      telefono: phone,
+      bot_activo: true,
+      estado_conversacion: 'ESPERA_OPERADOR',
+      subdelegacion: targetSubdelegacion.nombre,
+      subdelegacion_id: targetSubdelegacionId,
+      ticket_id: ticketTransferido.id
+    });
+
+    await sendTextAndSave(
+      phone,
+      `🔄 Tu consulta fue derivada a la subdelegación *${targetSubdelegacion.nombre}*. En breve te atenderá un operador de esa zona.`
+    );
+
+    return res.json({
+      success: true,
+      message: 'Ticket transferido correctamente',
+      telefono: phone,
+      ticket: ticketTransferido,
+      transfer: {
+        from_subdelegacion_id: sourceSubdelegacionId,
+        to_subdelegacion_id: targetSubdelegacionId,
+        to_subdelegacion_nombre: targetSubdelegacion.nombre,
+        transferred_by: operadorCtx.username || operadorCtx.email || `operator_${operadorCtx.id}`,
+        motivo: motivoRaw || null
+      },
+      estado_conversacion: 'ESPERA_OPERADOR',
+      bot_activo: true
+    });
+  } catch (error) {
+    console.error('❌ Error en transferirTicketOperador:', error);
+    return res.status(500).json({ success: false, error: 'Error al transferir ticket' });
+  }
+};
+
 const asignarSubdelegacionOperador = async (req, res) => {
   try {
     const operatorId = Number(req.params.operatorId);
@@ -671,5 +813,6 @@ module.exports = {
   listarTickets,
   aceptarTicketOperador,
   finalizarTicketOperador,
+  transferirTicketOperador,
   asignarSubdelegacionOperador
 };

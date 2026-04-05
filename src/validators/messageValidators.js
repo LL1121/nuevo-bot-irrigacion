@@ -128,6 +128,29 @@ const phoneSchema = Joi.object({
 });
 
 /**
+ * Schema para transferir un chat entre subdelegaciones
+ */
+const transferTicketSchema = Joi.object({
+  subdelegacion_id: Joi.number()
+    .integer()
+    .positive()
+    .required()
+    .messages({
+      'number.base': 'subdelegacion_id debe ser numérico',
+      'number.integer': 'subdelegacion_id debe ser entero',
+      'number.positive': 'subdelegacion_id debe ser mayor a cero',
+      'any.required': 'subdelegacion_id es requerido'
+    }),
+  motivo: Joi.string()
+    .max(250)
+    .optional()
+    .allow('')
+    .messages({
+      'string.max': 'motivo no puede exceder 250 caracteres'
+    })
+});
+
+/**
  * Middleware de validación genérico
  */
 const validate = (schema, property = 'body') => {
@@ -159,6 +182,7 @@ const validate = (schema, property = 'body') => {
 module.exports = {
   sendMessageSchema,
   reactivateSchema,
+  transferTicketSchema,
   phoneParamSchema,
   phoneSchema,
   validate

@@ -728,6 +728,63 @@ const tomarTicketEnEspera = async ({
   );
 };
 
+const transferirTicketSubdelegacion = async ({
+  telefono,
+  targetSubdelegacionId,
+  sourceSubdelegacionId,
+  actorOperatorId,
+  actorOperatorUsername,
+  motivo = '',
+  isAdmin = false
+}) => {
+  if (!telefono || !targetSubdelegacionId) return null;
+
+  return get(
+    `UPDATE tickets t
+     SET
+       subdelegacion_id = ?,
+       assigned_operator_id = NULL,
+       assigned_operator_username = NULL,
+       assigned_at = NULL,
+       motivo = CASE
+         WHEN COALESCE(?, '') <> '' THEN CONCAT(COALESCE(t.motivo, ''), CASE WHEN COALESCE(t.motivo, '') = '' THEN '' ELSE ' | ' END, ?)
+         ELSE t.motivo
+       END,
+       updated_at = CURRENT_TIMESTAMP
+     FROM clientes c
+     WHERE c.telefono = t.cliente_telefono
+       AND t.cliente_telefono = ?
+       AND t.estado = 'ABIERTO'
+       AND (? = 1 OR t.subdelegacion_id = ?)
+       AND (
+         ? = 1
+         OR t.assigned_operator_id IS NULL
+         OR t.assigned_operator_id = ?
+       )
+     RETURNING
+       t.id,
+       t.cliente_telefono,
+       t.subdelegacion_id,
+       t.estado,
+       t.motivo,
+       t.assigned_operator_id,
+       t.assigned_operator_username,
+       t.assigned_at,
+       t.created_at,
+       t.updated_at`,
+    [
+      targetSubdelegacionId,
+      motivo,
+      motivo,
+      telefono,
+      isAdmin ? 1 : 0,
+      sourceSubdelegacionId || null,
+      isAdmin ? 1 : 0,
+      actorOperatorId || null
+    ]
+  );
+};
+
 const obtenerSubdelegacionInfo = async (telefono) => {
   const subdelegacionNombre = await obtenerSubdelegacion(telefono);
   if (!subdelegacionNombre) return null;
@@ -902,6 +959,7 @@ module.exports = {
   cerrarTicketHumano,
   obtenerContextoOperador,
   tomarTicketEnEspera,
+  transferirTicketSubdelegacion,
   obtenerSubdelegacionInfo,
   listarTicketsPorSubdelegacion,
   listarTicketsEnEspera,

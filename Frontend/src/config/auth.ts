@@ -6,8 +6,18 @@
 import { authConfig } from './authConfig';
 
 export type OperadorInfo = {
+  id?: string | number;
+  username?: string;
   nombre?: string;
   email?: string;
+  role?: string;
+  subdelegacion_id?: string | number | null;
+  subdelegacion_nombre?: string | null;
+  subdelegacion_codigo?: string | null;
+  permissions?: {
+    queueScope?: string;
+    [key: string]: unknown;
+  } | string[];
   [key: string]: unknown;
 };
 
