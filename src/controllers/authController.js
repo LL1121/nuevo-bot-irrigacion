@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { getPool } = require('../config/db');
+const clienteService = require('../services/clienteService');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const TOKEN_EXPIRY = process.env.JWT_EXPIRY || '8h';
@@ -25,7 +26,18 @@ const login = async (req, res) => {
 
     const pool = getPool();
     const rows = await pool.query(
-      'SELECT id, username, email, password_hash, role, subdelegacion_id FROM operadores WHERE username = ?',
+      `SELECT
+        o.id,
+        o.username,
+        o.email,
+        o.password_hash,
+        o.role,
+        o.subdelegacion_id,
+        s.nombre AS subdelegacion_nombre,
+        s.codigo AS subdelegacion_codigo
+      FROM operadores o
+      LEFT JOIN subdelegaciones s ON s.id = o.subdelegacion_id
+      WHERE o.username = ?`,
       [username]
     );
 
@@ -64,9 +76,12 @@ const login = async (req, res) => {
       token,
       user: {
         id: operador.id,
+        username: operador.username,
         email: operador.email,
         role: operador.role,
-        subdelegacion_id: operador.subdelegacion_id || null
+        subdelegacion_id: operador.subdelegacion_id || null,
+        subdelegacion_nombre: operador.subdelegacion_nombre || null,
+        subdelegacion_codigo: operador.subdelegacion_codigo || null
       }
     });
   } catch (error) {
@@ -78,6 +93,44 @@ const login = async (req, res) => {
   }
 };
 
+const me = async (req, res) => {
+  try {
+    const operador = await clienteService.obtenerContextoOperador(req.user || {});
+    if (!operador?.id) {
+      return res.status(404).json({
+        success: false,
+        message: 'Operador no encontrado'
+      });
+    }
+
+    const role = String(operador.role || 'operador').toLowerCase();
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: operador.id,
+        username: operador.username,
+        email: operador.email,
+        role,
+        subdelegacion_id: operador.subdelegacion_id || null,
+        subdelegacion_nombre: operador.subdelegacion_nombre || null,
+        subdelegacion_codigo: operador.subdelegacion_codigo || null,
+        permissions: {
+          canViewAllQueues: role === 'admin',
+          canAssignSubdelegacion: role === 'admin',
+          queueScope: role === 'admin' ? 'all' : 'subdelegacion'
+        }
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error en auth.me:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error en el servidor'
+    });
+  }
+};
+
 module.exports = {
-  login
+  login,
+  me
 };

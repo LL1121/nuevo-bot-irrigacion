@@ -12,6 +12,11 @@ const path = require('path');
 const BOLETOS_PUBLIC_DIR = path.join(__dirname, '../../public/uploads/boletos');
 const BOLETOS_RETENTION_HOURS = Number(process.env.BOLETOS_RETENTION_HOURS || 24);
 const BOLETOS_PREVIEW_PDFSETTINGS = process.env.BOLETOS_PREVIEW_PDFSETTINGS || 'ebook';
+const TURNOS_CONTACTO_INSPECCION_DEFAULT = process.env.TURNOS_CONTACTO_INSPECCION || 'inspeccioncanadacolorada@gmail.com';
+const TURNOS_CONTACTOS_POR_INSPECCION = {
+  'canada colorada': process.env.TURNOS_CONTACTO_INSPECCION_CANADA_COLORADA || TURNOS_CONTACTO_INSPECCION_DEFAULT,
+  'cañada colorada': process.env.TURNOS_CONTACTO_INSPECCION_CANADA_COLORADA || TURNOS_CONTACTO_INSPECCION_DEFAULT
+};
 const INVALID_PROFILE_NAMES = new Set([
   '',
   '.',
@@ -43,6 +48,24 @@ const formatPersonName = (value = '') => {
     .join(' ');
 };
 
+const normalizeSingleLine = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
+
+const stripListSelectionDescription = (title = '', description = '') => {
+  let cleanTitle = normalizeSingleLine(String(title || '').split('\n')[0]);
+  const cleanDescription = normalizeSingleLine(description);
+
+  if (!cleanTitle) return '';
+  if (!cleanDescription) return cleanTitle;
+
+  const titleLower = cleanTitle.toLowerCase();
+  const descriptionLower = cleanDescription.toLowerCase();
+  if (titleLower.endsWith(descriptionLower)) {
+    cleanTitle = cleanTitle.slice(0, cleanTitle.length - cleanDescription.length).replace(/[\s\-–—:|]+$/, '').trim();
+  }
+
+  return cleanTitle;
+};
+
 const isLikelyValidPersonName = (value = '') => {
   const normalized = normalizePersonName(value);
   if (!normalized) return false;
@@ -57,6 +80,38 @@ const isLikelyValidPersonName = (value = '') => {
   if (lettersOnly.length < 2) return false;
 
   return true;
+};
+
+const getServiceErrorMessage = (payload, fallbackMessage = '') => {
+  if (!payload) return fallbackMessage;
+
+  const userMessage = normalizeSingleLine(payload.userMessage || '');
+  if (userMessage) return userMessage;
+
+  const message = normalizeSingleLine(payload.message || payload.error || '');
+  if (message) return `❌ ${message}`;
+
+  return fallbackMessage;
+};
+
+const isUnavailableValue = (value = '') => {
+  const normalized = normalizeSingleLine(value).toLowerCase();
+  return !normalized || normalized === 'no disponible' || normalized === 'n/a' || normalized === '-';
+};
+
+const hasUsableTurnoData = (data = {}) => {
+  if (!data || typeof data !== 'object') return false;
+
+  if (data.restringido && (!isUnavailableValue(data.ccpp) || !isUnavailableValue(data.titular))) {
+    return true;
+  }
+
+  const hasTitular = !isUnavailableValue(data.titular);
+  const hasSchedule = !isUnavailableValue(data.inicioTurno) || !isUnavailableValue(data.finTurno);
+  const hasHijuela = !isUnavailableValue(data.hijuela);
+  const hasInspeccion = !isUnavailableValue(data.inspeccion);
+
+  return hasTitular || hasSchedule || hasHijuela || hasInspeccion;
 };
 
 const slugifyForFileName = (value = '') => {
@@ -190,7 +245,6 @@ const TEMP_DISABLED_MENU_OPTIONS = new Set([
   'empadronamiento',
   'perforacion',
   'renuncia',
-  'operador',
   'iniciar_perforacion',
   '4',
   'option_4'
@@ -316,28 +370,72 @@ const derivarAHumano = async (from, motivo = 'DERIVACION_BOT') => {
   };
 };
 
-const intentarDerivarOperador = async (from, motivo = 'DERIVACION_BOT') => {
+const solicitarOperadorEnEspera = async (from, motivo = 'DERIVACION_BOT') => {
+  const subdelegacionInfo = await clienteService.obtenerSubdelegacionInfo(from);
+
+  await clienteService.actualizarEstadoConversacion(from, 'ESPERA_OPERADOR');
+  await clienteService.cambiarEstadoBot(from, true);
+
+  const ticket = await clienteService.crearTicketHumano(
+    from,
+    subdelegacionInfo?.id || null,
+    motivo
+  );
+
+  await emitToTenantRoom(from, 'operator_handoff_requested', {
+    telefono: from,
+    subdelegacion: subdelegacionInfo?.nombre || null,
+    subdelegacion_id: subdelegacionInfo?.id || null,
+    ticket_id: ticket?.id || null,
+    motivo,
+    requested_at: new Date().toISOString()
+  });
+
+  await emitToTenantRoom(from, 'bot_mode_changed', {
+    telefono: from,
+    bot_activo: true,
+    estado_conversacion: 'ESPERA_OPERADOR',
+    subdelegacion: subdelegacionInfo?.nombre || null,
+    subdelegacion_id: subdelegacionInfo?.id || null,
+    ticket_id: ticket?.id || null
+  });
+
+  return {
+    subdelegacion: subdelegacionInfo?.nombre || null,
+    subdelegacionId: subdelegacionInfo?.id || null,
+    ticket
+  };
+};
+
+const intentarDerivarOperador = async (from, motivo = 'DERIVACION_BOT', options = {}) => {
+  const { reenviaMenuSiFueraHorario = true } = options;
   const subdelegacionInfo = await clienteService.obtenerSubdelegacionInfo(from);
   const disponibilidad = await clienteService.validarHorarioAtencionOperador(subdelegacionInfo?.id || null);
 
   if (!disponibilidad.disponible) {
     await sendMessageAndSave(from, disponibilidad.mensaje || '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.');
+    if (reenviaMenuSiFueraHorario) {
+      await sendMenuList(from, true);
+    }
     return {
       derivado: false,
       fueraHorario: true,
+      enEspera: false,
+      menuReenviado: Boolean(reenviaMenuSiFueraHorario),
       subdelegacion: subdelegacionInfo?.nombre || null,
       subdelegacionId: subdelegacionInfo?.id || null,
       ticket: null
     };
   }
 
-  const operatorText = `👤 Derivando a un Agente\n\nUn operador humano te atenderá en breve.${subdelegacionInfo?.nombre ? `\n\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}`;
-  await sendMessageAndSave(from, operatorText);
+  const waitingText = `👤 Solicitud enviada\n\nTe pusimos en *espera* para hablar con un operador humano.${subdelegacionInfo?.nombre ? `\n\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}\n\nApenas un operador tome tu consulta, te avisamos por este chat.`;
+  await sendMessageAndSave(from, waitingText);
 
-  const handoff = await derivarAHumano(from, motivo);
+  const handoff = await solicitarOperadorEnEspera(from, motivo);
   return {
-    derivado: true,
+    derivado: false,
     fueraHorario: false,
+    enEspera: true,
     ...handoff
   };
 };
@@ -435,7 +533,8 @@ const receiveMessage = async (req, res) => {
           let selectedOptionId = '';
           if (message.interactive.type === 'list_reply') {
             const rawTitle = message.interactive.list_reply.title || message.interactive.list_reply.id;
-            messageBody = (rawTitle || '').split('\n')[0].trim();
+            const rawDescription = message.interactive.list_reply.description || '';
+            messageBody = stripListSelectionDescription(rawTitle, rawDescription) || message.interactive.list_reply.id;
             selectedOptionId = message.interactive.list_reply.id;
           } else if (message.interactive.type === 'button_reply') {
             messageBody = message.interactive.button_reply.title || message.interactive.button_reply.id;
@@ -546,6 +645,15 @@ const receiveMessage = async (req, res) => {
             userStates[from].step = 'AWAITING_USER_NAME';
             userStates[from].namePromptSent = false;
           }
+        }
+
+        const estadoConversacion = String(cliente?.estado_conversacion || 'BOT').toUpperCase();
+        if (estadoConversacion === 'ESPERA_OPERADOR') {
+          userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+        } else if (estadoConversacion === 'ENCUESTA_POST_OPERADOR') {
+          userStates[from].step = 'AWAITING_OPERATOR_SURVEY';
+        } else if (estadoConversacion === 'FOLLOWUP_POST_OPERADOR') {
+          userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
         }
 
         // Procesar mensaje según el estado actual
@@ -744,11 +852,14 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       if (optionToProcess === 'op_si_operador') {
         // User wants to talk with operator
         const handoff = await intentarDerivarOperador(from, 'SCRAPER_ERROR_OPERATOR_CHOICE');
-        userStates[from].step = 'MAIN_MENU';
-        if (handoff.derivado) {
-          console.log(`👤 Usuario ${from} conectado con operador por error en scraper`);
-        } else {
+        if (handoff.enEspera) {
+          userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+          console.log(`👤 Usuario ${from} en espera de operador por error en scraper`);
+        } else if (handoff.fueraHorario) {
+          userStates[from].step = 'MAIN_MENU';
           console.log(`🕒 Fuera de horario de operador para ${from}`);
+        } else {
+          userStates[from].step = 'MAIN_MENU';
         }
       } else if (optionToProcess === 'op_no_operador') {
         // User wants to do another transaction
@@ -766,6 +877,18 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
         const invalidMsg = '❌ Opción no válida. Por favor, elige una de las opciones disponibles.';
         await sendMessageAndSave(from, invalidMsg);
       }
+      break;
+
+    case 'AWAITING_OPERATOR_ASSIGNMENT':
+      await handleOperatorWaitingInput(from, messageBody, optionToProcess);
+      break;
+
+    case 'AWAITING_OPERATOR_SURVEY':
+      await handleOperatorSurveyResponse(from, optionToProcess);
+      break;
+
+    case 'AWAITING_OPERATOR_FOLLOWUP':
+      await handleOperatorPostFollowUp(from, optionToProcess);
       break;
   }
 };
@@ -856,6 +979,16 @@ const sendMenuList = async (from, isFollowUp = false) => {
           id: 'turnos', 
           title: '🗓️ Consultar Turnos',
           description: 'Información sobre turnos disponibles'
+        }
+      ]
+    },
+    {
+      title: 'Ayuda y Soporte',
+      rows: [
+        {
+          id: 'operador',
+          title: '👤 Hablar con Operador',
+          description: 'Comunicate con un agente en vivo'
         }
       ]
     }
@@ -1214,9 +1347,11 @@ Por favor contactá a un operador para más información.`;
     case 'option_4':
     case 'operador': {
       const handoff = await intentarDerivarOperador(from, 'MAIN_MENU_OPERATOR');
-      if (handoff.derivado) {
-        console.log(`👤 Derivado a operador y bot pausado para ${from}`);
+      if (handoff.enEspera) {
+        userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+        console.log(`👤 Usuario ${from} en espera de operador`);
       } else {
+        userStates[from].step = 'MAIN_MENU';
         console.log(`🕒 Fuera de horario de operador para ${from}`);
       }
       break;
@@ -1391,8 +1526,16 @@ Te confirmaremos el turno por este medio 24hs antes.`;
       break;
 
     case 'auth_contact':
-      await intentarDerivarOperador(from, 'AUTH_MENU_OPERATOR');
-      console.log(`👤 Contacto con operador solicitado por ${from}`);
+      {
+        const handoff = await intentarDerivarOperador(from, 'AUTH_MENU_OPERATOR');
+        if (handoff.enEspera) {
+          userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+          console.log(`👤 Contacto con operador en espera para ${from}`);
+        } else {
+          userStates[from].step = 'MAIN_MENU';
+          console.log(`🕒 Fuera de horario de operador para ${from}`);
+        }
+      }
       break;
 
     case '4':
@@ -2069,8 +2212,9 @@ const buildActionFailedMessage = (actionLabel) => {
   return `❌ No se pudo ${actionLabel} en este momento.\n\nPor favor intentá nuevamente en unos minutos.`;
 };
 
-const buildTurnoLookupFailedMessage = (inputLabel) => {
-  return `❌ No se pudo consultar el turno en este momento.\n\nPodés reintentar ingresando ${inputLabel} nuevamente o escribir *volver*.`;
+const buildTurnoLookupFailedMessage = (inputLabel, detail = '') => {
+  const detailLine = detail ? `${detail}\n\n` : '';
+  return `❌ No se pudo consultar el turno.\n\n${detailLine}Podés reintentar ingresando ${inputLabel} nuevamente o escribir *volver*.`;
 };
 
 const formatInicioTurno = (data = {}) => {
@@ -2084,18 +2228,48 @@ const formatInicioTurno = (data = {}) => {
   return inicioTurno;
 };
 
+const resolveInspeccionContact = (inspeccion = '') => {
+  const normalized = normalizeSingleLine(inspeccion).toLowerCase();
+  if (!normalized) return TURNOS_CONTACTO_INSPECCION_DEFAULT;
+
+  for (const [key, contact] of Object.entries(TURNOS_CONTACTOS_POR_INSPECCION)) {
+    if (normalized.includes(key)) return contact;
+  }
+
+  return TURNOS_CONTACTO_INSPECCION_DEFAULT;
+};
+
 const buildTurnoResponse = ({ data = {}, titularFallback = 'No disponible', ccppFallback = 'No disponible', includeHijuela = true }) => {
+  const inspeccion = data.inspeccion || 'No disponible';
+  const titular = data.titular || titularFallback;
+  const hijuela = data.hijuela || 'No disponible';
+  const ccpp = data.ccpp || ccppFallback;
   const inicioTurnoFormato = formatInicioTurno(data);
   const finTurnoFormato = data.finTurno || 'No disponible';
-  const encabezado = data.restringido ? '🚫 *Estado del turno: RESTRINGIDO*\n\n' : '';
-  const hijuelaLine = includeHijuela ? `\n• Hijuela: ${data.hijuela || 'No disponible'}` : '';
 
-  return `${encabezado}✅ *Turno encontrado*\n\n` +
-    `• Inspección de cauce: ${data.inspeccion || 'No disponible'}${hijuelaLine}\n` +
-    `• C.C.-P.P.: ${data.ccpp || ccppFallback}\n` +
-    `• Titular: ${data.titular || titularFallback}\n` +
+  if (data.restringido) {
+    const contactoInspeccion = resolveInspeccionContact(inspeccion);
+    const hijuelaLine = includeHijuela ? `\n• Hijuela: ${hijuela}` : '';
+
+    return `🚫 *Estado del turno: RESTRINGIDO*\n\n` +
+      `⚠️ El turno figura como restringido para este servicio.\n\n` +
+      `• Titular: ${titular}\n` +
+      `• Inspección de cauce: ${inspeccion}${hijuelaLine}\n\n` +
+      `Si creés que es un error, comunicate con la inspección de cauce:\n` +
+      `📞/✉️ ${contactoInspeccion}`;
+  }
+
+  const tomero1 = data.telAmaya || 'No disponible';
+  const tomero2 = data.telContreras || 'No disponible';
+
+  return `✅ *Turno encontrado*\n\n` +
+    `• Inspección de cauce: ${inspeccion}${includeHijuela ? `\n• Hijuela: ${hijuela}` : ''}\n` +
+    `• C.C.-P.P.: ${ccpp}\n` +
+    `• Titular: ${titular}\n` +
     `• Inicio de turno: ${inicioTurnoFormato}\n` +
-    `• Fin de turno: ${finTurnoFormato}`;
+    `• Fin de turno: ${finTurnoFormato}\n` +
+    `• Tomero 1: ${tomero1}\n` +
+    `• Tomero 2: ${tomero2}`;
 };
 
 /**
@@ -2781,7 +2955,10 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     }
     
     if (!resultado.success) {
-      await sendMessageAndSave(from, resultado.userMessage || buildActionFailedMessage('consultar la deuda del servicio'));
+      await sendMessageAndSave(
+        from,
+        getServiceErrorMessage(resultado, buildActionFailedMessage('consultar la deuda del servicio'))
+      );
       await sendMenuList(from, true);
       userStates[from].step = 'MAIN_MENU';
       return;
@@ -2869,7 +3046,10 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     }
     
     if (!resultado.success) {
-      await sendMessageAndSave(from, buildActionFailedMessage('generar el boleto del servicio'));
+      await sendMessageAndSave(
+        from,
+        getServiceErrorMessage(resultado, buildActionFailedMessage('generar el boleto del servicio'))
+      );
       await sendMenuList(from, true);
       return;
     }
@@ -3093,7 +3273,10 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
         );
 
         if (!resultado.success) {
-          await sendMessageAndSave(from, buildActionFailedMessage('obtener el enlace de pago del boleto'));
+          await sendMessageAndSave(
+            from,
+            getServiceErrorMessage(resultado, buildActionFailedMessage('obtener el enlace de pago del boleto'))
+          );
           await sendMenuList(from, true);
           userStates[from].step = 'MAIN_MENU';
           return;
@@ -3182,8 +3365,8 @@ Para más información y requisitos, visitá:
 const handlePerforacionHelpChoice = async (from, optionToProcess) => {
   try {
     if (optionToProcess === 'perforacion_ayuda_si') {
-      await intentarDerivarOperador(from, 'PERFORACION_HELP');
-      userStates[from].step = 'MAIN_MENU';
+      const handoff = await intentarDerivarOperador(from, 'PERFORACION_HELP');
+      userStates[from].step = handoff.enEspera ? 'AWAITING_OPERATOR_ASSIGNMENT' : 'MAIN_MENU';
       return;
     }
 
@@ -3195,6 +3378,87 @@ const handlePerforacionHelpChoice = async (from, optionToProcess) => {
     await sendMenuList(from, true);
     userStates[from].step = 'MAIN_MENU';
   }
+};
+
+const handleOperatorWaitingInput = async (from, messageBody = '', optionToProcess = '') => {
+  const normalized = String(optionToProcess || messageBody || '').trim().toLowerCase();
+  if (normalized === 'salir' || normalized === 'cancelar' || normalized === 'menu' || normalized === 'volver') {
+    await clienteService.actualizarEstadoConversacion(from, 'BOT');
+    const ticketCerrado = await clienteService.cerrarTicketHumano(from, 'CANCELADO_USUARIO_EN_ESPERA');
+    await emitToTenantRoom(from, 'bot_mode_changed', {
+      telefono: from,
+      bot_activo: true,
+      estado_conversacion: 'BOT',
+      ticket_id: ticketCerrado?.id || null
+    });
+    await sendMessageAndSave(from, '✅ Cancelamos la espera para hablar con operador.');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  const waitingReminder = '🕒 Tu solicitud sigue en espera. En cuanto un operador la tome, te vamos a avisar por acá.\n\nSi preferís volver al bot, escribí *SALIR*.';
+  await sendMessageAndSave(from, waitingReminder);
+  userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+};
+
+const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
+  const validOptions = new Set([
+    'op_satisfaccion_1',
+    'op_satisfaccion_2',
+    'op_satisfaccion_3',
+    'op_satisfaccion_4',
+    'op_satisfaccion_5'
+  ]);
+
+  if (!validOptions.has(optionToProcess)) {
+    await sendMessageAndSave(from, '🙏 Por favor elegí una opción de la encuesta usando los botones.');
+    return;
+  }
+
+  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
+
+  await sendMessageAndSave(from, '¡Gracias por tu respuesta! 🙌');
+  await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
+    { id: 'op_mas_ayuda_si', title: '✅ Sí' },
+    { id: 'op_mas_ayuda_no', title: '❌ No' }
+  ]);
+
+  userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
+};
+
+const handleOperatorPostFollowUp = async (from, optionToProcess = '') => {
+  if (optionToProcess === 'op_mas_ayuda_si') {
+    await clienteService.actualizarEstadoConversacion(from, 'BOT');
+    await sendMenuList(from, true);
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  if (optionToProcess === 'op_mas_ayuda_no') {
+    await clienteService.actualizarEstadoConversacion(from, 'BOT');
+    await sendMessageAndSave(from, 'Perfecto. Gracias por comunicarte con nosotros. ¡Que tengas un gran día! 👋');
+    userStates[from].step = 'MAIN_MENU';
+    return;
+  }
+
+  await sendMessageAndSave(from, 'Por favor elegí una opción: *Sí* o *No*.');
+};
+
+const logTurnoSource = (from, context, result = {}) => {
+  const source = result?.source || 'unknown';
+  const success = Boolean(result?.success);
+  const hasData = Boolean(result?.data);
+  const reason = result?.message || result?.error || result?.userMessage || null;
+
+  console.log('🧭 [TURNOS][SOURCE]', {
+    telefono: from,
+    contexto: context,
+    source,
+    success,
+    hasData,
+    reason
+  });
 };
 
 const buscarTurnoPorTitularApiFirst = async (titular) => {
@@ -3242,7 +3506,10 @@ const buscarTurnoPorTitularApiFirst = async (titular) => {
   }
 
   const fallback = await turnadoScraperService.buscarPorTitular(titularBusqueda);
-  return fallback;
+  return {
+    ...fallback,
+    source: 'scraper-fallback'
+  };
 };
 
 const resolverTurnoTitularDesdeOpcion = async (titularBusqueda, opcionSeleccionada) => {
@@ -3269,7 +3536,11 @@ const resolverTurnoTitularDesdeOpcion = async (titularBusqueda, opcionSelecciona
     console.log(`⚠️ API detalle por CCPP falló para ${ccppSeleccionado}, activando fallback scraping por titular`);
   }
 
-  return turnadoScraperService.buscarPorTitular(titularBusqueda);
+  const fallback = await turnadoScraperService.buscarPorTitular(titularBusqueda);
+  return {
+    ...fallback,
+    source: 'scraper-fallback'
+  };
 };
 
 /**
@@ -3283,6 +3554,7 @@ const handleTurnoTitularChoice = async (from, option) => {
     await sendMessageAndSave(from, `🔎 Buscando turno con: *${lastTitular}*...`);
 
     const result = await buscarTurnoPorTitularApiFirst(lastTitular);
+    logTurnoSource(from, 'titular/usar_ultimo', result);
 
     if (result.multiple) {
       const opciones = (result.opciones || []).slice(0, 10);
@@ -3306,13 +3578,20 @@ const handleTurnoTitularChoice = async (from, option) => {
     }
     
     if (!result.success) {
-      const errorMsg = buildTurnoLookupFailedMessage('el titular');
+      const errorMsg = buildTurnoLookupFailedMessage('el titular', getServiceErrorMessage(result, 'No encontramos turnos para ese titular.'));
       await sendMessageAndSave(from, errorMsg);
       userStates[from].step = 'AWAITING_TURNO_TITULAR';
       return;
     }
     
     const data = result.data || {};
+    if (!hasUsableTurnoData(data)) {
+      const noDataMsg = buildTurnoLookupFailedMessage('el titular', 'No encontramos datos de turno para ese titular.');
+      await sendMessageAndSave(from, noDataMsg);
+      userStates[from].step = 'AWAITING_TURNO_TITULAR';
+      return;
+    }
+
     userStates[from].lastTurnoMode = 'titular';
     const response = buildTurnoResponse({
       data,
@@ -3362,23 +3641,35 @@ const handleTurnoCCPPChoice = async (from, option) => {
     // Intentar API primero
     console.log(`🧭 [FLOW] Turno por CCPP (usar_ultimo): intentando API directa para ${lastCCPP}`);
     let result = await turnadoApiService.obtenerDetalleTurnoCompleto(lastCCPP);
+    let source = 'api-direct';
     
     // Si API falla, fallback a scraper
     if (!result.success) {
       console.log(`⚠️ API de turno falló para ${lastCCPP}, activando fallback scraping`);
       result = await turnadoScraperService.buscarPorCCPP(lastCCPP);
+      source = 'scraper-fallback';
     } else {
       console.log(`✅ [FLOW] Turno por CCPP (usar_ultimo) resuelta por API directa`);
     }
+
+    result = { ...result, source };
+    logTurnoSource(from, 'ccpp/usar_ultimo', result);
     
     if (!result.success) {
-      const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.');
+      const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.', getServiceErrorMessage(result, 'No encontramos turnos para ese servicio.'));
       await sendMessageAndSave(from, errorMsg);
       userStates[from].step = 'AWAITING_TURNO_CCPP';
       return;
     }
     
     const data = result.data || {};
+    if (!hasUsableTurnoData(data)) {
+      const noDataMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.', 'No encontramos datos de turno para ese servicio.');
+      await sendMessageAndSave(from, noDataMsg);
+      userStates[from].step = 'AWAITING_TURNO_CCPP';
+      return;
+    }
+
     userStates[from].lastTurnoMode = 'ccpp';
     const response = buildTurnoResponse({
       data,
@@ -3598,6 +3889,7 @@ const handleTurnoTitularInput = async (from, messageBody) => {
   await sendMessageAndSave(from, '🔎 Buscando turno, un momento por favor...');
 
   const result = await buscarTurnoPorTitularApiFirst(raw);
+  logTurnoSource(from, 'titular/nuevo', result);
 
   if (result.multiple) {
     const opciones = (result.opciones || []).slice(0, 10);
@@ -3621,12 +3913,18 @@ const handleTurnoTitularInput = async (from, messageBody) => {
   }
 
   if (!result.success) {
-    const errorMsg = buildTurnoLookupFailedMessage('el titular');
+    const errorMsg = buildTurnoLookupFailedMessage('el titular', getServiceErrorMessage(result, 'No encontramos turnos para ese titular.'));
     await sendMessageAndSave(from, errorMsg);
     return;
   }
 
   const data = result.data || {};
+  if (!hasUsableTurnoData(data)) {
+    const noDataMsg = buildTurnoLookupFailedMessage('el titular', 'No encontramos datos de turno para ese titular.');
+    await sendMessageAndSave(from, noDataMsg);
+    return;
+  }
+
   userStates[from].lastTurnoMode = 'titular';
   const response = buildTurnoResponse({
     data,
@@ -3669,15 +3967,23 @@ const handleTurnoTitularApiOptionInput = async (from, messageBody) => {
 
   const opcionSeleccionada = opciones[index - 1];
   const result = await resolverTurnoTitularDesdeOpcion(titularBusqueda, opcionSeleccionada);
+  logTurnoSource(from, 'titular/opcion_api', result);
 
   if (!result.success) {
-    const errorMsg = buildTurnoLookupFailedMessage('el titular');
+    const errorMsg = buildTurnoLookupFailedMessage('el titular', getServiceErrorMessage(result, 'No encontramos turnos para ese titular.'));
     await sendMessageAndSave(from, errorMsg);
     userStates[from].step = 'AWAITING_TURNO_TITULAR';
     return;
   }
 
   const data = result.data || {};
+  if (!hasUsableTurnoData(data)) {
+    const noDataMsg = buildTurnoLookupFailedMessage('el titular', 'No encontramos datos de turno para ese titular.');
+    await sendMessageAndSave(from, noDataMsg);
+    userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    return;
+  }
+
   userStates[from].lastTurnoMode = 'titular';
   if (data.ccpp) {
     userStates[from].lastCCPP = data.ccpp;
@@ -3763,22 +4069,33 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
   // Intentar API primero
   console.log(`🧭 [FLOW] Turno por CCPP: intentando API directa primero para ${normalized}`);
   let result = await turnadoApiService.obtenerDetalleTurnoCompleto(normalized);
+  let source = 'api-direct';
 
   // Si API falla, fallback a scraper
   if (!result.success) {
     console.log(`⚠️ API de turno falló para ${normalized}, activando fallback scraping`);
     result = await turnadoScraperService.buscarPorCCPP(normalized);
+    source = 'scraper-fallback';
   } else {
     console.log(`✅ [FLOW] Turno por CCPP resuelta por API directa`);
   }
 
+  result = { ...result, source };
+  logTurnoSource(from, 'ccpp/nuevo', result);
+
   if (!result.success) {
-    const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.');
+    const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.', getServiceErrorMessage(result, 'No encontramos turnos para ese servicio.'));
     await sendMessageAndSave(from, errorMsg);
     return;
   }
 
   const data = result.data || {};
+  if (!hasUsableTurnoData(data)) {
+    const noDataMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.', 'No encontramos datos de turno para ese servicio.');
+    await sendMessageAndSave(from, noDataMsg);
+    return;
+  }
+
   userStates[from].lastTurnoMode = 'ccpp';
   const response = buildTurnoResponse({
     data,
