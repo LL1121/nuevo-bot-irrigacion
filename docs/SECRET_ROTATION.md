@@ -160,10 +160,9 @@ La rotación periódica de secretos es crítica para mantener la seguridad del s
    node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
    ```
 
-2. **Actualizar en MySQL:**
+2. **Actualizar en PostgreSQL:**
    ```sql
-   ALTER USER 'bot_irrigacion'@'%' IDENTIFIED BY 'nueva_contraseña_segura';
-   FLUSH PRIVILEGES;
+   ALTER USER bot_irrigacion_app WITH PASSWORD 'nueva_contraseña_segura';
    ```
 
 3. **Actualizar en GitHub Secrets:**

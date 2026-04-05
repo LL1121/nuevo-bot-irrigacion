@@ -11,7 +11,7 @@ const { run, runInTransaction } = require('../config/db');
  */
 
 /**
- * Ejecutar una función dentro de una transacción SQLite
+ * Ejecutar una función dentro de una transacción PostgreSQL
  * Si algo falla, todo se revierte automáticamente
  * 
  * @param {Function} callback - Función que contiene las operaciones

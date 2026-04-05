@@ -141,16 +141,35 @@ export default defineConfig({
     // Split chunks for better caching: vendor libs separate from app code
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
-          'vendor-ui': [
-            '@radix-ui/react-dialog',
-            '@radix-ui/react-dropdown-menu',
-            '@radix-ui/react-tabs',
-            '@radix-ui/react-popover'
-          ],
-          'vendor-utils': ['axios', 'socket.io-client', 'date-fns'],
-          'vendor-emoji': ['emoji-picker-react']
+        manualChunks: (id: string) => {
+          if (!id.includes('node_modules')) return undefined
+
+          if (id.includes('/react/') || id.includes('/react-dom/')) {
+            return 'vendor-react'
+          }
+
+          if (
+            id.includes('/@radix-ui/react-dialog/') ||
+            id.includes('/@radix-ui/react-dropdown-menu/') ||
+            id.includes('/@radix-ui/react-tabs/') ||
+            id.includes('/@radix-ui/react-popover/')
+          ) {
+            return 'vendor-ui'
+          }
+
+          if (
+            id.includes('/axios/') ||
+            id.includes('/socket.io-client/') ||
+            id.includes('/date-fns/')
+          ) {
+            return 'vendor-utils'
+          }
+
+          if (id.includes('/emoji-picker-react/')) {
+            return 'vendor-emoji'
+          }
+
+          return undefined
         }
       }
     },

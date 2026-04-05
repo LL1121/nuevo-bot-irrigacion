@@ -24,7 +24,7 @@ Este directorio contiene los tests automatizados para verificar que las optimiza
 ### ⚠️ Tests de Integración (Requieren Configuración)
 
 4. **database.test.js** (⚠️ Requiere BD configurada)
-   - Verifica pool de conexiones MySQL
+   - Verifica pool de conexiones PostgreSQL
    - Necesita credenciales válidas de base de datos
    - Duración: ~6 segundos
 
@@ -84,13 +84,10 @@ Si quieres ejecutar `database.test.js`, necesitas:
 
 2. **O usar las credenciales de `.env` existente** (cuidado con BD de producción)
 
-3. **Asegurarse de que MySQL esté corriendo**:
+3. **Asegurarse de que PostgreSQL esté corriendo**:
    ```bash
-   # Windows
-   net start MySQL80
-   
-   # O verificar que esté corriendo
-   mysql -u root -p
+   # Verificar conexión local
+   psql -h localhost -U bot_irrigacion_app -d bot_irrigacion_prod -c "SELECT 1;"
    ```
 
 Para omitir estos tests si no tienes BD:
