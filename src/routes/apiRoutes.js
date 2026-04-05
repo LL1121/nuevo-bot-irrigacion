@@ -47,6 +47,7 @@ const { operatorRateLimiter } = require('../middlewares/rateLimiters');
  */
 // Login (sin protección)
 router.post('/auth/login', authController.login);
+router.get('/auth/me', verifyToken, authController.me);
 
 /**
  * @swagger
@@ -190,6 +191,8 @@ router.get('/stats', verifyToken, apiController.obtenerEstadisticas);
 
 // Tickets abiertos de la subdelegación del operador autenticado
 router.get('/tickets', verifyToken, apiController.listarTickets);
+router.post('/tickets/:phone/accept', verifyToken, operatorRateLimiter, validate(phoneSchema, 'params'), apiController.aceptarTicketOperador);
+router.post('/tickets/:phone/complete', verifyToken, operatorRateLimiter, validate(phoneSchema, 'params'), apiController.finalizarTicketOperador);
 
 /**
  * @swagger

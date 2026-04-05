@@ -3,6 +3,8 @@ const cheerio = require('cheerio');
 
 const BASE_URL_TURNADO = 'https://irrigacionmalargue.com/login_g/turno.php';
 const TURNADO_API_DEBUG = process.env.TURNADO_API_DEBUG === 'true' || process.env.NODE_ENV !== 'production';
+const TURNADO_API_RETRY_ATTEMPTS = Math.max(1, Number(process.env.TURNADO_API_RETRY_ATTEMPTS || 3));
+const TURNADO_API_RETRY_BASE_MS = Math.max(100, Number(process.env.TURNADO_API_RETRY_BASE_MS || 800));
 
 function buildFormBody(payload) {
   const params = new URLSearchParams();
@@ -12,20 +14,67 @@ function buildFormBody(payload) {
   return params.toString();
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableTurnadoError(error) {
+  const status = error?.response?.status;
+  const code = String(error?.code || '').toUpperCase();
+
+  if (status && status >= 500) return true;
+  if (status === 429 || status === 408) return true;
+
+  return [
+    'ECONNRESET',
+    'ECONNABORTED',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'ENOTFOUND',
+    'EPIPE'
+  ].includes(code);
+}
+
 async function postTurnadoForm(payload, extraConfig = {}) {
-  return axios.post(
-    BASE_URL_TURNADO,
-    buildFormBody(payload),
-    {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      timeout: 25000,
-      maxRedirects: 5,
-      ...extraConfig
+  const requestConfig = {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    },
+    timeout: 25000,
+    maxRedirects: 5,
+    ...extraConfig
+  };
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= TURNADO_API_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await axios.post(BASE_URL_TURNADO, buildFormBody(payload), requestConfig);
+    } catch (error) {
+      lastError = error;
+      const retryable = isRetryableTurnadoError(error);
+      const isLastAttempt = attempt >= TURNADO_API_RETRY_ATTEMPTS;
+
+      debugLog('Error POST turnado', {
+        attempt,
+        status: error?.response?.status || null,
+        code: error?.code || null,
+        message: error?.message || 'unknown',
+        retryable,
+        isLastAttempt
+      });
+
+      if (!retryable || isLastAttempt) {
+        throw error;
+      }
+
+      const waitMs = TURNADO_API_RETRY_BASE_MS * attempt;
+      await delay(waitMs);
     }
-  );
+  }
+
+  throw lastError || new Error('No se pudo completar la solicitud al sistema de turnos.');
 }
 
 function debugLog(message, data) {
@@ -58,6 +107,50 @@ function cleanInlineText(value) {
     .trim();
 }
 
+function parseCanalHijuela(value) {
+  const text = cleanInlineText(value);
+  const canalMatch = text.match(/Canal:\s*([^]+?)(?=\s+Hijuela:|$)/i);
+  const hijuelaMatch = text.match(/Hijuela:\s*([^]+?)$/i);
+
+  return {
+    canal: cleanInlineText(canalMatch?.[1] || ''),
+    hijuela: cleanInlineText(hijuelaMatch?.[1] || '')
+  };
+}
+
+function parseFechaDesdeTextoCard(value, label) {
+  const text = cleanInlineText(value);
+  if (!text) return '';
+
+  const regex = new RegExp(`${label}\\s*turno:\\s*([^]+)$`, 'i');
+  const match = text.match(regex);
+  return cleanInlineText(match?.[1] || text);
+}
+
+function isUnavailableValue(value) {
+  const normalized = cleanInlineText(value).toLowerCase();
+  if (!normalized) return true;
+  return normalized === 'no disponible' || normalized === 'n/a' || normalized === 'null' || normalized === '-';
+}
+
+function hasUsableTurnoDetail(data) {
+  if (!data || typeof data !== 'object') return false;
+
+  const checks = [
+    data.titular,
+    data.hijuela,
+    data.inicioTurno,
+    data.finTurno,
+    data.inspeccion
+  ];
+
+  return checks.some((value) => !isUnavailableValue(value));
+}
+
+function pickBestValue(primary, fallback) {
+  return isUnavailableValue(primary) ? fallback : primary;
+}
+
 function buildPayloadBusquedaTurnos(tipoBusqueda, valor) {
   const tipo = String(tipoBusqueda || '').trim().toLowerCase();
   const valorNormalizado = String(valor || '').trim();
@@ -81,8 +174,7 @@ function buildPayloadBusquedaTurnos(tipoBusqueda, valor) {
     return {
       payload: {
         buscar_titular: valorNormalizado,
-        boton: 'Buscar',
-        btitular: 'Buscar'
+        bccpp: 'Buscar'
       }
     };
   }
@@ -114,12 +206,29 @@ function extraerOpcionesTurnosDesdeHtml(html) {
       .first()
       .text();
 
+    const inicioRaw = $form
+      .find('.planilla_grid_selection_tom1 .planillas_info-title')
+      .first()
+      .text();
+
+    const finRaw = $form
+      .find('.planilla_grid_selection_tom1 .planillas_info-title')
+      .last()
+      .text();
+
+    const submitInput = $form.find('input[type="submit"]').first();
+    const submitName = cleanInlineText(submitInput.attr('name'));
+    const submitValue = cleanInlineText(submitInput.val());
+
     const idHijuelaOculto = cleanInlineText($form.find('input[name="idhijselecionada"]').val());
     const ccppOculto = cleanInlineText($form.find('input[name="ccpp_seleccionado"]').val());
 
     const titular = cleanInlineText(titularRaw).replace(/^Titular:\s*/i, '').trim();
     const ccpp = cleanInlineText(ccppRaw).replace(/^CC-PP:\s*/i, '').trim();
     const canalHijuela = cleanInlineText(canalHijuelaRaw);
+    const { canal, hijuela } = parseCanalHijuela(canalHijuela);
+    const inicioTurnoCard = parseFechaDesdeTextoCard(inicioRaw, 'inicio');
+    const finTurnoCard = parseFechaDesdeTextoCard(finRaw, 'fin');
 
     if (!titular && !ccpp && !canalHijuela && !idHijuelaOculto && !ccppOculto) {
       return;
@@ -129,12 +238,38 @@ function extraerOpcionesTurnosDesdeHtml(html) {
       titular,
       ccpp,
       canal_hijuela: canalHijuela,
+      canal,
+      hijuela,
+      inicio_turno_card: inicioTurnoCard,
+      fin_turno_card: finTurnoCard,
+      submit_name: submitName,
+      submit_value: submitValue,
       id_hijuela_oculto: idHijuelaOculto,
       ccpp_oculto: ccppOculto
     });
   });
 
   return resultados;
+}
+
+function diagnosticarRespuestaTurnos(html) {
+  const rawHtml = String(html || '');
+  const $ = cheerio.load(rawHtml);
+
+  const formsGlobal = $('form').length;
+  const formsSelectorLegacy = $('.planillas_info-grid-selection-container form').length;
+  const hasListadoTitle = /Listado\s+de\s+turnos\s+para/i.test(rawHtml);
+  const hasNoResultText = /No\s+se\s+encontr|sin\s+resultados|no\s+existe/i.test(rawHtml);
+  const hasSelectionCssOnly = /planillas_info-grid-selection-container/i.test(rawHtml);
+
+  return {
+    htmlLength: rawHtml.length,
+    formsGlobal,
+    formsSelectorLegacy,
+    hasListadoTitle,
+    hasNoResultText,
+    hasSelectionCssOnly
+  };
 }
 
 async function buscarTurnos(tipoBusqueda, valor) {
@@ -153,12 +288,21 @@ async function buscarTurnos(tipoBusqueda, valor) {
     });
 
     const response = await postTurnadoForm(config.payload);
-    const resultados = extraerOpcionesTurnosDesdeHtml(response.data);
+    const html = response.data;
+    const resultados = extraerOpcionesTurnosDesdeHtml(html);
 
     if (!resultados.length) {
+      const diag = diagnosticarRespuestaTurnos(html);
+      debugLog('Diagnóstico HTML sin resultados parseables', diag);
+
+      const parserMismatchLikely = diag.hasListadoTitle && !diag.hasNoResultText && diag.formsSelectorLegacy === 0;
+
       return {
         success: false,
-        message: 'No se encontraron turnos para esta búsqueda.'
+        message: parserMismatchLikely
+          ? 'La respuesta del sitio cambió de formato y no se pudo interpretar por API.'
+          : 'No se encontraron turnos para esta búsqueda.',
+        diagnostic: diag
       };
     }
 
@@ -201,10 +345,20 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
     const listadoCcpp = await buscarTurnos('ccpp', ccpp);
     if (!listadoCcpp.success || !Array.isArray(listadoCcpp.resultados) || !listadoCcpp.resultados.length) {
       debugLog('Paso 1 sin resultados para CCPP', { ccpp, message: listadoCcpp.message });
+
+      const listadoMessage = String(listadoCcpp.message || '');
+      const parserMismatch = listadoMessage === 'La respuesta del sitio cambió de formato y no se pudo interpretar por API.';
+      const upstreamFailure = /no\s+se\s+pudieron\s+consultar/i.test(listadoMessage) || /error\s+de\s+red/i.test(String(listadoCcpp.error || ''));
+
       return {
         success: false,
         error: listadoCcpp.message || 'No se encontraron opciones de turno para ese CCPP.',
-        userMessage: '✅ No se encontró turno para ese padrón. Verificá el número de servicio.'
+        userMessage: parserMismatch
+          ? '⚠️ El sistema de consulta de turnos cambió su formato y no se pudo leer por request. Reintentamos automáticamente por scraping.'
+          : upstreamFailure
+            ? '❌ El sistema de turnos no respondió en este momento. Intentá nuevamente en unos minutos.'
+            : '✅ No se encontró turno para ese padrón. Verificá el número de servicio.',
+        diagnostic: listadoCcpp.diagnostic || null
       };
     }
 
@@ -217,6 +371,21 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
 
     const idhijuela = cleanInlineText(opcion?.id_hijuela_oculto);
     const ccppSeleccionado = cleanInlineText(opcion?.ccpp_oculto || opcion?.ccpp || ccpp);
+    const submitName = cleanInlineText(opcion?.submit_name);
+    const submitValue = cleanInlineText(opcion?.submit_value);
+
+    const fallbackFromCard = {
+      inspeccion: cleanInlineText(opcion?.canal) || cleanInlineText(opcion?.canal_hijuela) || 'No disponible',
+      titular: cleanInlineText(opcion?.titular) || 'No disponible',
+      hijuela: cleanInlineText(opcion?.hijuela) || 'No disponible',
+      ccpp: ccppSeleccionado || ccpp,
+      inicioTurno: cleanInlineText(opcion?.inicio_turno_card) || 'No disponible',
+      finTurno: cleanInlineText(opcion?.fin_turno_card) || 'No disponible',
+      fechaInicioCompleta: cleanInlineText(opcion?.inicio_turno_card) || null,
+      restringido: false,
+      telAmaya: 'No disponible',
+      telContreras: 'No disponible'
+    };
 
     if (!idhijuela) {
       debugLog('Error: idhijuela no encontrado en respuesta');
@@ -235,6 +404,9 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
     const step2Payload = { idhijselecionada: idhijuela };
     if (ccppSeleccionado) {
       step2Payload.ccpp_seleccionado = ccppSeleccionado;
+    }
+    if (submitName) {
+      step2Payload[submitName] = submitValue || 'Buscar';
     }
 
     const step2Response = await postTurnadoForm(
@@ -256,7 +428,7 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
     let hijuela = 'No disponible';
     const hijuelaElement = $h('.planilla_grid_hijuela_turno').first();
     if (hijuelaElement.length > 0) {
-      hijuela = hijuelaElement.text().trim();
+      hijuela = hijuelaElement.text().trim().replace(/^Hijuela:\s*/i, '').trim();
     }
     debugLog('Hijuela extraído', { hijuela });
 
@@ -352,20 +524,41 @@ async function obtenerDetalleTurnoCompleto(ccpp) {
       ? `${fechaInicio}${horaInicio ? ` ${horaInicio}` : ''}`.trim()
       : null;
 
+    const parsedData = {
+      inspeccion: inspeccion || 'No disponible',
+      titular,
+      hijuela: hijuela || 'No disponible',
+      ccpp: ccppExtracted,
+      inicioTurno,
+      finTurno,
+      fechaInicioCompleta,
+      restringido,
+      telAmaya: tomeros.amaya.telefono,
+      telContreras: tomeros.contreras.telefono
+    };
+
+    const parsedIsUsable = hasUsableTurnoDetail(parsedData);
+    const dataFinal = parsedIsUsable
+      ? {
+          ...parsedData,
+          inspeccion: pickBestValue(parsedData.inspeccion, fallbackFromCard.inspeccion),
+          titular: pickBestValue(parsedData.titular, fallbackFromCard.titular),
+          hijuela: pickBestValue(parsedData.hijuela, fallbackFromCard.hijuela),
+          ccpp: pickBestValue(parsedData.ccpp, fallbackFromCard.ccpp),
+          inicioTurno: pickBestValue(parsedData.inicioTurno, fallbackFromCard.inicioTurno),
+          finTurno: pickBestValue(parsedData.finTurno, fallbackFromCard.finTurno),
+          fechaInicioCompleta: pickBestValue(parsedData.fechaInicioCompleta, fallbackFromCard.fechaInicioCompleta),
+          telAmaya: pickBestValue(parsedData.telAmaya, fallbackFromCard.telAmaya),
+          telContreras: pickBestValue(parsedData.telContreras, fallbackFromCard.telContreras)
+        }
+      : fallbackFromCard;
+
+    const parseMode = parsedIsUsable ? 'step2-html+step1-merge' : 'step1-card-fallback';
+
     const resultado = {
       success: true,
-      data: {
-        inspeccion: inspeccion || 'No disponible',
-        titular,
-        hijuela: hijuela || 'No disponible',
-        ccpp: ccppExtracted,
-        inicioTurno,
-        finTurno,
-        fechaInicioCompleta,
-        restringido,
-        telAmaya: tomeros.amaya.telefono,
-        telContreras: tomeros.contreras.telefono
-      },
+      data: dataFinal,
+      parseMode,
       source: 'api-direct'
     };
 
