@@ -86,6 +86,9 @@ async function createPostgresSchema() {
       subdelegacion_id INTEGER REFERENCES subdelegaciones(id),
       estado TEXT NOT NULL DEFAULT 'ABIERTO',
       motivo TEXT,
+      assigned_operator_id INTEGER,
+      assigned_operator_username TEXT,
+      assigned_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       closed_at TIMESTAMP
@@ -152,6 +155,7 @@ async function createPostgresSchema() {
     `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_cliente ON tickets(cliente_telefono, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_estado ON tickets(estado)`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_assigned_operator ON tickets(assigned_operator_id, estado)`,
     `CREATE INDEX IF NOT EXISTS idx_horarios_lookup ON horarios_atencion(subdelegacion_id, dia_semana, habilitado)`,
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
     `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
@@ -177,7 +181,10 @@ async function createPostgresSchema() {
     `ALTER TABLE clientes ADD COLUMN IF NOT EXISTS ultima_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
     `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS leido INTEGER DEFAULT 0`,
     `ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS message_id TEXT`,
-    `ALTER TABLE operadores ADD COLUMN IF NOT EXISTS subdelegacion_id INTEGER`
+    `ALTER TABLE operadores ADD COLUMN IF NOT EXISTS subdelegacion_id INTEGER`,
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_operator_id INTEGER`,
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_operator_username TEXT`,
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP`
   ];
 
   for (const sql of statements) {

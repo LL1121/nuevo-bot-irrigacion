@@ -18,6 +18,100 @@ const emitToTenantRoom = async (phone, eventName, payload) => {
   }
 };
 
+const emitMessageToFrontend = (mensajeGuardado, telefono, cuerpo, tipo = 'text', extra = {}) => {
+  if (!global.io || !mensajeGuardado?.id) return;
+
+  global.io.emit('nuevo_mensaje', {
+    id: mensajeGuardado.id,
+    telefono,
+    mensaje: cuerpo,
+    emisor: extra.emisor || 'bot',
+    tipo,
+    timestamp: mensajeGuardado.fecha,
+    ...extra
+  });
+};
+
+const sendTextAndSave = async (telefono, texto, emisor = 'bot') => {
+  await whatsappService.sendMessage(telefono, texto);
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono,
+    tipo: 'text',
+    cuerpo: texto,
+    url_archivo: null,
+    emisor
+  });
+
+  emitMessageToFrontend(mensajeGuardado, telefono, texto, 'text', { emisor });
+  return mensajeGuardado;
+};
+
+const sendButtonsAndSave = async (telefono, body, buttons) => {
+  await whatsappService.sendButtonReply(telefono, body, buttons);
+
+  const payload = {
+    type: 'interactive_buttons',
+    body,
+    buttons
+  };
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(payload),
+    url_archivo: null,
+    emisor: 'bot'
+  });
+
+  emitMessageToFrontend(mensajeGuardado, telefono, JSON.stringify(payload), 'interactive', { emisor: 'bot' });
+  return mensajeGuardado;
+};
+
+const sendListAndSave = async (telefono, header, body, buttonText, sections) => {
+  await whatsappService.sendInteractiveList(telefono, header, body, buttonText, sections);
+
+  const payload = {
+    type: 'interactive_list',
+    header,
+    body,
+    buttonText,
+    sections
+  };
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(payload),
+    url_archivo: null,
+    emisor: 'bot'
+  });
+
+  emitMessageToFrontend(mensajeGuardado, telefono, JSON.stringify(payload), 'interactive', { emisor: 'bot' });
+  return mensajeGuardado;
+};
+
+const resolveOperatorSubdelegacionId = async (user = {}) => {
+  if (user?.subdelegacion_id) {
+    return Number(user.subdelegacion_id);
+  }
+
+  if (!user?.id && !user?.username && !user?.email) {
+    return null;
+  }
+
+  const { get } = require('../config/db');
+  const operador = await get(
+    `SELECT id, subdelegacion_id
+     FROM operadores
+     WHERE id = ? OR username = ? OR email = ?
+     LIMIT 1`,
+    [user.id || null, user.username || null, user.email || null]
+  );
+
+  return operador?.subdelegacion_id ? Number(operador.subdelegacion_id) : null;
+};
+
 /**
  * Lista todas las conversaciones activas (chats)
  */
@@ -321,7 +415,19 @@ const activarBot = async (req, res) => {
 
 const listarTickets = async (req, res) => {
   try {
-    const subdelegacionId = req.user?.subdelegacion_id;
+    const role = String(req.user?.role || '').toLowerCase();
+
+    if (role === 'admin') {
+      const tickets = await clienteService.listarTicketsEnEspera();
+      return res.json({
+        success: true,
+        tickets,
+        total: tickets.length,
+        scope: 'all_waiting'
+      });
+    }
+
+    const subdelegacionId = await resolveOperatorSubdelegacionId(req.user);
     if (!subdelegacionId) {
       return res.status(403).json({
         success: false,
@@ -333,7 +439,9 @@ const listarTickets = async (req, res) => {
     return res.json({
       success: true,
       tickets,
-      total: tickets.length
+      total: tickets.length,
+      scope: 'subdelegacion',
+      subdelegacion_id: subdelegacionId
     });
   } catch (error) {
     console.error('❌ Error en listarTickets:', error);
@@ -341,6 +449,169 @@ const listarTickets = async (req, res) => {
       success: false,
       error: 'Error al obtener tickets'
     });
+  }
+};
+
+const aceptarTicketOperador = async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const operadorCtx = await clienteService.obtenerContextoOperador(req.user || {});
+    const operador = req.body?.operador || operadorCtx?.username || req.user?.username || req.user?.email || 'Operador';
+    const role = String(operadorCtx?.role || req.user?.role || 'operador').toLowerCase();
+    const isAdmin = role === 'admin';
+
+    if (!phone) {
+      return res.status(400).json({ success: false, error: 'Número de teléfono requerido' });
+    }
+
+    if (!operadorCtx?.id) {
+      return res.status(403).json({ success: false, error: 'Operador no identificado' });
+    }
+
+    if (!isAdmin && !operadorCtx?.subdelegacion_id) {
+      return res.status(403).json({ success: false, error: 'Operador sin subdelegación asignada' });
+    }
+
+    const ticket = await clienteService.tomarTicketEnEspera({
+      telefono: phone,
+      operadorId: operadorCtx.id,
+      operadorNombre: operador,
+      subdelegacionId: operadorCtx.subdelegacion_id || null,
+      isAdmin
+    });
+
+    if (!ticket?.id) {
+      const clienteActual = await clienteService.obtenerCliente(phone);
+      return res.status(409).json({
+        success: false,
+        error: 'El chat ya fue tomado por otro operador o no está en espera',
+        telefono: phone,
+        estado_conversacion: clienteActual?.estado_conversacion || null
+      });
+    }
+
+    await clienteService.actualizarEstadoConversacion(phone, 'HUMANO');
+    await clienteService.cambiarEstadoBot(phone, false, operador);
+
+    await emitToTenantRoom(phone, 'operator_handoff_accepted', {
+      telefono: phone,
+      ticket_id: ticket?.id || null,
+      operador,
+      accepted_at: new Date().toISOString()
+    });
+
+    await emitToTenantRoom(phone, 'bot_mode_changed', {
+      telefono: phone,
+      bot_activo: false,
+      estado_conversacion: 'HUMANO',
+      ticket_id: ticket?.id || null
+    });
+
+    await sendTextAndSave(phone, `✅ Tu solicitud fue tomada por *${operador}*. Ya podés continuar la conversación con el operador.`);
+
+    return res.json({
+      success: true,
+      message: 'Atención de operador iniciada',
+      telefono: phone,
+      ticket,
+      operador,
+      bot_activo: false,
+      estado_conversacion: 'HUMANO'
+    });
+  } catch (error) {
+    console.error('❌ Error en aceptarTicketOperador:', error);
+    return res.status(500).json({ success: false, error: 'Error al aceptar ticket' });
+  }
+};
+
+const finalizarTicketOperador = async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const operadorCtx = await clienteService.obtenerContextoOperador(req.user || {});
+    const operador = req.body?.operador || operadorCtx?.username || req.user?.username || req.user?.email || 'Operador';
+    const role = String(operadorCtx?.role || req.user?.role || 'operador').toLowerCase();
+    const isAdmin = role === 'admin';
+
+    if (!phone) {
+      return res.status(400).json({ success: false, error: 'Número de teléfono requerido' });
+    }
+
+    const clienteActual = await clienteService.obtenerCliente(phone);
+    const ticketAbierto = await clienteService.obtenerTicketAbiertoPorTelefono(phone);
+
+    if (!isAdmin) {
+      if (!operadorCtx?.id) {
+        return res.status(403).json({ success: false, error: 'Operador no identificado' });
+      }
+
+      if (!ticketAbierto?.id) {
+        return res.status(409).json({ success: false, error: 'No hay ticket abierto para finalizar' });
+      }
+
+      if (ticketAbierto.assigned_operator_id && Number(ticketAbierto.assigned_operator_id) !== Number(operadorCtx.id)) {
+        return res.status(409).json({
+          success: false,
+          error: 'El chat está asignado a otro operador',
+          assigned_operator_id: ticketAbierto.assigned_operator_id,
+          assigned_operator_username: ticketAbierto.assigned_operator_username || null
+        });
+      }
+    }
+
+    if (clienteActual?.estado_conversacion === 'ENCUESTA_POST_OPERADOR' || clienteActual?.estado_conversacion === 'FOLLOWUP_POST_OPERADOR') {
+      return res.json({
+        success: true,
+        message: 'La atención ya fue finalizada',
+        telefono: phone,
+        bot_activo: true,
+        estado_conversacion: clienteActual.estado_conversacion,
+        already_processed: true
+      });
+    }
+
+    const ticketCerrado = await clienteService.cerrarTicketHumano(phone, 'FINALIZADO_OPERADOR');
+    await clienteService.cambiarEstadoBot(phone, true, operador);
+    await clienteService.actualizarEstadoConversacion(phone, 'ENCUESTA_POST_OPERADOR');
+
+    await emitToTenantRoom(phone, 'operator_handoff_completed', {
+      telefono: phone,
+      ticket_id: ticketCerrado?.id || null,
+      operador,
+      completed_at: new Date().toISOString()
+    });
+
+    await emitToTenantRoom(phone, 'bot_mode_changed', {
+      telefono: phone,
+      bot_activo: true,
+      estado_conversacion: 'ENCUESTA_POST_OPERADOR',
+      ticket_id: ticketCerrado?.id || null
+    });
+
+    await sendTextAndSave(phone, '🙏 Gracias por comunicarte con nuestro operador. Antes de cerrar, te pedimos una breve encuesta.');
+    await sendListAndSave(phone, 'Encuesta de satisfacción', '¿Cómo calificarías la atención recibida?', 'Elegir calificación', [
+      {
+        title: 'Calificación',
+        rows: [
+          { id: 'op_satisfaccion_1', title: '1 ⭐' },
+          { id: 'op_satisfaccion_2', title: '2 ⭐' },
+          { id: 'op_satisfaccion_3', title: '3 ⭐' },
+          { id: 'op_satisfaccion_4', title: '4 ⭐' },
+          { id: 'op_satisfaccion_5', title: '5 ⭐' }
+        ]
+      }
+    ]);
+
+    return res.json({
+      success: true,
+      message: 'Atención finalizada y encuesta enviada',
+      telefono: phone,
+      ticket: ticketCerrado,
+      bot_activo: true,
+      estado_conversacion: 'ENCUESTA_POST_OPERADOR'
+    });
+  } catch (error) {
+    console.error('❌ Error en finalizarTicketOperador:', error);
+    return res.status(500).json({ success: false, error: 'Error al finalizar ticket' });
   }
 };
 
@@ -398,5 +669,7 @@ module.exports = {
   descargarMedia,
   subirArchivo,
   listarTickets,
+  aceptarTicketOperador,
+  finalizarTicketOperador,
   asignarSubdelegacionOperador
 };

@@ -71,6 +71,63 @@ type LegacyAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
+type OperatorConversationStatus =
+  | 'BOT'
+  | 'ESPERA_OPERADOR'
+  | 'HUMANO'
+  | 'ENCUESTA_POST_OPERADOR'
+  | 'FOLLOWUP_POST_OPERADOR';
+
+type OperatorHandoffTicket = {
+  phone: string;
+  ticketId?: string | number | null;
+  subdelegacion?: string | null;
+  subdelegacionId?: string | number | null;
+  motivo?: string | null;
+  requestedAt?: string | null;
+};
+
+type OperatorHandoffRequestedPayload = {
+  telefono?: string;
+  cliente_telefono?: string;
+  ticket_id?: string | number;
+  ticketId?: string | number;
+  subdelegacion?: string;
+  subdelegacion_id?: string | number;
+  subdelegacionId?: string | number;
+  motivo?: string;
+  requested_at?: string;
+  requestedAt?: string;
+};
+
+type OperatorHandoffAcceptedPayload = {
+  telefono?: string;
+  cliente_telefono?: string;
+  ticket_id?: string | number;
+  ticketId?: string | number;
+  operador?: string;
+  accepted_at?: string;
+  acceptedAt?: string;
+};
+
+type OperatorHandoffCompletedPayload = {
+  telefono?: string;
+  cliente_telefono?: string;
+  ticket_id?: string | number;
+  ticketId?: string | number;
+  operador?: string;
+  completed_at?: string;
+  completedAt?: string;
+};
+
+type BotModeChangedPayload = {
+  telefono: string;
+  bot_activo: boolean;
+  estado_conversacion?: string;
+  ticket_id?: string | number;
+  subdelegacion_id?: string | number;
+};
+
 // Configurar Axios base
 axios.defaults.baseURL = env.apiUrl;
 axios.defaults.timeout = env.requestTimeoutMs;
@@ -252,6 +309,8 @@ export default function App() {
   // Estado para gestionar reactivación de sesión 24h por chat
   const [reactivating, setReactivating] = useState<boolean>(false);
   const [reactivationSent, setReactivationSent] = useState<Record<string, boolean>>({});
+  const [pendingOperatorTickets, setPendingOperatorTickets] = useState<OperatorHandoffTicket[]>([]);
+  const [handoffActionLoading, setHandoffActionLoading] = useState<Record<string, 'accept' | 'complete' | undefined>>({});
 
   // Determinar si la sesión (24h) está vencida según el último mensaje del usuario (cliente)
   const sessionExpired = useMemo(() => {
@@ -329,6 +388,269 @@ export default function App() {
       toast.error('No se pudo enviar la plantilla de reactivación');
     } finally {
       setReactivating(false);
+    }
+  };
+
+  const getOperatorName = () => {
+    const operador = auth.getOperador();
+    if (!operador) return undefined;
+    const candidate = [operador.nombre, operador.email].find((value) => typeof value === 'string' && value.trim().length > 0);
+    return candidate?.trim();
+  };
+
+  const normalizeOperatorIdentity = (value?: string | null) => {
+    return (value || '').trim().toLowerCase();
+  };
+
+  const currentOperatorName = getOperatorName() || 'Panel Frontend';
+
+  const getChatLockInfo = (chat?: Conversation | null) => {
+    if (!chat || !isHumanConversation(chat.conversationStatus)) {
+      return {
+        isLockedByAnotherOperator: false,
+        lockedBy: null as string | null
+      };
+    }
+
+    const assignedOperator = typeof chat.operator === 'string' ? chat.operator.trim() : '';
+    if (!assignedOperator) {
+      return {
+        isLockedByAnotherOperator: false,
+        lockedBy: null as string | null
+      };
+    }
+
+    const mine = normalizeOperatorIdentity(currentOperatorName);
+    const assigned = normalizeOperatorIdentity(assignedOperator);
+    const isLockedByAnotherOperator = !mine || (assigned !== mine);
+
+    return {
+      isLockedByAnotherOperator,
+      lockedBy: isLockedByAnotherOperator ? assignedOperator : null
+    };
+  };
+
+  const upsertPendingTicket = (incoming: OperatorHandoffTicket) => {
+    setPendingOperatorTickets((prev) => {
+      const phoneKey = normalizePhoneKey(incoming.phone);
+      const existingIndex = prev.findIndex((ticket) => {
+        if (incoming.ticketId && ticket.ticketId) {
+          return String(ticket.ticketId) === String(incoming.ticketId);
+        }
+        return normalizePhoneKey(ticket.phone) === phoneKey;
+      });
+
+      if (existingIndex === -1) {
+        return [incoming, ...prev];
+      }
+
+      const next = [...prev];
+      next[existingIndex] = { ...next[existingIndex], ...incoming };
+      return next;
+    });
+  };
+
+  const removePendingTicket = (params: { phone?: string; ticketId?: string | number | null }) => {
+    setPendingOperatorTickets((prev) => {
+      return prev.filter((ticket) => {
+        const sameTicket = params.ticketId && ticket.ticketId
+          ? String(params.ticketId) === String(ticket.ticketId)
+          : false;
+        const samePhone = params.phone ? phonesMatch(ticket.phone, params.phone) : false;
+        return !(sameTicket || samePhone);
+      });
+    });
+  };
+
+  const acceptOperatorChat = async (phone: string) => {
+    if (!phone) return;
+    const chat = conversationsState.find((item) => phonesMatch(item.phone, phone));
+    const lockInfo = getChatLockInfo(chat || null);
+    if (lockInfo.isLockedByAnotherOperator) {
+      toast.warning('Chat bloqueado por otro operador', {
+        description: `Actualmente lo atiende ${lockInfo.lockedBy}.`
+      });
+      return;
+    }
+
+    const phoneKey = normalizePhoneKey(phone);
+    setHandoffActionLoading((prev) => ({ ...prev, [phoneKey]: 'accept' }));
+
+    try {
+      const token = localStorage.getItem(env.tokenKey);
+      const operador = getOperatorName();
+      const response = await axios.post(
+        `/api/tickets/${encodeURIComponent(phone)}/accept`,
+        operador ? { operador } : {},
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+
+      const payload = response.data || {};
+      const ticketPayload = payload.ticket || {};
+      const ticketId =
+        payload.ticket_id ||
+        payload.ticketId ||
+        ticketPayload.ticket_id ||
+        ticketPayload.ticketId ||
+        ticketPayload.id ||
+        null;
+      const status = normalizeConversationStatus(payload.estado_conversacion) || 'HUMANO';
+      let takenChatId: number | null = null;
+
+      setConversationsState((prev) => {
+        const idx = prev.findIndex((chat) => phonesMatch(chat.phone, phone));
+        if (idx === -1) return prev;
+        const next = [...prev];
+        takenChatId = next[idx].id;
+        next[idx] = {
+          ...next[idx],
+          operator: payload.operador || ticketPayload.operador || next[idx].operator || operador || null,
+          ticketId,
+          botActive: payload.bot_activo === undefined ? false : Boolean(payload.bot_activo),
+          conversationStatus: status
+        };
+        return next;
+      });
+
+      removePendingTicket({ phone, ticketId });
+
+      if (takenChatId !== null) {
+        selectChatById(takenChatId);
+      }
+
+      toast.success('Chat tomado por operador', {
+        description: `Se activó la atención humana para ${phone}.`
+      });
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if ((status === 409 || status === 423) && axios.isAxiosError(error)) {
+        const payload = (error.response?.data || {}) as Record<string, unknown>;
+        const ticketPayload = (payload.ticket || {}) as Record<string, unknown>;
+        const conflictOperator =
+          (typeof payload.operador === 'string' && payload.operador) ||
+          (typeof ticketPayload.operador === 'string' && ticketPayload.operador) ||
+          'otro operador';
+        const ticketId =
+          (payload.ticket_id as string | number | undefined) ||
+          (payload.ticketId as string | number | undefined) ||
+          (ticketPayload.ticket_id as string | number | undefined) ||
+          (ticketPayload.ticketId as string | number | undefined) ||
+          null;
+        const statusFromConflict = normalizeConversationStatus(
+          typeof payload.estado_conversacion === 'string' ? payload.estado_conversacion : undefined
+        ) || 'HUMANO';
+
+        setConversationsState((prev) => prev.map((item) => {
+          if (!phonesMatch(item.phone, phone)) return item;
+          return {
+            ...item,
+            operator: conflictOperator,
+            ticketId: ticketId || item.ticketId || null,
+            conversationStatus: statusFromConflict,
+            botActive: false
+          };
+        }));
+        removePendingTicket({ phone, ticketId });
+
+        toast.warning('Otro operador tomó este chat', {
+          description: `Asignado a ${conflictOperator}. Se abrió en modo solo lectura.`
+        });
+        return;
+      }
+
+      console.error('Error aceptando ticket de operador:', error);
+      toast.error('No se pudo tomar el chat', {
+        description: 'Reintenta en unos segundos.'
+      });
+    } finally {
+      setHandoffActionLoading((prev) => ({ ...prev, [phoneKey]: undefined }));
+    }
+  };
+
+  const completeOperatorChat = async (phone: string) => {
+    if (!phone) return;
+    const chat = conversationsState.find((item) => phonesMatch(item.phone, phone));
+    const lockInfo = getChatLockInfo(chat || null);
+    if (lockInfo.isLockedByAnotherOperator) {
+      toast.warning('No puedes finalizar este chat', {
+        description: `Está siendo atendido por ${lockInfo.lockedBy}.`
+      });
+      return;
+    }
+
+    const phoneKey = normalizePhoneKey(phone);
+    setHandoffActionLoading((prev) => ({ ...prev, [phoneKey]: 'complete' }));
+
+    try {
+      const token = localStorage.getItem(env.tokenKey);
+      const operador = getOperatorName();
+      const response = await axios.post(
+        `/api/tickets/${encodeURIComponent(phone)}/complete`,
+        operador ? { operador } : {},
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+
+      const payload = response.data || {};
+      const ticketPayload = payload.ticket || {};
+      const ticketId =
+        payload.ticket_id ||
+        payload.ticketId ||
+        ticketPayload.ticket_id ||
+        ticketPayload.ticketId ||
+        ticketPayload.id ||
+        null;
+      const status = normalizeConversationStatus(payload.estado_conversacion) || 'ENCUESTA_POST_OPERADOR';
+
+      setConversationsState((prev) => {
+        const idx = prev.findIndex((chat) => phonesMatch(chat.phone, phone));
+        if (idx === -1) return prev;
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          ticketId,
+          botActive: payload.bot_activo === undefined ? true : Boolean(payload.bot_activo),
+          conversationStatus: status
+        };
+        return next;
+      });
+
+      removePendingTicket({ phone, ticketId });
+
+      toast.success('Conversación finalizada', {
+        description: 'El backend continuará con encuesta y seguimiento automático.'
+      });
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if ((status === 409 || status === 423) && axios.isAxiosError(error)) {
+        const payload = (error.response?.data || {}) as Record<string, unknown>;
+        const conflictOperator = typeof payload.operador === 'string' ? payload.operador : null;
+        const statusFromConflict = normalizeConversationStatus(
+          typeof payload.estado_conversacion === 'string' ? payload.estado_conversacion : undefined
+        );
+
+        setConversationsState((prev) => prev.map((item) => {
+          if (!phonesMatch(item.phone, phone)) return item;
+          return {
+            ...item,
+            ...(conflictOperator ? { operator: conflictOperator } : {}),
+            ...(statusFromConflict ? { conversationStatus: statusFromConflict } : {})
+          };
+        }));
+
+        toast.warning('Acción bloqueada por concurrencia', {
+          description: conflictOperator
+            ? `El chat ahora lo atiende ${conflictOperator}.`
+            : 'El estado del chat cambió en otro panel.'
+        });
+        return;
+      }
+
+      console.error('Error finalizando ticket de operador:', error);
+      toast.error('No se pudo finalizar la conversación', {
+        description: 'Reintenta en unos segundos.'
+      });
+    } finally {
+      setHandoffActionLoading((prev) => ({ ...prev, [phoneKey]: undefined }));
     }
   };
 
@@ -442,6 +764,61 @@ const phonesMatch = (a?: string, b?: string) => {
   const na = normalizePhoneKey(a);
   const nb = normalizePhoneKey(b);
   return !!na && !!nb && na === nb;
+};
+
+const normalizeConversationStatus = (value?: string | null): OperatorConversationStatus | null => {
+  if (!value || typeof value !== 'string') return null;
+  const normalized = value.trim().toUpperCase();
+  if (normalized === 'BOT') return 'BOT';
+  if (normalized === 'ESPERA_OPERADOR') return 'ESPERA_OPERADOR';
+  if (normalized === 'HUMANO') return 'HUMANO';
+  if (normalized === 'ENCUESTA_POST_OPERADOR') return 'ENCUESTA_POST_OPERADOR';
+  if (normalized === 'FOLLOWUP_POST_OPERADOR') return 'FOLLOWUP_POST_OPERADOR';
+  return null;
+};
+
+const isWaitingOperator = (status?: string | null) => normalizeConversationStatus(status) === 'ESPERA_OPERADOR';
+const isHumanConversation = (status?: string | null) => normalizeConversationStatus(status) === 'HUMANO';
+
+const getStatusBadgeMeta = (status?: string | null, botActive?: boolean | null) => {
+  const normalized = normalizeConversationStatus(status);
+
+  if (normalized === 'ESPERA_OPERADOR') {
+    return {
+      label: 'Espera operador',
+      classes: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
+    };
+  }
+
+  if (normalized === 'HUMANO') {
+    return {
+      label: 'Atención humana',
+      classes: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200'
+    };
+  }
+
+  if (normalized === 'ENCUESTA_POST_OPERADOR') {
+    return {
+      label: 'Encuesta post chat',
+      classes: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200'
+    };
+  }
+
+  if (normalized === 'FOLLOWUP_POST_OPERADOR') {
+    return {
+      label: 'Follow-up',
+      classes: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200'
+    };
+  }
+
+  if (normalized === 'BOT' || botActive === true) {
+    return {
+      label: 'Bot activo',
+      classes: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
+    };
+  }
+
+  return null;
 };
 
 const FILE_URL_REGEX = /(https?:\/\/[^\s"']+\.(pdf|doc|docx|xls|xlsx|ppt|pptx|csv|txt|zip|rar|7z|jpg|jpeg|png|gif|webp|mp3|wav|ogg|mp4|mov|avi|mkv))(?:\?[^\s"']*)?/i;
@@ -954,8 +1331,80 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         }
       }
     };
+
+    const loadPendingTickets = async () => {
+      try {
+        const response = await axios.get('/api/tickets', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        const tickets = Array.isArray(response.data)
+          ? response.data
+          : (response.data?.data || response.data?.tickets || []);
+
+        const mappedTickets: OperatorHandoffTicket[] = tickets
+          .map((ticket: Record<string, unknown>) => ({
+            phone: String(ticket.telefono || ticket.phone || ticket.cliente_telefono || ''),
+            ticketId: (ticket.ticket_id || ticket.ticketId || ticket.id || null) as string | number | null,
+            subdelegacion: typeof ticket.subdelegacion === 'string' ? ticket.subdelegacion : null,
+            subdelegacionId: (ticket.subdelegacion_id || ticket.subdelegacionId || null) as string | number | null,
+            motivo: typeof ticket.motivo === 'string' ? ticket.motivo : null,
+            requestedAt: typeof ticket.requested_at === 'string'
+              ? ticket.requested_at
+              : (typeof ticket.requestedAt === 'string' ? ticket.requestedAt : null)
+          }))
+          .filter((ticket: OperatorHandoffTicket) => ticket.phone);
+
+        setPendingOperatorTickets(mappedTickets);
+        const pendingPhoneKeys = new Set(mappedTickets.map((ticket) => normalizePhoneKey(ticket.phone)));
+
+        setConversationsState((prev) => prev.map((chat) => {
+          const pendingTicket = mappedTickets.find((item) => phonesMatch(item.phone, chat.phone));
+          if (pendingTicket) {
+            return {
+              ...chat,
+              ticketId: pendingTicket.ticketId || chat.ticketId || null,
+              subdelegacion: pendingTicket.subdelegacion || chat.subdelegacion || null,
+              subdelegacionId: pendingTicket.subdelegacionId || chat.subdelegacionId || null,
+              handoffReason: pendingTicket.motivo || chat.handoffReason || null,
+              handoffRequestedAt: pendingTicket.requestedAt || chat.handoffRequestedAt || null,
+              conversationStatus: 'ESPERA_OPERADOR',
+              botActive: false
+            };
+          }
+
+          if (normalizeConversationStatus(chat.conversationStatus) === 'ESPERA_OPERADOR' && !pendingPhoneKeys.has(normalizePhoneKey(chat.phone))) {
+            return {
+              ...chat,
+              conversationStatus: 'BOT',
+              botActive: true
+            };
+          }
+
+          return chat;
+        }));
+      } catch (error: unknown) {
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+        if (status === 403) {
+          // Si no hay permisos para listar, mantenemos sincronización solo por eventos socket.
+          return;
+        }
+        console.error('Error cargando tickets pendientes:', error);
+      }
+    };
     
     loadChats();
+    loadPendingTickets();
+
+    const pendingTicketsInterval = window.setInterval(() => {
+      loadPendingTickets();
+    }, 20_000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadPendingTickets();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     
     // Escuchar mensajes en tiempo real
     const normalizeSocketPayload = (payload: unknown): RawSocketMessage | null => {
@@ -1317,19 +1766,122 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       });
     };
 
-    const handleBotModeChanged = (data: { telefono: string; bot_activo: boolean }) => {
+    const handleOperatorHandoffRequested = (payload: OperatorHandoffRequestedPayload) => {
+      const phone = payload.telefono || payload.cliente_telefono;
+      if (!phone) return;
+
+      const ticket: OperatorHandoffTicket = {
+        phone,
+        ticketId: payload.ticket_id || payload.ticketId || null,
+        subdelegacion: payload.subdelegacion || null,
+        subdelegacionId: payload.subdelegacion_id || payload.subdelegacionId || null,
+        motivo: payload.motivo || null,
+        requestedAt: payload.requested_at || payload.requestedAt || new Date().toISOString()
+      };
+
+      upsertPendingTicket(ticket);
+
+      setConversationsState((prev) => prev.map((chat) => {
+        if (!phonesMatch(chat.phone, phone)) return chat;
+        return {
+          ...chat,
+          ticketId: ticket.ticketId || chat.ticketId || null,
+          subdelegacion: ticket.subdelegacion || chat.subdelegacion || null,
+          subdelegacionId: ticket.subdelegacionId || chat.subdelegacionId || null,
+          handoffReason: ticket.motivo || chat.handoffReason || null,
+          handoffRequestedAt: ticket.requestedAt || chat.handoffRequestedAt || null,
+          conversationStatus: 'ESPERA_OPERADOR',
+          botActive: false
+        };
+      }));
+
+      playNotificationSound();
+      showNotification('Cliente esperando operador', {
+        body: `${phone}${ticket.motivo ? ` · ${ticket.motivo}` : ''}`,
+        tag: `handoff-${normalizePhoneKey(phone)}`
+      });
+      toast.warning('Solicitud de operador en espera', {
+        description: `${phone}${ticket.subdelegacion ? ` · ${ticket.subdelegacion}` : ''}`
+      });
+    };
+
+    const handleOperatorHandoffAccepted = (payload: OperatorHandoffAcceptedPayload) => {
+      const phone = payload.telefono || payload.cliente_telefono;
+      if (!phone) return;
+      const ticketId = payload.ticket_id || payload.ticketId || null;
+
+      removePendingTicket({ phone, ticketId });
+      setConversationsState((prev) => prev.map((chat) => {
+        if (!phonesMatch(chat.phone, phone)) return chat;
+        return {
+          ...chat,
+          ticketId: ticketId || chat.ticketId || null,
+          operator: payload.operador || chat.operator || null,
+          conversationStatus: 'HUMANO',
+          botActive: false,
+          handoffAcceptedAt: payload.accepted_at || payload.acceptedAt || new Date().toISOString()
+        };
+      }));
+
+      toast.success('Chat tomado por operador', {
+        description: payload.operador ? `Asignado a ${payload.operador}.` : `Cliente ${phone} en atención humana.`
+      });
+    };
+
+    const handleOperatorHandoffCompleted = (payload: OperatorHandoffCompletedPayload) => {
+      const phone = payload.telefono || payload.cliente_telefono;
+      if (!phone) return;
+      const ticketId = payload.ticket_id || payload.ticketId || null;
+
+      removePendingTicket({ phone, ticketId });
+      setConversationsState((prev) => prev.map((chat) => {
+        if (!phonesMatch(chat.phone, phone)) return chat;
+        return {
+          ...chat,
+          ticketId: ticketId || chat.ticketId || null,
+          conversationStatus: 'ENCUESTA_POST_OPERADOR',
+          handoffCompletedAt: payload.completed_at || payload.completedAt || new Date().toISOString()
+        };
+      }));
+
+      toast.success('Atención finalizada', {
+        description: `Se activó el cierre automático para ${phone}.`
+      });
+    };
+
+    const handleBotModeChanged = (data: BotModeChangedPayload) => {
       let chatLabel = data.telefono;
+      const normalizedStatus = normalizeConversationStatus(data.estado_conversacion);
 
       setConversationsState(prev => {
-        const chatIndex = prev.findIndex(c => c.phone === data.telefono);
+        const chatIndex = prev.findIndex(c => phonesMatch(c.phone, data.telefono));
         if (chatIndex !== -1) {
           const updated = [...prev];
           chatLabel = updated[chatIndex].name || data.telefono;
-          updated[chatIndex].botActive = data.bot_activo;
+          updated[chatIndex] = {
+            ...updated[chatIndex],
+            botActive: data.bot_activo,
+            ticketId: data.ticket_id || updated[chatIndex].ticketId || null,
+            subdelegacionId: data.subdelegacion_id || updated[chatIndex].subdelegacionId || null,
+            ...(normalizedStatus ? { conversationStatus: normalizedStatus } : {})
+          };
           return updated;
         }
         return prev;
       });
+
+      if (normalizedStatus === 'ESPERA_OPERADOR') {
+        upsertPendingTicket({
+          phone: data.telefono,
+          ticketId: data.ticket_id || null,
+          subdelegacionId: data.subdelegacion_id || null,
+          requestedAt: new Date().toISOString()
+        });
+      }
+
+      if (normalizedStatus === 'HUMANO' || normalizedStatus === 'ENCUESTA_POST_OPERADOR' || normalizedStatus === 'FOLLOWUP_POST_OPERADOR' || normalizedStatus === 'BOT') {
+        removePendingTicket({ phone: data.telefono, ticketId: data.ticket_id || null });
+      }
 
       if (!data.bot_activo) {
         playNotificationSound();
@@ -1370,6 +1922,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     socket.on('nuevo_mensaje', handleNewMessage);
     socket.on('new_message', handleNewMessage);
     socket.on('message', handleNewMessage);
+    socket.on('operator_handoff_requested', handleOperatorHandoffRequested);
+    socket.on('operator_handoff_accepted', handleOperatorHandoffAccepted);
+    socket.on('operator_handoff_completed', handleOperatorHandoffCompleted);
     socket.on('bot_mode_changed', handleBotModeChanged);
     socket.on('typing', handleTyping);
 
@@ -1391,9 +1946,14 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       socket.io.off('reconnect_failed', handleReconnectFailed);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.clearInterval(pendingTicketsInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       socket.off('nuevo_mensaje', handleNewMessage);
       socket.off('new_message', handleNewMessage);
       socket.off('message', handleNewMessage);
+      socket.off('operator_handoff_requested', handleOperatorHandoffRequested);
+      socket.off('operator_handoff_accepted', handleOperatorHandoffAccepted);
+      socket.off('operator_handoff_completed', handleOperatorHandoffCompleted);
       socket.off('bot_mode_changed', handleBotModeChanged);
       socket.off('typing', handleTyping);
       window.removeEventListener('e2e:nuevo_mensaje', handleE2ENewMessage as EventListener);
@@ -1880,6 +2440,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       } else {
         const currentChat = conversationsState[selectedChat];
         if (!currentChat || !currentChat.phone) return;
+        const lockInfo = getChatLockInfo(currentChat);
+        if (lockInfo.isLockedByAnotherOperator) {
+          toast.warning('Chat en modo solo lectura', {
+            description: `Este chat está tomado por ${lockInfo.lockedBy}.`
+          });
+          return;
+        }
         
         const messageText = message.trim();
         const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2003,6 +2570,38 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             });
           }
         } catch (error) {
+          const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+          if ((status === 409 || status === 423) && axios.isAxiosError(error)) {
+            const payload = (error.response?.data || {}) as Record<string, unknown>;
+            const conflictOperator = typeof payload.operador === 'string' ? payload.operador : null;
+            const conflictStatus = normalizeConversationStatus(
+              typeof payload.estado_conversacion === 'string' ? payload.estado_conversacion : undefined
+            ) || 'HUMANO';
+
+            removePendingMessage(currentChat.phone, tempId);
+            setConversationsState(prev => {
+              const updated = [...prev];
+              const targetChatIndex = updated.findIndex((c) => phonesMatch(c.phone, currentChat.phone));
+              if (targetChatIndex !== -1) {
+                updated[targetChatIndex] = {
+                  ...updated[targetChatIndex],
+                  ...(conflictOperator ? { operator: conflictOperator } : {}),
+                  conversationStatus: conflictStatus,
+                  botActive: false,
+                  messages: (updated[targetChatIndex].messages || []).filter((m) => m.id !== tempId)
+                };
+              }
+              return updated;
+            });
+
+            toast.warning('No se pudo enviar por concurrencia', {
+              description: conflictOperator
+                ? `El chat fue tomado por ${conflictOperator}. Se habilitó modo solo lectura.`
+                : 'El chat cambió de estado en otro panel.'
+            });
+            return;
+          }
+
           console.error('❌ Error enviando mensaje:', error);
           trackAction('message_send_failed', { phone: currentChat.phone });
           emitConnectionAlert({
@@ -2029,11 +2628,29 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   };
 
   const handleEmojiClick = (emojiObject: { emoji: string }) => {
+    const lockInfo = getChatLockInfo(currentChat);
+    if (lockInfo.isLockedByAnotherOperator) {
+      toast.warning('No puedes editar este chat', {
+        description: `Actualmente lo atiende ${lockInfo.lockedBy}.`
+      });
+      return;
+    }
     setMessage((prev) => prev + emojiObject.emoji);
     setShowEmojiPicker(false);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const lockInfo = getChatLockInfo(currentChat);
+    if (lockInfo.isLockedByAnotherOperator) {
+      toast.warning('No puedes adjuntar archivos', {
+        description: `Este chat está tomado por ${lockInfo.lockedBy}.`
+      });
+      if (e.target) {
+        e.target.value = '';
+      }
+      return;
+    }
+
     const file = e.target.files?.[0];
     if (file) {
       alert(`Archivo seleccionado: ${file.name}`);
@@ -2041,6 +2658,15 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   };
 
   const handleAttachmentType = (accept: string) => {
+    const lockInfo = getChatLockInfo(currentChat);
+    if (lockInfo.isLockedByAnotherOperator) {
+      toast.warning('No puedes adjuntar archivos', {
+        description: `Este chat está tomado por ${lockInfo.lockedBy}.`
+      });
+      setShowAttachMenu(false);
+      return;
+    }
+
     if (fileInputRef.current) {
       fileInputRef.current.accept = accept;
       fileInputRef.current.click();
@@ -2364,6 +2990,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   };
 
   const insertQuickText = (text: string) => {
+    const lockInfo = getChatLockInfo(currentChat);
+    if (lockInfo.isLockedByAnotherOperator) {
+      toast.warning('No puedes responder en este chat', {
+        description: `Actualmente lo atiende ${lockInfo.lockedBy}.`
+      });
+      return;
+    }
     setMessage((prev) => (prev ? `${prev} ${text}` : text));
   };
 
@@ -2396,6 +3029,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
     return base;
   }, [conversationsState, selectedId, selectedChat, chatSearchText]);
+
+  const currentChatLock = getChatLockInfo(currentChat);
 
   const filteredConversations = conversationsState.filter(conv => {
     // Filtrar archivadas
@@ -2479,7 +3114,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 <MoreVertical size={20} />
               </button>
               {showSidebarMenu && (
-                <div className="absolute right-0 top-full mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 animate-slideInDown">
+                <div className="absolute left-0 top-full mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 animate-slideInDown">
                   <button 
                     className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-100"
                     onClick={() => { setShowNewConversation(true); setShowSidebarMenu(false); }}
@@ -2531,6 +3166,44 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         </div>
 
         {/* Conversaciones */}
+        {pendingOperatorTickets.length > 0 && (
+          <div className="mx-3 mt-3 rounded-xl border border-amber-300 bg-amber-50/90 dark:bg-amber-950/40 dark:border-amber-800 p-3 shadow-sm">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-100">
+                Clientes esperando operador: {pendingOperatorTickets.length}
+              </p>
+            </div>
+            <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+              {pendingOperatorTickets.map((ticket) => {
+                const phoneKey = normalizePhoneKey(ticket.phone);
+                const loading = handoffActionLoading[phoneKey] === 'accept';
+                return (
+                  <div
+                    key={`${ticket.ticketId || 'pending'}-${phoneKey}`}
+                    className="rounded-lg border border-amber-200 dark:border-amber-800 bg-white/80 dark:bg-gray-900/50 px-3 py-2"
+                  >
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{ticket.subdelegacion || 'Sin subdelegación'}</p>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{ticket.phone}</p>
+                    {ticket.motivo && (
+                      <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-2">{ticket.motivo}</p>
+                    )}
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => void acceptOperatorChat(ticket.phone)}
+                        disabled={loading}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white disabled:opacity-60"
+                        style={{ backgroundColor: themeColors[theme].hex }}
+                      >
+                        {loading ? 'Tomando...' : 'Tomar chat'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div ref={conversationsContainerRef} className="flex-1 overflow-y-auto">
           <div
             style={{
@@ -2560,6 +3233,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               }
               return false;
             })();
+            const hasPendingHandoff = pendingOperatorTickets.some((ticket) => phonesMatch(ticket.phone, conv.phone));
+            const statusMeta = getStatusBadgeMeta(hasPendingHandoff ? 'ESPERA_OPERADOR' : conv.conversationStatus, conv.botActive);
 
             return (
             <div
@@ -2645,8 +3320,18 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                   <p className="text-sm text-gray-600 dark:text-gray-300 truncate mb-1">
                     {normalizeMessage(conv.lastMessage)}
                   </p>
-                  <div className="flex items-center justify-end">
+                  <div className="flex items-center justify-end gap-2">
+                    {statusMeta && (
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusMeta.classes}`}>
+                        {statusMeta.label}
+                      </span>
+                    )}
                   </div>
+                  {isHumanConversation(conv.conversationStatus) && conv.operator && normalizeOperatorIdentity(conv.operator) !== normalizeOperatorIdentity(currentOperatorName) && (
+                    <p className="text-[11px] text-rose-600 dark:text-rose-300 mt-1 truncate text-right">
+                      Tomado por {conv.operator}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -2743,11 +3428,55 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                     </div>
                   );
                 })()}
+                {currentChatLock.isLockedByAnotherOperator && (
+                  <p className="text-xs text-rose-600 dark:text-rose-300 font-medium mt-0.5">
+                    Tomado por {currentChatLock.lockedBy} · Solo lectura
+                  </p>
+                )}
               </div>
             </button>
           </div>
           
           <div className="flex items-center gap-2">
+            {(() => {
+              const phoneKey = normalizePhoneKey(currentChat.phone);
+              const hasPendingHandoff = pendingOperatorTickets.some((ticket) => phonesMatch(ticket.phone, currentChat.phone));
+              const isWaiting = hasPendingHandoff || isWaitingOperator(currentChat.conversationStatus);
+              const isHuman = isHumanConversation(currentChat.conversationStatus);
+              const statusMeta = getStatusBadgeMeta(isWaiting ? 'ESPERA_OPERADOR' : currentChat.conversationStatus, currentChat.botActive);
+              const actionState = handoffActionLoading[phoneKey];
+
+              return (
+                <div className="hidden lg:flex items-center gap-2">
+                  {statusMeta && (
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${statusMeta.classes}`}>
+                      {statusMeta.label}
+                    </span>
+                  )}
+                  {isWaiting && (
+                    <button
+                      type="button"
+                      onClick={() => void acceptOperatorChat(currentChat.phone)}
+                      disabled={actionState !== undefined}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-60"
+                      style={{ backgroundColor: themeColors[theme].hex }}
+                    >
+                      {actionState === 'accept' ? 'Tomando...' : 'Tomar chat'}
+                    </button>
+                  )}
+                  {isHuman && (
+                    <button
+                      type="button"
+                      onClick={() => void completeOperatorChat(currentChat.phone)}
+                      disabled={actionState !== undefined || currentChatLock.isLockedByAnotherOperator}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-60"
+                    >
+                      {actionState === 'complete' ? 'Finalizando...' : 'Terminar conversación'}
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
             <div className="relative flex items-center" ref={chatSearchRef}>
               <div
                 className={`flex items-center bg-gray-100 dark:bg-gray-700 rounded-lg overflow-hidden transition-all duration-200 ease-out ${
@@ -2794,10 +3523,46 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               <MoreVertical size={20} className="text-gray-600 dark:text-gray-300" />
             </button>
             {showMenu && (
-              <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10 animate-slideInDown">
+              <div className="absolute top-full right-0 mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 animate-slideInDown">
+                {(() => {
+                  const phoneKey = normalizePhoneKey(currentChat.phone);
+                  const hasPendingHandoff = pendingOperatorTickets.some((ticket) => phonesMatch(ticket.phone, currentChat.phone));
+                  const isWaiting = hasPendingHandoff || isWaitingOperator(currentChat.conversationStatus);
+                  const isHuman = isHumanConversation(currentChat.conversationStatus);
+                  const actionState = handoffActionLoading[phoneKey];
+
+                  return (
+                    <>
+                      {isWaiting && (
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700"
+                          onClick={() => void acceptOperatorChat(currentChat.phone)}
+                          disabled={actionState !== undefined}
+                        >
+                          {actionState === 'accept' ? 'Tomando chat...' : 'Tomar chat'}
+                        </button>
+                      )}
+                      {isHuman && (
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600"
+                          onClick={() => void completeOperatorChat(currentChat.phone)}
+                          disabled={actionState !== undefined || currentChatLock.isLockedByAnotherOperator}
+                        >
+                          {actionState === 'complete' ? 'Finalizando...' : 'Terminar conversación'}
+                        </button>
+                      )}
+                      {currentChatLock.isLockedByAnotherOperator && (
+                        <div className="px-3 py-2 text-xs text-rose-600 dark:text-rose-300 border-t border-gray-200 dark:border-gray-700">
+                          Tomado por {currentChatLock.lockedBy}. Solo lectura.
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 <button
                   className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700"
                   onClick={markResolved}
+                  disabled={currentChatLock.isLockedByAnotherOperator}
                 >
                   Marcar como atendida
                 </button>
@@ -2810,6 +3575,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       toast.success('Bot reactivado');
                     }
                   }}
+                  disabled={currentChatLock.isLockedByAnotherOperator}
                   style={{ color: themeColors[theme].hex }}
                 >
                   🤖 Reactivar Bot
@@ -2817,6 +3583,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 <button
                   className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
                   onClick={deleteConversation}
+                  disabled={currentChatLock.isLockedByAnotherOperator}
                 >
                   Eliminar conversación
                 </button>
@@ -3858,6 +4625,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 <button
                   className="p-2 transition flex items-center justify-center hover:opacity-80"
                   onClick={() => setShowQuickMenu((v) => !v)}
+                  disabled={currentChatLock.isLockedByAnotherOperator}
                   aria-label="Mostrar acciones rápidas"
                   style={{ color: themeColors[theme].hex }}
                 >
@@ -3868,7 +4636,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 </button>
               </div>
               <div
-                className={`overflow-hidden transition-all duration-300 ease-out ${showQuickMenu ? 'max-h-28 opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2'}`}
+                className={`overflow-hidden transition-all duration-300 ease-out ${showQuickMenu && !currentChatLock.isLockedByAnotherOperator ? 'max-h-28 opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2'}`}
               >
                 <div className="flex overflow-x-auto gap-2 pb-3 -mx-1 px-1 text-sm justify-center pointer-events-auto">
                   {[
@@ -3880,6 +4648,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                     <button
                       key={chip.label}
                       className="whitespace-nowrap px-3 py-1 rounded-full border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:border-emerald-400 hover:text-emerald-600 transition shadow-sm"
+                      disabled={currentChatLock.isLockedByAnotherOperator}
                       onClick={() => insertQuickText(chip.text)}
                     >
                       {chip.label}
@@ -3930,6 +4699,12 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 >
                   {reactivating ? 'Enviando…' : 'Enviar Plantilla de Reactivación'}
                 </button>
+              </div>
+            ) : currentChatLock.isLockedByAnotherOperator ? (
+              <div className="w-full flex items-center justify-between gap-3 p-3 rounded-lg border bg-rose-50 text-rose-800 dark:bg-rose-900/20 dark:text-rose-100 border-rose-200 dark:border-rose-800">
+                <div className="text-sm">
+                  Este chat está tomado por <strong>{currentChatLock.lockedBy}</strong>. Puedes ver los mensajes, pero no enviar ni modificar acciones.
+                </div>
               </div>
             ) : (
               <>

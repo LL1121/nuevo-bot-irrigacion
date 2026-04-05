@@ -3,6 +3,7 @@ const { withTransaction } = require('./transactionService');
 const { registrarCambio } = require('./auditService');
 
 const OPERATOR_SCHEDULE_TIMEZONE = process.env.OPERATOR_SCHEDULE_TIMEZONE || 'America/Argentina/Mendoza';
+const OPERATOR_SCHEDULE_ENABLED = String(process.env.OPERATOR_SCHEDULE_ENABLED || 'true').toLowerCase() !== 'false';
 const DEFAULT_FUERA_HORARIO_MSG = '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.';
 
 const normalizeText = (value = '') => String(value || '').trim().toLowerCase();
@@ -622,6 +623,111 @@ const crearTicketHumano = async (telefono, subdelegacionId, motivo = 'DERIVACION
   };
 };
 
+const obtenerTicketAbiertoPorTelefono = async (telefono) => {
+  if (!telefono) return null;
+
+  return get(
+    `SELECT id, cliente_telefono, subdelegacion_id, estado, motivo, assigned_operator_id, assigned_operator_username, assigned_at, created_at, updated_at
+     FROM tickets
+     WHERE cliente_telefono = ? AND estado = 'ABIERTO'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [telefono]
+  );
+};
+
+const cerrarTicketHumano = async (telefono, motivoCierre = 'FINALIZADO_OPERADOR') => {
+  if (!telefono) return null;
+
+  const ticketAbierto = await obtenerTicketAbiertoPorTelefono(telefono);
+  if (!ticketAbierto?.id) return null;
+
+  await run(
+    `UPDATE tickets
+     SET estado = 'CERRADO',
+         motivo = COALESCE(?, motivo),
+         updated_at = CURRENT_TIMESTAMP,
+         closed_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [motivoCierre || null, ticketAbierto.id]
+  );
+
+  return get(
+    `SELECT id, cliente_telefono, subdelegacion_id, estado, motivo, assigned_operator_id, assigned_operator_username, assigned_at, created_at, updated_at, closed_at
+     FROM tickets
+     WHERE id = ?
+     LIMIT 1`,
+    [ticketAbierto.id]
+  );
+};
+
+const obtenerContextoOperador = async (user = {}) => {
+  if (!user?.id && !user?.username && !user?.email) {
+    return null;
+  }
+
+  return get(
+    `SELECT
+      o.id,
+      o.username,
+      o.email,
+      o.role,
+      o.subdelegacion_id,
+      s.nombre AS subdelegacion_nombre,
+      s.codigo AS subdelegacion_codigo
+    FROM operadores o
+    LEFT JOIN subdelegaciones s ON s.id = o.subdelegacion_id
+    WHERE o.id = ? OR o.username = ? OR o.email = ?
+    LIMIT 1`,
+    [user.id || null, user.username || null, user.email || null]
+  );
+};
+
+const tomarTicketEnEspera = async ({
+  telefono,
+  operadorId,
+  operadorNombre,
+  subdelegacionId,
+  isAdmin = false
+}) => {
+  if (!telefono || !operadorId) return null;
+
+  return get(
+    `UPDATE tickets t
+     SET
+       assigned_operator_id = ?,
+       assigned_operator_username = ?,
+       assigned_at = CURRENT_TIMESTAMP,
+       updated_at = CURRENT_TIMESTAMP
+     FROM clientes c
+     WHERE c.telefono = t.cliente_telefono
+       AND t.cliente_telefono = ?
+       AND t.estado = 'ABIERTO'
+       AND c.estado_conversacion = 'ESPERA_OPERADOR'
+       AND (t.assigned_operator_id IS NULL OR t.assigned_operator_id = ?)
+       AND (? = 1 OR t.subdelegacion_id = ?)
+     RETURNING
+       t.id,
+       t.cliente_telefono,
+       t.subdelegacion_id,
+       t.estado,
+       t.motivo,
+       t.assigned_operator_id,
+       t.assigned_operator_username,
+       t.assigned_at,
+       t.created_at,
+       t.updated_at`,
+    [
+      operadorId,
+      operadorNombre || null,
+      telefono,
+      operadorId,
+      isAdmin ? 1 : 0,
+      subdelegacionId || null
+    ]
+  );
+};
+
 const obtenerSubdelegacionInfo = async (telefono) => {
   const subdelegacionNombre = await obtenerSubdelegacion(telefono);
   if (!subdelegacionNombre) return null;
@@ -648,6 +754,9 @@ const listarTicketsPorSubdelegacion = async (subdelegacionId) => {
       t.subdelegacion_id,
       t.estado AS ticket_estado,
       t.motivo,
+      t.assigned_operator_id,
+      t.assigned_operator_username,
+      t.assigned_at,
       t.created_at AS ticket_created_at,
       c.telefono,
       c.nombre_whatsapp,
@@ -668,6 +777,8 @@ const listarTicketsPorSubdelegacion = async (subdelegacionId) => {
     INNER JOIN clientes c ON c.telefono = t.cliente_telefono
     WHERE t.subdelegacion_id = ?
       AND t.estado = 'ABIERTO'
+      AND t.assigned_operator_id IS NULL
+      AND c.estado_conversacion = 'ESPERA_OPERADOR'
     ORDER BY t.created_at DESC`,
     [subdelegacionId]
   );
@@ -675,7 +786,55 @@ const listarTicketsPorSubdelegacion = async (subdelegacionId) => {
   return rows || [];
 };
 
+const listarTicketsEnEspera = async () => {
+  const rows = await query(
+    `SELECT
+      t.id,
+      t.cliente_telefono,
+      t.subdelegacion_id,
+      t.estado AS ticket_estado,
+      t.motivo,
+      t.assigned_operator_id,
+      t.assigned_operator_username,
+      t.assigned_at,
+      t.created_at AS ticket_created_at,
+      c.telefono,
+      c.nombre_whatsapp,
+      c.nombre_asignado,
+      c.foto_perfil,
+      c.padron,
+      c.subdelegacion,
+      c.estado_conversacion,
+      c.estado_deuda,
+      c.bot_activo,
+      c.ultima_interaccion,
+      c.fecha_registro,
+      (SELECT cuerpo FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje,
+      (SELECT fecha FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje_fecha,
+      (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono) as total_mensajes,
+      (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono AND leido = 0 AND emisor = 'usuario') as mensajes_no_leidos
+    FROM tickets t
+    INNER JOIN clientes c ON c.telefono = t.cliente_telefono
+    WHERE t.estado = 'ABIERTO'
+      AND t.assigned_operator_id IS NULL
+      AND c.estado_conversacion = 'ESPERA_OPERADOR'
+    ORDER BY t.created_at DESC`,
+    []
+  );
+
+  return rows || [];
+};
+
 const validarHorarioAtencionOperador = async (subdelegacionId = null, now = new Date()) => {
+  if (!OPERATOR_SCHEDULE_ENABLED) {
+    return {
+      disponible: true,
+      mensaje: null,
+      horario: null,
+      bypass: true
+    };
+  }
+
   const { diaSemana, minutosActuales } = getCurrentWeekdayAndMinutes(now);
 
   const row = await get(
@@ -739,7 +898,12 @@ module.exports = {
   obtenerSubdelegacion,
   resolverSubdelegacionCliente,
   crearTicketHumano,
+  obtenerTicketAbiertoPorTelefono,
+  cerrarTicketHumano,
+  obtenerContextoOperador,
+  tomarTicketEnEspera,
   obtenerSubdelegacionInfo,
   listarTicketsPorSubdelegacion,
+  listarTicketsEnEspera,
   validarHorarioAtencionOperador
 };
