@@ -337,20 +337,18 @@ MIT License - Ver [LICENSE](LICENSE) para detalles
 ---
 
 **Desarrollado con ❤️ para Irrigación Malargüe**
-DB_NAME=irrigacion_db
+DB_NAME=bot_irrigacion_prod
 ```
 
-### Base de Datos MySQL
+### Base de Datos PostgreSQL
 
-Ejecutar los siguientes scripts SQL:
+La aplicación usa una base PostgreSQL dedicada. El esquema se crea con:
 
 ```bash
-# 1. Crear base de datos y tabla de regantes
-mysql -u root -p < database/setup.sql
-
-# 2. Crear tablas de mensajes y conversaciones
-mysql -u root -p < database/schema_mensajes.sql
+npm run setup-db
 ```
+
+Ver el detalle completo de tablas y relaciones en [ESQUEMA_BD.md](ESQUEMA_BD.md).
 
 ## 🎯 Uso
 
@@ -429,13 +427,13 @@ bot-irrigacion/
 ├── src/
 │   ├── index.js                      # Servidor Express + Socket.io
 │   ├── config/
-│   │   └── db.js                     # Conexión MySQL
+│   │   └── db.js                     # Conexión PostgreSQL y esquema
 │   ├── controllers/
 │   │   ├── webhookController.js      # Lógica del bot (state machine)
 │   │   └── apiController.js          # Controladores de API REST
 │   ├── services/
 │   │   ├── whatsappService.js        # Envío de mensajes WhatsApp
-│   │   ├── reganteService.js         # Consultas de regantes
+│   │   ├── clienteService.js         # Consultas y estado de clientes
 │   │   └── mensajeService.js         # Persistencia de mensajes
 │   └── routes/
 │       ├── webhookRoutes.js          # Rutas del webhook
@@ -460,7 +458,7 @@ bot-irrigacion/
 
 ### Estado: AWAITING_PADRON
 - Validación con RegEx
-- Consulta a base de datos MySQL
+- Consulta a base de datos PostgreSQL
 - Autenticación con datos del regante
 
 ### Estado: AUTH_MENU
@@ -524,10 +522,10 @@ bot-irrigacion/
 
 ## 🐛 Solución de Problemas
 
-### Error: "Cannot connect to MySQL"
-- Verificar que MySQL esté corriendo
+### Error: "Cannot connect to PostgreSQL"
+- Verificar que PostgreSQL esté corriendo
 - Revisar credenciales en `.env`
-- Ejecutar scripts SQL de creación de tablas
+- Ejecutar `npm run setup-db`
 
 ### Error: "#131030" (WhatsApp)
 - Verificar que el número tenga formato correcto
@@ -572,7 +570,7 @@ cat docs/GITHUB_SECRETS_SETUP.md
 - `WHATSAPP_TOKEN` - Token de Meta WhatsApp API
 - `WEBHOOK_APP_SECRET` - App Secret de Meta para validar webhooks
 - `JWT_SECRET` - Secreto para firmar tokens JWT
-- `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Credenciales de MySQL
+- `DB_CLIENT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Credenciales de PostgreSQL
 - `SENTRY_DSN` (opcional) - DSN de Sentry para monitoreo
 - `REDIS_URL` (opcional) - URL de conexión a Redis
 

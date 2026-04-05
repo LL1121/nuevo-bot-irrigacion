@@ -11,6 +11,12 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:critical": "vitest run src/utils/messageOrder.test.ts src/services/messageQueue.test.ts src/services/optimisticUpdates.test.ts src/utils/messageCachePolicy.test.ts",
+    "test:stress": "vitest run --watch=false src/stores/chatStore.stress.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:chat-load": "playwright test e2e/chat-load-and-burst.spec.ts",
+    "test:e2e:chat-load:gov": "E2E_CHAT_COUNT=25000 E2E_HISTORY_COUNT=300 E2E_BURST_COUNT=400 playwright test e2e/chat-load-and-burst.spec.ts",
+    "test:e2e:chat-load:gov-extreme": "E2E_CHAT_COUNT=50000 E2E_HISTORY_COUNT=300 E2E_BURST_COUNT=500 E2E_BURST_LATENCY_MAX_MS=3500 E2E_BURST_INTERACTION_LATENCY_MAX_MS=7500 playwright test e2e/chat-load-and-burst.spec.ts",
+    "test:e2e:headed": "playwright test --headed",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
     "release:check": "npm run test:critical && npm run build",
@@ -73,6 +79,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@sentry/cli": "^2.5.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -94,8 +101,11 @@
     "typescript": "^5.2.2",
     "typescript-eslint": "^8.57.0",
     "vite": "^8.0.3",
-    "vite-plugin-pwa": "^0.19.8",
+    "vite-plugin-pwa": "^1.2.0",
     "vitest": "^4.0.18",
     "workbox-window": "^7.4.0"
+  },
+  "overrides": {
+    "serialize-javascript": "7.0.5"
   }
 }

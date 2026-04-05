@@ -2,13 +2,10 @@ const { query, run, get } = require('../config/db');
 const { withTransaction } = require('./transactionService');
 const { registrarCambio } = require('./auditService');
 
-const DEFAULT_SUBDELEGACION_NOMBRE = process.env.DEFAULT_SUBDELEGACION_NOMBRE || 'Mendoza Central';
-const DEFAULT_SUBDELEGACION_CODIGO = process.env.DEFAULT_SUBDELEGACION_CODIGO || 'MZA_CENTRAL';
-const DEFAULT_SUBDELEGACION_DISPLAY_PHONE = process.env.DEFAULT_SUBDELEGACION_DISPLAY_PHONE || 'MENDOZA_CENTRAL_DEFAULT';
 const OPERATOR_SCHEDULE_TIMEZONE = process.env.OPERATOR_SCHEDULE_TIMEZONE || 'America/Argentina/Mendoza';
 const DEFAULT_FUERA_HORARIO_MSG = '👤 En este momento no hay operadores disponibles. Probá mañana de 8:00 a 13:30.';
 
-const normalizePhone = (value = '') => String(value || '').replace(/\D/g, '');
+const normalizeText = (value = '') => String(value || '').trim().toLowerCase();
 
 const parseTimeToMinutes = (value) => {
   const raw = String(value || '').trim();
@@ -70,7 +67,7 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
     if (rows && rows.length > 0) {
       // Cliente existe - actualizar ultima_interaccion, nombre y foto si están vacíos
       await run(
-        "UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP, nombre_whatsapp = COALESCE(nombre_whatsapp, ?), foto_perfil = COALESCE(foto_perfil, ?), estado_conversacion = COALESCE(estado_conversacion, 'BOT') WHERE telefono = ?",
+        "UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP, nombre_whatsapp = CASE WHEN (nombre_whatsapp IS NULL OR trim(nombre_whatsapp) = '' OR nombre_whatsapp = 'Sin Nombre') AND COALESCE(nombre_validado, 0) = 0 THEN ? ELSE nombre_whatsapp END, foto_perfil = COALESCE(foto_perfil, ?), estado_conversacion = COALESCE(estado_conversacion, 'BOT') WHERE telefono = ?",
         [nombre, fotoPerfil, telefono]
       );
       
@@ -85,7 +82,7 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
 
     // Cliente nuevo - crear registro
     await run(
-      "INSERT INTO clientes (telefono, nombre_whatsapp, foto_perfil, bot_activo, estado_conversacion, fecha_registro, ultima_interaccion) VALUES (?, ?, ?, 1, 'BOT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      "INSERT INTO clientes (telefono, nombre_whatsapp, nombre_validado, foto_perfil, bot_activo, estado_conversacion, fecha_registro, ultima_interaccion) VALUES (?, ?, 0, ?, 1, 'BOT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
       [telefono, nombre, fotoPerfil]
     );
 
@@ -196,6 +193,26 @@ const obtenerDni = async (telefono) => {
   } catch (error) {
     console.error('❌ Error obteniendo DNI:', error);
     return null;
+  }
+};
+
+/**
+ * Actualizar nombre visible del cliente
+ * @param {string} telefono - Número de teléfono
+ * @param {string} nombre - Nombre validado provisto por el usuario
+ * @returns {boolean} true si se actualizó
+ */
+const actualizarNombreWhatsapp = async (telefono, nombre, nombreValidado = false) => {
+  try {
+    const result = await run(
+      'UPDATE clientes SET nombre_whatsapp = ?, nombre_validado = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
+      [nombre, nombreValidado ? 1 : 0, telefono]
+    );
+
+    return result.changes > 0;
+  } catch (error) {
+    console.error('❌ Error actualizando nombre_whatsapp:', error);
+    throw error;
   }
 };
 
@@ -414,31 +431,136 @@ const obtenerUltimoCCPP = async (telefono) => {
   }
 };
 
-const ensureDefaultSubdelegacion = async () => {
-  const existing = await get(
-    'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1',
-    [DEFAULT_SUBDELEGACION_NOMBRE]
-  );
-
-  if (existing?.id) return existing;
-
-  await run(
-    'INSERT INTO subdelegaciones (nombre, codigo, display_phone_number, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
-    [DEFAULT_SUBDELEGACION_NOMBRE, DEFAULT_SUBDELEGACION_CODIGO, DEFAULT_SUBDELEGACION_DISPLAY_PHONE]
-  );
-
-  return get(
-    'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1',
-    [DEFAULT_SUBDELEGACION_NOMBRE]
-  );
-};
-
 const actualizarSubdelegacion = async (telefono, subdelegacion) => {
   await run(
     'UPDATE clientes SET subdelegacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
     [subdelegacion, telefono]
   );
   return true;
+};
+
+const listarSubdelegaciones = async () => {
+  const rows = await query(
+    'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones ORDER BY nombre ASC',
+    []
+  );
+  return rows || [];
+};
+
+const LOCALIDADES_ALIASES = {
+  mendoza: ['mendoza', 'mza'],
+  general_alvear: ['general alvear', 'general_alvear', 'gral alvear'],
+  malargue: ['malargue', 'malargüe'],
+  san_rafael: ['san rafael', 'san_rafael', 'sanrafael']
+};
+
+const LOCALIDADES_CANONICAS = {
+  mendoza: 'Mendoza',
+  general_alvear: 'General Alvear',
+  malargue: 'Malargüe',
+  san_rafael: 'San Rafael'
+};
+
+const toLookupKey = (value = '') => String(value || '')
+  .trim()
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '');
+
+const resolverSubdelegacionDesdeEntrada = async (entrada = '') => {
+  const normalizedInput = normalizeText(entrada);
+  if (!normalizedInput) return null;
+
+  const rows = await listarSubdelegaciones();
+  const normalizedSlug = toLookupKey(entrada);
+  const numericMatch = normalizedInput.match(/^subdelegacion_(\d+)$/) || normalizedInput.match(/^(\d+)$/);
+  const numericId = numericMatch ? Number(numericMatch[1]) : null;
+
+  const aliasMatch = Object.entries(LOCALIDADES_ALIASES).find(([aliasKey, aliases]) => {
+    const candidates = [aliasKey, ...aliases].map((value) => toLookupKey(value));
+    return candidates.some((candidate) => (
+      normalizedSlug === candidate ||
+      normalizedSlug.includes(candidate) ||
+      normalizedSlug.endsWith(`_${candidate}`)
+    ));
+  });
+  const aliasKey = aliasMatch ? aliasMatch[0] : null;
+
+  const keyMatches = (sourceKey, targetKey) => {
+    if (!sourceKey || !targetKey) return false;
+    return sourceKey === targetKey || sourceKey.includes(targetKey) || targetKey.includes(sourceKey);
+  };
+
+  const matchedRow = rows.find((row) => {
+    if (numericId && Number(row.id) === numericId) {
+      return true;
+    }
+
+    const nombre = normalizeText(row.nombre);
+    const codigo = normalizeText(row.codigo);
+    const rowKey = toLookupKey(row.nombre);
+    const codigoKey = toLookupKey(row.codigo);
+    return (
+      nombre === normalizedInput ||
+      codigo === normalizedInput ||
+      nombre.includes(normalizedInput) ||
+      keyMatches(rowKey, normalizedSlug) ||
+      keyMatches(codigoKey, normalizedSlug) ||
+      (aliasKey && (keyMatches(rowKey, aliasKey) || keyMatches(codigoKey, aliasKey)))
+    );
+  }) || null;
+
+  if (matchedRow) {
+    return matchedRow;
+  }
+
+  if (aliasKey) {
+    return {
+      id: null,
+      nombre: LOCALIDADES_CANONICAS[aliasKey] || aliasKey.replace(/_/g, ' '),
+      codigo: aliasKey,
+      display_phone_number: null,
+      fallback: true
+    };
+  }
+
+  return null;
+};
+
+const asignarSubdelegacionCliente = async (telefono, subdelegacionRef) => {
+  if (!subdelegacionRef) return null;
+
+  const ref = typeof subdelegacionRef === 'object'
+    ? subdelegacionRef
+    : { id: subdelegacionRef };
+
+  let subdelegacion = null;
+
+  if (ref.id) {
+    subdelegacion = await get(
+      'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE id = ? LIMIT 1',
+      [ref.id]
+    );
+  }
+
+  if (!subdelegacion?.nombre && ref.nombre) {
+    subdelegacion = {
+      id: null,
+      nombre: ref.nombre,
+      codigo: ref.codigo || null,
+      display_phone_number: null,
+      fallback: true
+    };
+  }
+
+  if (!subdelegacion?.nombre) {
+    return null;
+  }
+
+  await actualizarSubdelegacion(telefono, subdelegacion.nombre);
+  return subdelegacion;
 };
 
 const actualizarEstadoConversacion = async (telefono, estado = 'BOT') => {
@@ -454,61 +576,14 @@ const obtenerSubdelegacion = async (telefono) => {
   return row?.subdelegacion || null;
 };
 
-const resolverSubdelegacionPorNumeroEntrada = async (displayPhoneNumber = '') => {
-  const normalizedInput = normalizePhone(displayPhoneNumber);
-  if (!normalizedInput) return ensureDefaultSubdelegacion();
-
-  const rows = await query('SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones', []);
-  const matched = (rows || []).find((row) => normalizePhone(row.display_phone_number) === normalizedInput);
-  return matched || ensureDefaultSubdelegacion();
-};
-
-const asignarSubdelegacionPorEntradaSiFalta = async (telefono, displayPhoneNumber = '') => {
-  const actual = await obtenerSubdelegacion(telefono);
-  if (actual) {
-    return get('SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1', [actual]);
-  }
-
-  const resolved = await resolverSubdelegacionPorNumeroEntrada(displayPhoneNumber);
-  await actualizarSubdelegacion(telefono, resolved.nombre);
-  return resolved;
-};
-
 const resolverSubdelegacionCliente = async (telefono) => {
   const subdelegacionNombre = await obtenerSubdelegacion(telefono);
-  if (!subdelegacionNombre) {
-    const fallback = await ensureDefaultSubdelegacion();
-    await run(
-      'UPDATE clientes SET subdelegacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
-      [fallback.nombre, telefono]
-    );
-    return {
-      ...fallback,
-      usedFallback: true
-    };
-  }
+  if (!subdelegacionNombre) return null;
 
-  const found = await get(
+  return get(
     'SELECT id, nombre, codigo, display_phone_number FROM subdelegaciones WHERE nombre = ? LIMIT 1',
     [subdelegacionNombre]
   );
-
-  if (found?.id) {
-    return {
-      ...found,
-      usedFallback: false
-    };
-  }
-
-  const fallback = await ensureDefaultSubdelegacion();
-  await run(
-    'UPDATE clientes SET subdelegacion = ?, ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
-    [fallback.nombre, telefono]
-  );
-  return {
-    ...fallback,
-    usedFallback: true
-  };
 };
 
 const crearTicketHumano = async (telefono, subdelegacionId, motivo = 'DERIVACION_HUMANO') => {
@@ -549,14 +624,7 @@ const crearTicketHumano = async (telefono, subdelegacionId, motivo = 'DERIVACION
 
 const obtenerSubdelegacionInfo = async (telefono) => {
   const subdelegacionNombre = await obtenerSubdelegacion(telefono);
-  if (!subdelegacionNombre) {
-    const fallback = await ensureDefaultSubdelegacion();
-    return {
-      id: fallback?.id || null,
-      nombre: fallback?.nombre || DEFAULT_SUBDELEGACION_NOMBRE,
-      usedFallback: true
-    };
-  }
+  if (!subdelegacionNombre) return null;
 
   const found = await get('SELECT id, nombre FROM subdelegaciones WHERE nombre = ? LIMIT 1', [subdelegacionNombre]);
   if (found?.id) {
@@ -567,12 +635,7 @@ const obtenerSubdelegacionInfo = async (telefono) => {
     };
   }
 
-  const fallback = await ensureDefaultSubdelegacion();
-  return {
-    id: fallback?.id || null,
-    nombre: fallback?.nombre || DEFAULT_SUBDELEGACION_NOMBRE,
-    usedFallback: true
-  };
+  return null;
 };
 
 const listarTicketsPorSubdelegacion = async (subdelegacionId) => {
@@ -655,6 +718,7 @@ const validarHorarioAtencionOperador = async (subdelegacionId = null, now = new 
 module.exports = {
   obtenerOCrearCliente,
   obtenerTodosLosClientes,
+  actualizarNombreWhatsapp,
   actualizarDni,
   obtenerDni,
   cambiarEstadoBot,
@@ -668,10 +732,11 @@ module.exports = {
   guardarUltimoCCPP,
   obtenerUltimoCCPP,
   actualizarSubdelegacion,
+  listarSubdelegaciones,
+  resolverSubdelegacionDesdeEntrada,
+  asignarSubdelegacionCliente,
   actualizarEstadoConversacion,
   obtenerSubdelegacion,
-  resolverSubdelegacionPorNumeroEntrada,
-  asignarSubdelegacionPorEntradaSiFalta,
   resolverSubdelegacionCliente,
   crearTicketHumano,
   obtenerSubdelegacionInfo,

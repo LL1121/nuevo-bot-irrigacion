@@ -58,7 +58,7 @@ node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
 
 **Valor:**
 - Local: `localhost`
-- Producción: IP o dominio de tu servidor MySQL
+- Producción: IP o dominio de tu servidor PostgreSQL
 - Cloud: endpoint proporcionado por tu proveedor (AWS RDS, Azure, etc.)
 
 **Agregar a GitHub:**
@@ -70,7 +70,7 @@ node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
 ### 5. DB_USER
 
 **Valor:**
-- Usuario de MySQL con permisos en la base de datos
+- Usuario de PostgreSQL con permisos en la base de datos
 - Recomendado: crear usuario específico para la app (no usar `root` en producción)
 
 ```sql
@@ -88,7 +88,7 @@ FLUSH PRIVILEGES;
 ### 6. DB_PASSWORD
 
 **Valor:**
-- Contraseña del usuario de MySQL
+- Contraseña del usuario de PostgreSQL
 
 **Generar contraseña segura:**
 ```bash
@@ -97,7 +97,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 **Agregar a GitHub:**
 - Name: `DB_PASSWORD`
-- Value: (la contraseña del usuario MySQL)
+- Value: (la contraseña del usuario PostgreSQL)
 
 ---
 
@@ -173,14 +173,14 @@ gh secret remove WHATSAPP_TOKEN
 
 ### Error de conexión a base de datos
 - Verifica que DB_HOST, DB_USER, DB_PASSWORD, DB_NAME estén correctos
-- Si usas MySQL en GitHub Actions, considera usar un servicio temporal:
+- Si usas PostgreSQL en GitHub Actions, considera usar un servicio temporal:
   ```yaml
   services:
-    mysql:
-      image: mysql:8
+    postgres:
+      image: postgres:16
       env:
-        MYSQL_DATABASE: irrigacion
-        MYSQL_ROOT_PASSWORD: test
+        POSTGRES_DB: bot_irrigacion_prod
+        POSTGRES_PASSWORD: test
   ```
 
 ## Seguridad

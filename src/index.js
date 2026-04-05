@@ -39,18 +39,48 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 30000);
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
 const WEBHOOK_BODY_LIMIT = process.env.WEBHOOK_BODY_LIMIT || '512kb';
 
-const socketCorsWhitelist = [
-  'http://localhost:5173',
-  FRONTEND_URL
-].filter(Boolean);
+const normalizeOrigin = (value) => {
+  if (!value) return '';
+  try {
+    return new URL(value).origin;
+  } catch {
+    return String(value).trim();
+  }
+};
+
+const configuredOrigins = [
+  process.env.CORS_ORIGIN,
+  process.env.CORS_ORIGINS,
+  process.env.FRONTEND_URL,
+  process.env.BASE_URL
+].flatMap((value) => {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((item) => normalizeOrigin(item))
+    .filter(Boolean);
+});
+
+const corsOrigins = Array.from(new Set(configuredOrigins));
+
+const isLocalOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true;
+
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (isLocalOrigin(normalizedOrigin)) return true;
+  if (corsOrigins.includes(normalizedOrigin)) return true;
+
+  return false;
+};
 
 // Configurar Socket.io con CORS
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (socketCorsWhitelist.includes(origin)) return callback(null, true);
-      return callback(new Error('Not allowed by Socket.IO CORS'));
+      if (isAllowedOrigin(origin)) return callback(null, true);
+      return callback(new Error(`Not allowed by Socket.IO CORS: ${origin || 'no origin'}`));
     },
     methods: ['GET', 'POST'],
     credentials: true
@@ -70,18 +100,10 @@ app.use(compression({
   threshold: 1024 // Only compress responses > 1KB
 }));
 
-// 3) Strict CORS whitelist
-const corsWhitelist = [
-  'http://localhost:5173',
-  FRONTEND_URL
-].filter(Boolean);
-
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow server-to-server or CLI requests without origin
-    if (!origin) return callback(null, true);
-    if (corsWhitelist.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error(`Not allowed by CORS: ${origin || 'no origin'}`));
   },
   credentials: true
 }));

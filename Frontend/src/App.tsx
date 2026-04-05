@@ -53,11 +53,18 @@ type InteractiveSection = {
   rows?: InteractiveOption[];
 };
 
+type InteractiveButton = {
+  id?: string | number;
+  title?: string;
+};
+
 type InteractiveMessagePayload = {
+  type?: string;
   header?: string;
   body?: string;
   buttonText?: string;
   sections?: InteractiveSection[];
+  buttons?: InteractiveButton[];
 };
 
 type LegacyAudioWindow = Window & {
@@ -163,7 +170,9 @@ export default function App() {
   const [chatSearchText, setChatSearchText] = useState('');
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [lightboxVideo, setLightboxVideo] = useState<string | null>(null);
+  const [lightboxFile, setLightboxFile] = useState<{ url: string; filename: string } | null>(null);
   const [lightboxMessageId, setLightboxMessageId] = useState<number | null>(null);
+  const [urlContextMenu, setUrlContextMenu] = useState<{ visible: boolean; x: number; y: number; url: string }>({ visible: false, x: 0, y: 0, url: '' });
   const [highlightedMessage, setHighlightedMessage] = useState<number | null>(null);
   const [imageZoom, setImageZoom] = useState(1);
   const [imageRotation, setImageRotation] = useState(0);
@@ -192,6 +201,7 @@ export default function App() {
   const [showVolumeControl, setShowVolumeControl] = useState<number | null>(null);
   const [messagesLimit] = useState(20); // Mostrar solo 20 mensajes inicialmente
   const previousMessageCountRef = useRef<number>(0); // Para detectar si se agregó al final
+  const previousLastMessageKeyRef = useRef<string>('');
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatMenuRef = useRef<HTMLDivElement>(null);
@@ -378,6 +388,34 @@ const getMediaUrl = (mediaId: string | null | undefined): string => {
   return `${env.apiUrl}/api/media/${mediaId}`;
 };
 
+const detectAndRenderUrls = (text: string) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlRegex);
+  return parts.map((part, i) => {
+    if (urlRegex.test(part)) {
+      return (
+        <span key={i}>
+          <a 
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline font-medium hover:opacity-80 break-all"
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setUrlContextMenu({ visible: true, x: e.clientX, y: e.clientY, url: part });
+            }}
+          >
+            {part}
+          </a>
+        </span>
+      );
+    }
+    return part;
+  });
+};
+
 const normalizeSenderType = (value?: string) => (value || '').trim().toLowerCase();
 const isUserSender = (value?: string) => {
   const v = normalizeSenderType(value);
@@ -406,9 +444,49 @@ const phonesMatch = (a?: string, b?: string) => {
   return !!na && !!nb && na === nb;
 };
 
-const normalizeMessageType = (rawType: unknown, normalizedType: string) => {
-  if (rawType === 'interactive_list') return 'interactive';
-  return (typeof rawType === 'string' ? rawType : '') || normalizedType || 'text';
+const FILE_URL_REGEX = /(https?:\/\/[^\s"']+\.(pdf|doc|docx|xls|xlsx|ppt|pptx|csv|txt|zip|rar|7z|jpg|jpeg|png|gif|webp|mp3|wav|ogg|mp4|mov|avi|mkv))(?:\?[^\s"']*)?/i;
+
+const extractFileUrlFromText = (text?: string) => {
+  if (!text || typeof text !== 'string') return null;
+  const match = text.match(FILE_URL_REGEX);
+  return match ? match[0] : null;
+};
+
+const deriveFilenameFromUrl = (url?: string) => {
+  if (!url) return null;
+  try {
+    const pathname = new URL(url).pathname;
+    const segment = pathname.split('/').pop() || '';
+    return segment ? decodeURIComponent(segment) : null;
+  } catch {
+    const segment = url.split('?')[0].split('/').pop() || '';
+    return segment ? decodeURIComponent(segment) : null;
+  }
+};
+
+const normalizeMessageType = (
+  rawType: unknown,
+  normalizedType: string,
+  options?: { fileUrl?: string | null; filename?: string | null; text?: string }
+) => {
+  const raw = typeof rawType === 'string' ? rawType.trim().toLowerCase() : '';
+  const normalized = (normalizedType || '').trim().toLowerCase();
+
+  const explicitType = raw === 'interactive_list' || raw === 'interactive_buttons'
+    ? 'interactive'
+    : (raw || normalized || 'text');
+
+  const inferredFileUrl = options?.fileUrl || extractFileUrlFromText(options?.text);
+  const hasAttachment = !!inferredFileUrl || !!options?.filename;
+
+  if (hasAttachment) {
+    if (['image', 'video', 'audio', 'file', 'interactive'].includes(explicitType)) {
+      return explicitType;
+    }
+    return 'file';
+  }
+
+  return explicitType;
 };
 
 const parseMessageDate = (value: unknown) => {
@@ -434,6 +512,25 @@ const formatWhatsAppText = (text: string): string => {
   formatted = formatted.replace(/```([^`]+)```/g, '<code class="bg-black/10 dark:bg-white/10 px-1 rounded">$1</code>');
   
   return formatted;
+};
+
+const formatFileSize = (size?: number | null) => {
+  if (!size || size <= 0) return 'Tamaño desconocido';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const decimals = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+};
+
+const getFileExtension = (filename?: string | null) => {
+  if (!filename) return 'FILE';
+  const ext = filename.split('.').pop()?.trim();
+  return ext ? ext.toUpperCase() : 'FILE';
 };
 
 const hashString = (value: string) => {
@@ -861,7 +958,51 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     loadChats();
     
     // Escuchar mensajes en tiempo real
-    const handleNewMessage = (data: RawSocketMessage) => {
+    const normalizeSocketPayload = (payload: unknown): RawSocketMessage | null => {
+      if (!payload || typeof payload !== 'object') {
+        console.warn('⚠️ Socket payload inválido (no es objeto):', payload);
+        return null;
+      }
+
+      const raw = payload as Record<string, unknown>;
+
+      // Backend variants: direct message, wrapped in `message`, or wrapped in `data`.
+      const candidate =
+        (raw.message && typeof raw.message === 'object' ? raw.message : null) ||
+        (raw.data && typeof raw.data === 'object' ? raw.data : null) ||
+        raw;
+
+      const normalized = candidate as RawSocketMessage;
+      const phone = normalized.telefono || normalized.cliente_telefono;
+      const nestedPayload =
+        normalized.mensaje && typeof normalized.mensaje === 'object'
+          ? (normalized.mensaje as Record<string, unknown>)
+          : null;
+      const nestedFileUrl = nestedPayload && typeof nestedPayload.url_archivo === 'string'
+        ? nestedPayload.url_archivo
+        : (nestedPayload && typeof nestedPayload.url === 'string' ? nestedPayload.url : undefined);
+      const hasMessageBody =
+        normalized.mensaje !== undefined ||
+        normalized.cuerpo !== undefined ||
+        normalized.url_archivo !== undefined ||
+        nestedFileUrl !== undefined;
+
+      if (!phone || !hasMessageBody) {
+        console.warn('⚠️ Socket payload sin phone o mensaje:', {
+          tiene_phone: !!phone,
+          tiene_mensaje: hasMessageBody,
+          keys: Object.keys(raw)
+        });
+        return null;
+      }
+
+      return normalized;
+    };
+
+    const handleNewMessage = (payload: unknown) => {
+      const data = normalizeSocketPayload(payload);
+      if (!data) return;
+
       // 🔍 DEBUG: Log del mensaje entrante para ver estructura real
       console.log('🔍 DEBUG - Mensaje recibido del socket:', {
         raw_data: data,
@@ -870,7 +1011,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         telefono: data.telefono || data.cliente_telefono,
         mensaje: data.mensaje,
         cuerpo: data.cuerpo,
-        timestamp: data.timestamp || data.created_at || data.createdAt || data.fecha
+        timestamp: data.timestamp || data.created_at || data.createdAt || data.fecha,
+        tiene_archivo: !!data.url_archivo,
+        nombre_archivo: data.archivo_nombre
       });
       
       // Normalizar datos del socket: mapear campos de BD a campos esperados
@@ -881,10 +1024,37 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           ? (data.mensaje.cuerpo || data.mensaje.text || data.mensaje.contenido || data.mensaje.body || data.mensaje)
           : data.mensaje) ??
         '';
+      const nestedPayload =
+        data.mensaje && typeof data.mensaje === 'object'
+          ? (data.mensaje as Record<string, unknown>)
+          : null;
+      const nestedFileUrl = nestedPayload
+        ? ((typeof nestedPayload.url_archivo === 'string' && nestedPayload.url_archivo) ||
+           (typeof nestedPayload.url === 'string' && nestedPayload.url) ||
+           (typeof nestedPayload.fileUrl === 'string' && nestedPayload.fileUrl) ||
+           (typeof nestedPayload.media_url === 'string' && nestedPayload.media_url) ||
+           null)
+        : null;
+      const nestedFilename = nestedPayload
+        ? ((typeof nestedPayload.archivo_nombre === 'string' && nestedPayload.archivo_nombre) ||
+           (typeof nestedPayload.filename === 'string' && nestedPayload.filename) ||
+           (typeof nestedPayload.name === 'string' && nestedPayload.name) ||
+           null)
+        : null;
       const normalizedContent = normalizeMessageContent(rawMessageContent);
       const messageText = normalizedContent.text;
       const messagePreview = normalizedContent.preview;
-      const messageType = normalizeMessageType(data.tipo, normalizedContent.type);
+      const resolvedFileUrl = data.url_archivo || nestedFileUrl || extractFileUrlFromText(messageText);
+      const resolvedFilename = data.archivo_nombre || nestedFilename || deriveFilenameFromUrl(resolvedFileUrl || undefined);
+      const resolvedDisplayText =
+        messageText ||
+        messagePreview ||
+        (resolvedFileUrl ? '📎 Archivo adjunto' : '[Mensaje sin contenido]');
+      const messageType = normalizeMessageType(data.tipo, normalizedContent.type, {
+        fileUrl: resolvedFileUrl,
+        filename: resolvedFilename,
+        text: messageText
+      });
       
       // Normalizar nombre: si es objeto JSON, convertir a string
       let nombre = data.nombre || '';
@@ -893,30 +1063,34 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       }
       
       const rawTimestamp = data.timestamp || data.created_at || data.createdAt || data.fecha;
+      const fallbackTimestamp = new Date().toISOString();
+      const timestampForId = rawTimestamp || fallbackTimestamp;
+      const hasBackendId = data.id !== undefined && data.id !== null && data.id !== '';
       const stableId = data.id || buildStableMessageId({
         phone: data.telefono || data.cliente_telefono,
-        timestamp: rawTimestamp,
+        timestamp: timestampForId,
         emisor: data.emisor || data.tipo,
         text: messageText,
         type: messageType
       });
+      // Cuando backend no manda ID persistente, generar un ID único local para evitar
+      // colisiones que oculten mensajes nuevos en el panel principal.
+      const generatedId = `sock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const finalId = hasBackendId ? (data.id as string | number) : generatedId;
       const newMsg = {
-        id: stableId,
+        id: finalId,
         telefono: data.telefono || data.cliente_telefono,
-        mensaje: messageText,  // Siempre un string normalizado
+        mensaje: resolvedDisplayText,
         tipo: messageType,
         emisor: data.emisor,
-        timestamp: rawTimestamp,
-        url_archivo: data.url_archivo,
-        archivo_nombre: data.archivo_nombre,
+        timestamp: rawTimestamp || fallbackTimestamp,
+        url_archivo: resolvedFileUrl,
+        archivo_nombre: resolvedFilename,
         archivo_tamanio: data.archivo_tamanio,
         duracion: data.duracion,
         cuerpo: data.cuerpo,
         nombre: nombre  // Siempre un string normalizado
       };
-      
-      // SAFEGUARD: Si no tiene ID real del backend, usar ID estable
-      const finalId = data.id || stableId;
       
       setConversationsState(prev => {
         const existingChatIndex = prev.findIndex(c => phonesMatch(c.phone, newMsg.telefono));
@@ -936,11 +1110,11 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             // newMsg.mensaje ya está normalizado a string en handleNewMessage
             const incomingText = newMsg.mensaje;
             const incomingTextKey = typeof incomingText === 'string' ? incomingText.trim() : JSON.stringify(incomingText ?? '');
-            const incomingBucket = Math.floor(msgTimestamp.getTime() / 5000);
+            const incomingBucket = Math.floor(msgTimestamp.getTime() / 1000);
             const incomingSent = !isUserSender(newMsg.emisor || newMsg.tipo);
             const emisorLimpio = normalizeSenderType(newMsg.emisor || newMsg.tipo);
-            const isOutgoingFromOperator = ['operador', 'operadora', 'agent', 'agente', 'bot'].includes(emisorLimpio);
-            const matchedTempId = isOutgoingFromOperator
+            const isOutgoingFromPanelOperator = ['operador', 'operadora', 'agent', 'agente'].includes(emisorLimpio);
+            const matchedTempId = isOutgoingFromPanelOperator
               ? consumePendingByMatch({
                   phone: newMsg.telefono,
                   text: incomingText,
@@ -957,25 +1131,45 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               expected: 'sent=true significa operador (verde), sent=false significa usuario (blanco)'
             });
             
-            // Verificar si el mensaje ya existe (evitar duplicados del optimistic update)
-            const messageExists = chat.messages.some((m: ChatMessage) => {
-              // Si llega ID real/estable, deduplicar SOLO por ID para evitar falsos positivos
-              if (newMsg.id !== undefined && newMsg.id !== null && newMsg.id !== '') {
-                return m.id === newMsg.id;
-              }
-              
-              // Verificar por texto y timestamp cercano (mismo mensaje en los últimos 5 seg)
-              const mTimestamp = new Date(m.date);
-              const mBucket = Math.floor(mTimestamp.getTime() / 5000);
-              const mTextKey = typeof m.text === 'string' ? m.text.trim() : JSON.stringify(m.text ?? '');
-              return mTextKey === incomingTextKey && mBucket === incomingBucket && m.sent === incomingSent;
+            // ✅ DEDUPLICACIÓN CONTENT-BASED:
+            // Verificar si el mensaje ya existe usando CONTENIDO como clave, no solo ID.
+            // Esto previene duplicados cuando el backend envía IDs en milisegundos cercanos.
+            // Clave: phone + emisor + tipo + timestamp_segundo + texto normalizado
+            const msgTimestampDate = parseMessageDate(newMsg.timestamp);
+            const msgTimestampSecond = Math.floor(msgTimestampDate.getTime() / 1000); // Tiempo en segundos, no milisegundos
+            const normalizedMsgText = (newMsg.mensaje || '').trim().toLowerCase();
+            
+            const contentSignature = `${newMsg.telefono}|${normalizeSenderType(newMsg.emisor || newMsg.tipo)}|${newMsg.tipo}|${msgTimestampSecond}|${normalizedMsgText}`;
+            
+            // Buscar en mensajes actuales
+            const existsInVisible = chat.messages.some((m: ChatMessage) => {
+              const visibleTimestampSecond = Math.floor(new Date(m.date || 0).getTime() / 1000);
+              const normalizedVisibleText = (m.text || '').trim().toLowerCase();
+              const visibleSignature = `${chat.phone}|${normalizeSenderType(m.sent ? 'operador' : 'usuario')}|${m.type}|${visibleTimestampSecond}|${normalizedVisibleText}`;
+              return visibleSignature === contentSignature;
             });
+            
+            // Buscar en caché de memoria (en caso de que ya esté fuera de la ventana visible)
+            const phoneKey = normalizePhoneKey(newMsg.telefono);
+            const phoneCache = allMessagesCache[phoneKey] || [];
+            const existsInCache = phoneCache.some((m: ChatMessage) => {
+              const cacheTimestampSecond = Math.floor(new Date(m.date || 0).getTime() / 1000);
+              const normalizedCacheText = (m.text || '').trim().toLowerCase();
+              const cacheSignature = `${newMsg.telefono}|${normalizeSenderType(m.sent ? 'operador' : 'usuario')}|${m.type}|${cacheTimestampSecond}|${normalizedCacheText}`;
+              return cacheSignature === contentSignature;
+            });
+            
+            const messageExists = existsInVisible || existsInCache;
             
             console.log('🔍 DEBUG - Check duplicado:', {
               messageExists,
+              contentSignature,
+              existsInVisible,
+              existsInCache,
               newMsgId: newMsg.id,
               newMsgText: newMsg.mensaje,
-              currentMessagesCount: chat.messages.length
+              currentMessagesCount: chat.messages.length,
+              cacheSize: phoneCache.length
             });
             
             if (!messageExists) {
@@ -984,7 +1178,14 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               // y NO reemplazarlo, para mantener el timestamp original
               const isOperatorMessage = ['operador', 'operadora', 'agent', 'agente', 'bot'].includes(emisorLimpio);
               const existingOptimisticMsg = isOperatorMessage 
-                ? chat.messages.find((m: ChatMessage) => (matchedTempId ? m.id === matchedTempId : (m.text === incomingText && m.sent === true)))
+                ? chat.messages.find((m: ChatMessage) => {
+                    const isTempId = typeof m.id === 'string' && m.id.startsWith('temp_');
+                    const isSending = m.status === 'sending';
+                    const canBeReplaced = isTempId || isSending;
+
+                    if (!canBeReplaced) return false;
+                    return matchedTempId ? m.id === matchedTempId : (m.text === incomingText && m.sent === true);
+                  })
                 : null;
               
               if (existingOptimisticMsg) {
@@ -1008,10 +1209,10 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 });
               } else {
                 // Agregar nuevo mensaje
-                const messageText = incomingText;
+                const messageText = incomingText || '📩 Mensaje recibido';
                 const mappedMessage = {
                   id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
-                  text: messageText || '',
+                  text: messageText,
                   time: formatTime(msgTimestamp),
                   date: msgTimestamp.toISOString(),
                   sent: !isUserSender(newMsg.emisor || newMsg.tipo),
@@ -1030,48 +1231,42 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                   sent: mappedMessage.sent
                 });
                 
-                // IMPORTANTE: Crear nuevo array ordenado por fecha (no mutar)
-                const existingIds = new Set(chat.messages.map((m: ChatMessage) => m.id));
-                if (!existingIds.has(mappedMessage.id)) {
-                  chat.messages = appendIncomingMessage(chat.messages, mappedMessage, { limit: messagesLimit });
-                  
-                  // FORCE UPDATE: Crear nuevo objeto de chat para triggear re-render
-                  updated[existingChatIndex] = { ...chat };
-                  
-                  // También agregar al caché de memoria
-                  setAllMessagesCache(prev => {
-                    const phoneKey = normalizePhoneKey(chat.phone);
-                    const phoneCache = prev[phoneKey] || [];
-                    const cacheIds = new Set(phoneCache.map((m: ChatMessage) => m.id));
-                    if (!cacheIds.has(mappedMessage.id)) {
-                      const updatedCache = mergeMessageBatches(phoneCache, [mappedMessage]);
-                      const nextCache = { ...prev, [phoneKey]: updatedCache };
-                      return applyMessageCachePolicy(nextCache);
-                    }
-                    return prev;
+                // Mantener el tamaño de ventana actualmente visible (si el operador ya cargó más,
+                // no volver a recortar a 20 al llegar un mensaje nuevo).
+                const visibleWindowSize = Math.max(messagesLimit, chat.messages.length || messagesLimit);
+                chat.messages = appendIncomingMessage(chat.messages, mappedMessage, { limit: visibleWindowSize });
+                
+                // Incrementar contador solo si es mensaje del usuario Y no es del operador
+                const isUserMessage = isUserSender(emisorLimpio);
+                if (isUserMessage && selectedChat !== existingChatIndex) {
+                  // Solo incrementar si NO estamos en este chat
+                  chat.unread = (chat.unread || 0) + 1;
+                }
+                
+                // FORCE UPDATE: Crear nuevo objeto de chat para triggear re-render
+                updated[existingChatIndex] = { ...chat };
+                
+                // También agregar al caché de memoria
+                setAllMessagesCache(prev => {
+                  const cacheKey = normalizePhoneKey(chat.phone);
+                  const phoneCache = prev[cacheKey] || [];
+                  const updatedCache = mergeMessageBatches(phoneCache, [mappedMessage]);
+                  const nextCache = { ...prev, [cacheKey]: updatedCache };
+                  return applyMessageCachePolicy(nextCache);
+                });
+                
+                // 📢 Mostrar notificación si el usuario no está en este chat
+                if (isUserMessage && selectedChat !== existingChatIndex) {
+                  const contactName = chat.nombre || chat.phone;
+                  const messagePreview = messageText.substring(0, 100);
+                  showNotification(`Mensaje de ${contactName}`, {
+                    body: messagePreview,
+                    silent: false
                   });
-                  
-                  // Incrementar contador solo si es mensaje del usuario Y no es del operador
-                  const isUserMessage = isUserSender(emisorLimpio);
-                  if (isUserMessage) {
-                    chat.unread = (chat.unread || 0) + 1;
-                    
-                    // 📢 Mostrar notificación si el usuario no está en este chat
-                    if (selectedChat !== existingChatIndex) {
-                      const contactName = chat.nombre || chat.phone;
-                      const messagePreview = messageText.substring(0, 100);
-                      showNotification(`Mensaje de ${contactName}`, {
-                        body: messagePreview,
-                        silent: false
-                      });
-                    }
-                  }
-                } else {
-                  // ID ya existe, ignorar
                 }
               }
             } else {
-              // Mensaje ya existe, no duplicar
+              // Mensaje duplicado detectado por contenido, ignorar
             }
           }
           
@@ -1095,7 +1290,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             id: Date.now(),
             name: newMsg.nombre || newMsg.telefono,
             phone: newMsg.telefono,
-            lastMessage: messagePreview || messageText || '',
+            lastMessage: messagePreview || resolvedDisplayText,
             lastMessageDate: msgTimestamp.toISOString(),
             time: formatTime(msgTimestamp),
             unread: isUserSender(newMsg.emisor || newMsg.tipo) ? 1 : 0,
@@ -1108,7 +1303,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             notes: [],
             messages: [{
               id: newMsg.id || `temp_${Date.now()}_${Math.random()}`,
-              text: messageText || '',
+              text: resolvedDisplayText,
               time: formatTime(msgTimestamp),
               date: msgTimestamp.toISOString(),
               sent: !isUserSender(newMsg.emisor || newMsg.tipo),
@@ -1173,8 +1368,18 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     };
 
     socket.on('nuevo_mensaje', handleNewMessage);
+    socket.on('new_message', handleNewMessage);
+    socket.on('message', handleNewMessage);
     socket.on('bot_mode_changed', handleBotModeChanged);
     socket.on('typing', handleTyping);
+
+    const handleE2ENewMessage = (event: Event) => {
+      const customEvent = event as CustomEvent<RawSocketMessage>;
+      if (!customEvent?.detail) return;
+      handleNewMessage(customEvent.detail);
+    };
+
+    window.addEventListener('e2e:nuevo_mensaje', handleE2ENewMessage as EventListener);
     
     // Cleanup al desmontar
     return () => {
@@ -1187,8 +1392,11 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       socket.off('nuevo_mensaje', handleNewMessage);
+      socket.off('new_message', handleNewMessage);
+      socket.off('message', handleNewMessage);
       socket.off('bot_mode_changed', handleBotModeChanged);
       socket.off('typing', handleTyping);
+      window.removeEventListener('e2e:nuevo_mensaje', handleE2ENewMessage as EventListener);
     };
   }, [isAuthenticated]);
 
@@ -1232,19 +1440,23 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     if (storedSound !== null) setSoundEnabled(storedSound === 'true');
   }, []);
 
-  // Auto-scroll solo cuando llegan mensajes NUEVOS al final (no al cargar más antiguos)
+  // Auto-scroll cuando cambia el último mensaje visible (no depende del largo del array)
   useEffect(() => {
     if (!currentChat || !currentChat.messages || currentChat.messages.length === 0) return;
-    
+
     const currentCount = currentChat.messages.length;
     const previousCount = previousMessageCountRef.current;
-    
+    const lastMessage = currentChat.messages[currentCount - 1];
+    const currentLastKey = `${String(lastMessage?.id ?? '')}|${String(lastMessage?.date ?? '')}|${String(lastMessage?.text ?? '')}`;
+    const previousLastKey = previousLastMessageKeyRef.current;
+
     // Si estamos cargando más mensajes antiguos, NO hacer scroll
     if (isLoadingMoreMessages) {
       previousMessageCountRef.current = currentCount;
+      previousLastMessageKeyRef.current = currentLastKey;
       return;
     }
-    
+
     // Si es la primera carga (previousCount === 0), hacer scroll instantáneo sin animación
     if (previousCount === 0) {
       const messagesEnd = document.getElementById('messages-end');
@@ -1252,24 +1464,26 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         messagesEnd.scrollIntoView({ behavior: 'auto', block: 'end' });
       }
       previousMessageCountRef.current = currentCount;
+      previousLastMessageKeyRef.current = currentLastKey;
       return;
     }
-    
-    // Si hay más mensajes que antes, significa que se agregó al FINAL (mensaje nuevo)
-    // Solo hacer scroll si aumentó la cantidad (mensaje nuevo al final)
-    if (currentCount > previousCount) {
+
+    // Si cambió el último mensaje visible, mantener el chat anclado al final.
+    if (currentLastKey !== previousLastKey) {
       const timer = setTimeout(() => {
         const messagesEnd = document.getElementById('messages-end');
         if (messagesEnd) {
-          messagesEnd.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          messagesEnd.scrollIntoView({ behavior: 'auto', block: 'end' });
         }
       }, 50);
       previousMessageCountRef.current = currentCount;
+      previousLastMessageKeyRef.current = currentLastKey;
       return () => clearTimeout(timer);
     }
-    
+
     // Actualizar el contador sin hacer scroll
     previousMessageCountRef.current = currentCount;
+    previousLastMessageKeyRef.current = currentLastKey;
   }, [currentChat?.messages, selectedChat, isLoadingMoreMessages]);
   
   // Resetear el contador cuando cambia de chat
@@ -1344,7 +1558,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             
             const rawTimestamp = msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp;
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
-            const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
+            const resolvedFileUrl = msg.url_archivo || extractFileUrlFromText(normalizedContent.text);
+            const resolvedFilename = msg.archivo_nombre || deriveFilenameFromUrl(resolvedFileUrl || undefined);
+            const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type, {
+              fileUrl: resolvedFileUrl,
+              filename: resolvedFilename,
+              text: normalizedContent.text
+            });
             const msgDate = parseMessageDate(rawTimestamp);
             
             const stableId = msg.id || buildStableMessageId({
@@ -1363,8 +1583,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               sent: sent,
               read: true,
               type: normalizedType,
-              fileUrl: msg.url_archivo,
-              filename: msg.archivo_nombre,
+              fileUrl: resolvedFileUrl,
+              filename: resolvedFilename,
               size: msg.archivo_tamanio,
               duration: msg.duracion
             };
@@ -1374,7 +1594,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           const allMappedMessages = allMessages.map((msg: RawApiMessage) => {
             const tipo = normalizeSenderType(msg.emisor || msg.tipo || '');
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
-            const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type);
+            const resolvedFileUrl = msg.url_archivo || extractFileUrlFromText(normalizedContent.text);
+            const resolvedFilename = msg.archivo_nombre || deriveFilenameFromUrl(resolvedFileUrl || undefined);
+            const normalizedType = normalizeMessageType(msg.tipo, normalizedContent.type, {
+              fileUrl: resolvedFileUrl,
+              filename: resolvedFilename,
+              text: normalizedContent.text
+            });
             const msgDate = parseMessageDate(msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp);
             const stableId = msg.id || buildStableMessageId({
               phone: currentChat.phone,
@@ -1391,8 +1617,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               sent: !isUserSender(tipo),
               read: true,
               type: normalizedType,
-              fileUrl: msg.url_archivo,
-              filename: msg.archivo_nombre,
+              fileUrl: resolvedFileUrl,
+              filename: resolvedFilename,
               size: msg.archivo_tamanio,
               duration: msg.duracion
             };
@@ -2156,16 +2382,20 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   const isOnline = true;
 
   const filteredMessages = useMemo(() => {
-    if (!currentChat) return [];
+    const activeChat = selectedId !== undefined && selectedId !== null
+      ? conversationsState.find((chat) => chat.id === selectedId) || null
+      : (selectedChat !== null ? conversationsState[selectedChat] : null);
+
+    if (!activeChat) return [];
 
     const base = !chatSearchText.trim()
-      ? currentChat.messages
-      : currentChat.messages.filter((msg) =>
+      ? activeChat.messages
+      : activeChat.messages.filter((msg) =>
           msg.text.toLowerCase().includes(chatSearchText.toLowerCase())
         );
 
     return base;
-  }, [currentChat, chatSearchText]);
+  }, [conversationsState, selectedId, selectedChat, chatSearchText]);
 
   const filteredConversations = conversationsState.filter(conv => {
     // Filtrar archivadas
@@ -2397,13 +2627,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-1 gap-2">
                     <h3 className="font-semibold text-gray-900 dark:text-gray-100 truncate">{conv.name}</h3>
-                    {conv.unread > 0 ? (
+                    {(conv.unread > 0 && selectedId !== conv.id) ? (
                       <span 
                         className="text-white text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 animate-pulse transition-all duration-300"
                         style={{ 
                           backgroundColor: themeColors[theme].hex,
-                          opacity: conv.unread > 0 ? 1 : 0,
-                          transform: conv.unread > 0 ? 'scale(1)' : 'scale(0.8)'
+                          opacity: 1,
+                          transform: 'scale(1)'
                         }}
                       >
                         {conv.unread}
@@ -2656,30 +2886,51 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                   // Primero verificar si hay mensajes en el caché de memoria
                   const cachedMessages = allMessagesCache[cachePhone] || [];
                   const currentIndex = currentMessageIndex[phone] || 0;
+                  const visibleCount = currentChat.messages?.length || 0;
+
+                  if (env.enableLogging) {
+                    console.log('🔎 LOAD_MORE_START', {
+                      phone,
+                      visibleCount,
+                      cachedCount: cachedMessages.length,
+                      currentIndex
+                    });
+                  }
                   
-                  if (cachedMessages.length > 0 && currentIndex > 0) {
+                  if (cachedMessages.length > visibleCount) {
                     // Hay mensajes en caché para mostrar
+
+                    // Aumentar la ventana visible de forma determinista: +messagesLimit mensajes más antiguos.
+                    const nextVisibleCount = Math.min(cachedMessages.length, visibleCount + messagesLimit);
+                    const startIndex = Math.max(0, cachedMessages.length - nextVisibleCount);
+                    const nextVisibleMessages = cachedMessages.slice(startIndex);
+
+                    if (env.enableLogging) {
+                      console.log('🔎 LOAD_MORE_FROM_CACHE', {
+                        phone,
+                        nextVisibleCount,
+                        startIndex,
+                        resultingVisible: nextVisibleMessages.length
+                      });
+                    }
+
+                    if (nextVisibleMessages.length === 0) {
+                      setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                      setIsLoadingMoreMessages(false);
+                      return;
+                    }
                     
-                    // Calcular cuántos mensajes cargar
-                    const messagesToLoad = Math.min(messagesLimit, currentIndex);
-                    const startIndex = currentIndex - messagesToLoad;
-                    
-                    // Obtener mensajes del caché
-                    const messagesFromCache = cachedMessages.slice(startIndex, currentIndex);
-                    
-                    // Añadir al principio de los mensajes actuales (deduplicando por ID)
+                    // Unificar merge/dedupe con la misma política central del resto de rutas
                     setConversationsState(prev => {
                       const updated = [...prev];
                       const chatIndex = updated.findIndex(c => phonesMatch(c.phone, phone));
                       if (chatIndex !== -1) {
-                        const existingIds = new Set(updated[chatIndex].messages.map((m) => m.id));
-                        const newMessages = messagesFromCache.filter((m) => !existingIds.has(m.id));
-                        updated[chatIndex].messages = [...newMessages, ...updated[chatIndex].messages];
+                        updated[chatIndex].messages = nextVisibleMessages;
                       }
                       return updated;
                     });
                     
-                    // Actualizar el índice
+                    // Actualizar el índice (inicio de la ventana visible en caché)
                     setCurrentMessageIndex(prev => ({ ...prev, [phone]: startIndex }));
                     
                     // 📍 RESTAURAR posición de scroll después de que se agreguen los mensajes
@@ -2714,44 +2965,128 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         params: { limit: 100, offset: currentOffset },
                         headers: {}
                       });
-                      const newMessages: RawApiMessage[] = response.data.mensajes || response.data.messages || [];
+                      let fetchedMessages: RawApiMessage[] = response.data.mensajes || response.data.messages || [];
+
+                      if (env.enableLogging) {
+                        console.log('🔎 LOAD_MORE_API_PAGE', {
+                          phone,
+                          requestedOffset: currentOffset,
+                          requestedLimit: 100,
+                          fetchedCount: fetchedMessages.length
+                        });
+                      }
                       
-                      if (newMessages.length > 0) {
+                      if (fetchedMessages.length > 0) {
                         
-                        const allMappedMessages: ChatMessage[] = newMessages.map((msg) => {
+                        const allMappedMessages: ChatMessage[] = fetchedMessages.map((msg) => {
                           const emisor = normalizeSenderType(msg.emisor || msg.tipo || '');
+                          const rawTimestamp = msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp;
+                          const msgDate = parseMessageDate(rawTimestamp);
+                          const rawContent = (msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '[Mensaje sin contenido]') as string;
+                          const resolvedFileUrl = msg.url_archivo || extractFileUrlFromText(rawContent);
+                          const resolvedFilename = msg.archivo_nombre || deriveFilenameFromUrl(resolvedFileUrl || undefined);
+                          const normalizedType = normalizeMessageType(msg.tipo, 'text', {
+                            fileUrl: resolvedFileUrl,
+                            filename: resolvedFilename,
+                            text: rawContent
+                          });
                           return {
                             id: msg.id,
-                            text: msg.contenido || msg.cuerpo || '',
-                            time: formatTime(new Date(msg.created_at || msg.fecha)),
-                            date: msg.created_at || msg.fecha,
+                            text: rawContent,
+                            time: formatTime(msgDate),
+                            date: msgDate.toISOString(),
                             sent: !isUserSender(emisor),
                             read: true,
-                            type: msg.tipo || 'text',
-                            fileUrl: msg.url_archivo,
-                            filename: msg.archivo_nombre,
+                            type: normalizedType,
+                            fileUrl: resolvedFileUrl,
+                            filename: resolvedFilename,
                             size: msg.archivo_tamanio,
                             duration: msg.duracion
                           };
                         });
                         
                         // Añadir al caché (al principio, porque son mensajes más antiguos)
-                        const updatedCache = [...allMappedMessages, ...cachedMessages];
+                        let updatedCache = mergeMessageBatches(cachedMessages, allMappedMessages);
+
+                        // Fallback: algunos backends ignoran offset y devuelven siempre la misma página.
+                        // Si no crece la caché, pedimos una ventana mayor desde offset=0.
+                        if (updatedCache.length <= cachedMessages.length) {
+                          const expandedLimit = Math.min(cachedMessages.length + 100, 1000);
+                          const retryResponse = await axios.get(`/api/messages/${phone}`, {
+                            params: { limit: expandedLimit, offset: 0 },
+                            headers: {}
+                          });
+                          const retryMessages: RawApiMessage[] = retryResponse.data.mensajes || retryResponse.data.messages || [];
+
+                          if (env.enableLogging) {
+                            console.log('🔎 LOAD_MORE_API_RETRY', {
+                              phone,
+                              requestedOffset: 0,
+                              requestedLimit: expandedLimit,
+                              retryFetchedCount: retryMessages.length
+                            });
+                          }
+
+                          if (retryMessages.length > fetchedMessages.length) {
+                            fetchedMessages = retryMessages;
+                            const retryMapped = retryMessages.map((msg) => {
+                              const emisor = normalizeSenderType(msg.emisor || msg.tipo || '');
+                              const rawTimestamp = msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp;
+                              const msgDate = parseMessageDate(rawTimestamp);
+                              const rawContent = (msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '[Mensaje sin contenido]') as string;
+                              const resolvedFileUrl = msg.url_archivo || extractFileUrlFromText(rawContent);
+                              const resolvedFilename = msg.archivo_nombre || deriveFilenameFromUrl(resolvedFileUrl || undefined);
+                              const normalizedType = normalizeMessageType(msg.tipo, 'text', {
+                                fileUrl: resolvedFileUrl,
+                                filename: resolvedFilename,
+                                text: rawContent
+                              });
+                              return {
+                                id: msg.id,
+                                text: rawContent,
+                                time: formatTime(msgDate),
+                                date: msgDate.toISOString(),
+                                sent: !isUserSender(emisor),
+                                read: true,
+                                type: normalizedType,
+                                fileUrl: resolvedFileUrl,
+                                filename: resolvedFilename,
+                                size: msg.archivo_tamanio,
+                                duration: msg.duracion
+                              } as ChatMessage;
+                            });
+                            updatedCache = mergeMessageBatches(cachedMessages, retryMapped);
+                          }
+                        }
                         setAllMessagesCache(prev => {
                           const nextCache = { ...prev, [cachePhone]: updatedCache };
                           return applyMessageCachePolicy(nextCache);
                         });
                         
-                        // Mostrar solo los primeros 20 de los nuevos
-                        const messagesToShow = allMappedMessages.slice(-messagesLimit);
+                        // Aumentar ventana visible en +messagesLimit tomando desde el final de caché.
+                        const currentVisible = currentChat.messages || [];
+                        const nextVisibleCount = Math.min(
+                          updatedCache.length,
+                          (currentVisible.length || 0) + messagesLimit
+                        );
+                        const startIndex = Math.max(0, updatedCache.length - nextVisibleCount);
+                        const nextVisibleMessages = updatedCache.slice(startIndex);
+
+                        if (env.enableLogging) {
+                          console.log('🔎 LOAD_MORE_RESULT', {
+                            phone,
+                            updatedCacheCount: updatedCache.length,
+                            previousVisible: currentVisible.length,
+                            nextVisible: nextVisibleMessages.length,
+                            startIndex
+                          });
+                        }
                         
                         setConversationsState(prev => {
                           const updated = [...prev];
                           const chatIndex = updated.findIndex(c => phonesMatch(c.phone, phone));
                           if (chatIndex !== -1) {
-                            const existingIds = new Set(updated[chatIndex].messages.map((m) => m.id));
-                            const newMessages = messagesToShow.filter((m) => !existingIds.has(m.id));
-                            updated[chatIndex].messages = [...newMessages, ...updated[chatIndex].messages];
+                            updated[chatIndex].messages = nextVisibleMessages;
                           }
                           return updated;
                         });
@@ -2767,13 +3102,18 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                           setTimeout(() => setIsLoadingMoreMessages(false), 100);
                         }, 100);
                         
-                        // Actualizar índice
-                        setCurrentMessageIndex(prev => ({ 
-                          ...prev, 
-                          [phone]: updatedCache.length - (cachedMessages.length + messagesToShow.length)
+                        // Actualizar índice según inicio de ventana visible
+                        setCurrentMessageIndex(prev => ({
+                          ...prev,
+                          [phone]: startIndex
                         }));
+
+                        // Si no creció la caché, asumir que no hay más para evitar clicks inútiles
+                        if (updatedCache.length <= cachedMessages.length) {
+                          setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
+                        }
                         
-                        if (newMessages.length < 100) {
+                        if (fetchedMessages.length < 100) {
                           setMessagesEndReached(prev => ({ ...prev, [phone]: true }));
                         }
                       } else {
@@ -3181,8 +3521,27 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                               
                               {/* Body */}
                               {menuData.body && (
-                                <div className="px-4 pb-3">
+                                <div className={`px-4 pb-3 ${menuData.header ? 'pt-1' : 'pt-4'}`}>
                                   <p className="text-sm opacity-90">{menuData.body}</p>
+                                </div>
+                              )}
+
+                              {/* Botones interactivos (WhatsApp interactive_buttons) */}
+                              {menuData.buttons && menuData.buttons.length > 0 && (
+                                <div className="border-t px-3 py-2 space-y-2" style={{ borderColor: msg.sent ? 'rgba(255,255,255,0.2)' : (darkMode ? '#374151' : '#e5e7eb') }}>
+                                  {menuData.buttons.map((button: InteractiveButton, bIdx: number) => (
+                                    <div
+                                      key={button.id || bIdx}
+                                      className="w-full px-3 py-2.5 rounded-lg border text-sm font-medium text-center"
+                                      style={{
+                                        borderColor: msg.sent ? 'rgba(255,255,255,0.35)' : themeColors[theme].hex,
+                                        color: msg.sent ? 'white' : themeColors[theme].hex,
+                                        backgroundColor: msg.sent ? 'rgba(255,255,255,0.08)' : 'transparent'
+                                      }}
+                                    >
+                                      {button.title || 'Opcion'}
+                                    </div>
+                                  ))}
                                 </div>
                               )}
                               
@@ -3284,18 +3643,35 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       })()}
                     </div>
                   ) : msg.type === 'file' ? (
-                    <a
-                      href={getMediaUrl(msg.fileUrl) || '#'}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`relative group max-w-[260px] sm:max-w-sm px-4 py-3 rounded-2xl shadow-sm block hover:opacity-90 transition-opacity ${
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className={`relative group max-w-[300px] sm:max-w-md px-4 py-3 rounded-2xl shadow-sm block transition-all duration-200 cursor-pointer ${
                         msg.sent ? 'text-white rounded-br-sm' : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-bl-sm'
                       }`}
                       style={msg.sent ? {
                         backgroundImage: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)`,
+                        border: '1px solid rgba(255,255,255,0.18)',
                         ...( selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})
-                      } : (selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})}
-                      onClick={(e) => e.stopPropagation()}
+                      } : {
+                        border: darkMode ? '1px solid #374151' : '1px solid #e5e7eb',
+                        ...(selectionMode && selectedMessageIds.includes(msg.id) ? { boxShadow: `0 0 0 2px ${themeColors[theme].hex}` } : {})
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (msg.fileUrl) {
+                          setLightboxFile({ url: getMediaUrl(msg.fileUrl), filename: msg.filename || 'document' });
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (msg.fileUrl) {
+                            setLightboxFile({ url: getMediaUrl(msg.fileUrl), filename: msg.filename || 'document' });
+                          }
+                        }
+                      }}
                       onContextMenu={(e) => { openContextMenu(e, 'message', msg.id); e.stopPropagation(); }}
                     >
                       <button
@@ -3312,7 +3688,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                           
                           if (isPdf && msg.fileUrl) {
                             return (
-                              <div className="flex-shrink-0 w-16 h-16 rounded overflow-hidden border border-white/20">
+                              <div className={`flex-shrink-0 w-16 h-16 rounded-xl overflow-hidden border ${msg.sent ? 'border-white/20' : 'border-gray-200 dark:border-gray-600'}`}>
                                 <iframe 
                                   src={`${getMediaUrl(msg.fileUrl)}#page=1&toolbar=0&navpanes=0&scrollbar=0`}
                                   className="w-full h-full pointer-events-none scale-150 origin-top-left"
@@ -3324,25 +3700,40 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                               <img 
                                 src={getMediaUrl(msg.fileUrl)} 
                                 alt={msg.filename}
-                                className="flex-shrink-0 w-16 h-16 rounded object-cover"
+                                className="flex-shrink-0 w-16 h-16 rounded-xl object-cover"
                               />
                             );
                           } else {
-                            return <FileText size={32} className={msg.sent ? 'text-white/80 flex-shrink-0' : `flex-shrink-0`} style={!msg.sent ? { color: themeColors[theme].hex } : undefined} />;
+                            return (
+                              <div
+                                className={`flex-shrink-0 w-14 h-14 rounded-xl flex items-center justify-center ${msg.sent ? 'bg-white/15 text-white' : 'bg-gray-100 dark:bg-gray-700'}`}
+                                style={!msg.sent ? { color: themeColors[theme].hex } : undefined}
+                              >
+                                <FileText size={26} />
+                              </div>
+                            );
                           }
                         })()}
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate">{msg.filename || msg.text}</p>
-                          <p className={`text-xs ${msg.sent ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
-                            {msg.filename?.split('.')?.pop()?.toUpperCase() || 'FILE'} • {msg.size || '0 MB'}
+                          <p className="font-semibold truncate pr-6">{msg.filename || msg.text}</p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold tracking-wide ${msg.sent ? 'bg-white/20 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'}`}>
+                              {getFileExtension(msg.filename)}
+                            </span>
+                            <span className={`text-xs ${msg.sent ? 'text-white/75' : 'text-gray-500 dark:text-gray-400'}`}>
+                              {formatFileSize(msg.size)}
+                            </span>
+                          </div>
+                          <p className={`mt-1 text-[11px] ${msg.sent ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
+                            Presiona para previsualizar
                           </p>
                         </div>
                       </div>
-                      <div className={`flex items-center gap-1 justify-end mt-2 ${msg.sent ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+                      <div className={`flex items-center gap-1 justify-end mt-3 pt-2 border-t ${msg.sent ? 'text-white/80 border-white/20' : 'text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700'}`}>
                         <span className="text-xs">{msg.time}</span>
                         {msg.sent && (msg.read ? <CheckCheck size={12} /> : <Check size={12} />)}
                       </div>
-                    </a>
+                    </div>
                   ) : (
                     <div
                       className={`relative group max-w-[280px] sm:max-w-md px-4 py-2 rounded-2xl shadow-sm ${
@@ -3362,17 +3753,49 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         {copiedMessageId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                       </button>
                       {(() => {
-                        const fullText = msg.text || ''; // Manejar mensajes sin texto
+                        const fullText = msg.text || '';
                         const isExpanded = expandedMessages.has(msg.id);
                         const isTruncated = fullText.length > 300;
                         const displayText = isTruncated && !isExpanded ? fullText.substring(0, 300) + '...' : fullText;
                         
+                        const parseTextWithFormatting = (text: string) => {
+                          const urlRegex = /(https?:\/\/[^\s]+)/g;
+                          const parts = text.split(urlRegex);
+                          
+                          return parts.map((part, i) => {
+                            if (urlRegex.test(part)) {
+                              return (
+                                <a 
+                                  key={i}
+                                  href={part}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="underline font-medium hover:opacity-80 break-all"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setUrlContextMenu({ visible: true, x: e.clientX, y: e.clientY, url: part });
+                                  }}
+                                >
+                                  {part}
+                                </a>
+                              );
+                            }
+                            let node: any = part;
+                            node = node.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
+                            node = node.replace(/_([^_]+)_/g, '<em>$1</em>');
+                            node = node.replace(/~([^~]+)~/g, '<del>$1</del>');
+                            
+                            return <span key={i} dangerouslySetInnerHTML={{ __html: node }} />;
+                          });
+                        };
+                        
                         return (
                           <>
-                            <p 
-                              className="text-sm whitespace-pre-wrap" 
-                              dangerouslySetInnerHTML={{ __html: formatWhatsAppText(displayText) }}
-                            />
+                            <p className="text-sm whitespace-pre-wrap">
+                              {parseTextWithFormatting(displayText)}
+                            </p>
                             {isTruncated && (
                               <button
                                 onClick={(e) => {
@@ -4683,6 +5106,111 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Previsualizador de Archivos (PDF, Word, etc.) */}
+      {lightboxFile && (
+        <div
+          className="fixed inset-0 flex items-center justify-center z-50 animate-fadeIn"
+          style={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.95)' : 'rgba(0, 0, 0, 0.95)' }}
+          onClick={() => setLightboxFile(null)}
+        >
+          <button
+            onClick={() => setLightboxFile(null)}
+            className="absolute top-4 right-4 p-2 rounded-lg transition-colors z-10"
+            style={{ color: '#f3f4f6' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+          >
+            <X size={24} />
+          </button>
+          
+          <div className="w-[95vw] h-[90vh] rounded-lg overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {lightboxFile.url.toLowerCase().endsWith('.pdf') ? (
+              <iframe 
+                src={lightboxFile.url}
+                className="w-full flex-1"
+                title="PDF Viewer"
+              />
+            ) : lightboxFile.url.match(/\.(docx?|xlsx?|pptx?)$/i) ? (
+              <iframe 
+                src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(lightboxFile.url)}`}
+                className="w-full flex-1"
+                title="Document Viewer"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-gray-800">
+                <div className="text-center text-gray-400">
+                  <FileText size={64} className="mx-auto mb-4 opacity-50" />
+                  <p className="text-lg font-medium">{lightboxFile.filename}</p>
+                  <a 
+                    href={lightboxFile.url}
+                    download
+                    className="mt-4 inline-block px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                  >
+                    Descargar archivo
+                  </a>
+                </div>
+              </div>
+            )}
+            
+            <div className="bg-gray-800 px-4 py-2 flex items-center justify-between">
+              <span className="text-white text-sm">{lightboxFile.filename}</span>
+              <a 
+                href={lightboxFile.url}
+                download
+                className="text-white p-2 hover:bg-white/10 rounded-lg transition"
+                title="Descargar"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Context Menu para URLs */}
+      {urlContextMenu.visible && (
+        <div
+          className="fixed bg-white dark:bg-gray-800 rounded-lg shadow-lg z-50 py-1 min-w-48"
+          style={{
+            top: `${urlContextMenu.y}px`,
+            left: `${urlContextMenu.x}px`
+          }}
+          onMouseLeave={() => setUrlContextMenu({ ...urlContextMenu, visible: false })}
+        >
+          <button
+            className="w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm text-gray-900 dark:text-gray-100"
+            onClick={() => {
+              window.open(urlContextMenu.url, '_blank');
+              setUrlContextMenu({ ...urlContextMenu, visible: false });
+            }}
+          >
+            Abrir en nueva pestaña
+          </button>
+          <button
+            className="w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm text-gray-900 dark:text-gray-100"
+            onClick={() => {
+              navigator.clipboard.writeText(urlContextMenu.url);
+              setUrlContextMenu({ ...urlContextMenu, visible: false });
+              toast.success('URL copiada al portapapeles');
+            }}
+          >
+            Copiar URL
+          </button>
+          <a
+            href={urlContextMenu.url}
+            download
+            className="block w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm text-gray-900 dark:text-gray-100"
+            onClick={() => setUrlContextMenu({ ...urlContextMenu, visible: false })}
+          >
+            Descargar
+          </a>
         </div>
       )}
     </div>

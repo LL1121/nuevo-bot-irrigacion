@@ -9,7 +9,7 @@ Los siguientes secretos deben almacenarse de forma segura y nunca committearse:
 1. **WHATSAPP_TOKEN** - Token de acceso a WhatsApp Business API
 2. **WEBHOOK_APP_SECRET** - Secret para verificar webhooks de Meta
 3. **JWT_SECRET** - Secret para firmar tokens JWT
-4. **DB_PASSWORD** - Contraseña de MySQL
+4. **DB_PASSWORD** - Contraseña de PostgreSQL
 5. **SENTRY_DSN** - DSN de Sentry para monitoreo
 6. **REDIS_URL** - URL de conexión a Redis (si incluye contraseña)
 
@@ -101,14 +101,13 @@ Los secrets se acceden con `${{ secrets.SECRET_NAME }}`:
 
 **Pasos:**
 
-1. Conectar a MySQL:
+1. Conectar a PostgreSQL:
    ```bash
-   mysql -u root -p
+   psql -h localhost -U postgres -d postgres
    ```
 2. Cambiar contraseña:
    ```sql
-   ALTER USER 'root'@'localhost' IDENTIFIED BY 'nueva_password';
-   FLUSH PRIVILEGES;
+   ALTER USER bot_irrigacion_app WITH PASSWORD 'nueva_password';
    ```
 3. Actualizar secret en GitHub
 4. Reiniciar aplicación

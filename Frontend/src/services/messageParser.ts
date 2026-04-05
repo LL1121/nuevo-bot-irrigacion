@@ -67,9 +67,11 @@ export const normalizeMessageContent = (input: unknown): NormalizedMessage => {
   const isInteractiveList =
     !!obj &&
     (getStringProp(obj, 'type') === 'interactive_list' ||
+      getStringProp(obj, 'type') === 'interactive_buttons' ||
       getStringProp(obj, 'type') === 'interactive' ||
       !!obj.sections ||
-      !!obj.buttonText);
+      !!obj.buttonText ||
+      !!obj.buttons);
 
   if (isInteractiveList) {
     const header = getStringProp(obj, 'header') || 'Menú interactivo';
