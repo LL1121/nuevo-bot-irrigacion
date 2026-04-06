@@ -461,6 +461,23 @@ const listarTickets = async (req, res) => {
   }
 };
 
+const listarSubdelegaciones = async (req, res) => {
+  try {
+    const subdelegaciones = await clienteService.listarSubdelegaciones();
+    return res.json({
+      success: true,
+      data: subdelegaciones,
+      total: subdelegaciones.length
+    });
+  } catch (error) {
+    console.error('❌ Error en listarSubdelegaciones:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al obtener subdelegaciones'
+    });
+  }
+};
+
 const aceptarTicketOperador = async (req, res) => {
   try {
     const { phone } = req.params;
@@ -481,13 +498,17 @@ const aceptarTicketOperador = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Operador sin subdelegación asignada' });
     }
 
-    const ticket = await clienteService.tomarTicketEnEspera({
-      telefono: phone,
-      operadorId: operadorCtx.id,
-      operadorNombre: operador,
-      subdelegacionId: operadorCtx.subdelegacion_id || null,
-      isAdmin
-    });
+    // Obtener subdelegación y tomar ticket en paralelo
+    const [ticket, subdelegacionInfo] = await Promise.all([
+      clienteService.tomarTicketEnEspera({
+        telefono: phone,
+        operadorId: operadorCtx.id,
+        operadorNombre: operador,
+        subdelegacionId: operadorCtx.subdelegacion_id || null,
+        isAdmin
+      }),
+      clienteService.obtenerSubdelegacionInfo(phone)
+    ]);
 
     if (!ticket?.id) {
       const clienteActual = await clienteService.obtenerCliente(phone);
@@ -499,26 +520,40 @@ const aceptarTicketOperador = async (req, res) => {
       });
     }
 
-    await clienteService.actualizarEstadoConversacion(phone, 'HUMANO');
-    await clienteService.cambiarEstadoBot(phone, false, operador);
+    // Actualizar estado y emitir sockets en paralelo
+    const acceptedAt = new Date().toISOString();
+    const room = subdelegacionInfo?.id ? `zona_${subdelegacionInfo.id}` : null;
 
-    await emitToTenantRoom(phone, 'operator_handoff_accepted', {
+    const emitDirect = (eventName, payload) => {
+      if (!global.io) return;
+      if (room) {
+        global.io.to(room).emit(eventName, payload);
+        global.io.to('zona_admin').emit(eventName, payload);
+      } else {
+        global.io.emit(eventName, payload);
+      }
+    };
+
+    await Promise.all([
+      clienteService.actualizarEstadoConversacion(phone, 'HUMANO'),
+      clienteService.cambiarEstadoBot(phone, false, operador)
+    ]);
+
+    emitDirect('operator_handoff_accepted', {
       telefono: phone,
-      ticket_id: ticket?.id || null,
+      ticket_id: ticket.id,
       operador,
-      accepted_at: new Date().toISOString()
+      accepted_at: acceptedAt
     });
-
-    await emitToTenantRoom(phone, 'bot_mode_changed', {
+    emitDirect('bot_mode_changed', {
       telefono: phone,
       bot_activo: false,
       estado_conversacion: 'HUMANO',
-      ticket_id: ticket?.id || null
+      ticket_id: ticket.id
     });
 
-    await sendTextAndSave(phone, `✅ Tu solicitud fue tomada por *${operador}*. Ya podés continuar la conversación con el operador.`);
-
-    return res.json({
+    // Responder al frontend sin esperar la API de WhatsApp
+    res.json({
       success: true,
       message: 'Atención de operador iniciada',
       telefono: phone,
@@ -527,6 +562,10 @@ const aceptarTicketOperador = async (req, res) => {
       bot_activo: false,
       estado_conversacion: 'HUMANO'
     });
+
+    // Notificar al cliente por WhatsApp en background (no bloquea la respuesta)
+    sendTextAndSave(phone, `✅ Tu solicitud fue tomada por *${operador}*. Ya podés continuar la conversación con el operador.`)
+      .catch((err) => console.error('❌ Error enviando notif WhatsApp al aceptar ticket:', err));
   } catch (error) {
     console.error('❌ Error en aceptarTicketOperador:', error);
     return res.status(500).json({ success: false, error: 'Error al aceptar ticket' });
@@ -814,5 +853,6 @@ module.exports = {
   aceptarTicketOperador,
   finalizarTicketOperador,
   transferirTicketOperador,
-  asignarSubdelegacionOperador
+  asignarSubdelegacionOperador,
+  listarSubdelegaciones
 };

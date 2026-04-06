@@ -104,22 +104,28 @@ const me = async (req, res) => {
     }
 
     const role = String(operador.role || 'operador').toLowerCase();
+    const userData = {
+      id: operador.id,
+      username: operador.username,
+      email: operador.email,
+      role,
+      subdelegacion_id: operador.subdelegacion_id || null,
+      subdelegacion_nombre: operador.subdelegacion_nombre || null,
+      subdelegacion_codigo: operador.subdelegacion_codigo || null,
+      permissions: {
+        canViewAllQueues: role === 'admin',
+        canAssignSubdelegacion: role === 'admin',
+        queueScope: role === 'admin' ? 'all' : 'subdelegacion'
+      }
+    };
+
     return res.status(200).json({
       success: true,
-      user: {
-        id: operador.id,
-        username: operador.username,
-        email: operador.email,
-        role,
-        subdelegacion_id: operador.subdelegacion_id || null,
-        subdelegacion_nombre: operador.subdelegacion_nombre || null,
-        subdelegacion_codigo: operador.subdelegacion_codigo || null,
-        permissions: {
-          canViewAllQueues: role === 'admin',
-          canAssignSubdelegacion: role === 'admin',
-          queueScope: role === 'admin' ? 'all' : 'subdelegacion'
-        }
-      }
+      // Campos en la raíz para que el frontend pueda hacer spread directo
+      ...userData,
+      // También en user{} para compatibilidad con código existente
+      user: userData,
+      data: userData
     });
   } catch (error) {
     console.error('❌ Error en auth.me:', error);

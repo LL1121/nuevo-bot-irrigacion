@@ -109,24 +109,28 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
 const obtenerTodosLosClientes = async () => {
   try {
     const rows = await query(`
-      SELECT 
+      SELECT
         c.telefono,
         c.nombre_whatsapp,
         c.nombre_asignado,
         c.foto_perfil,
         c.padron,
+        c.subdelegacion,
         c.estado_deuda,
+        c.estado_conversacion AS estado,
         c.bot_activo,
         c.ultima_interaccion,
         c.fecha_registro,
-        (SELECT cuerpo FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje,
-        (SELECT fecha FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) as ultimo_mensaje_fecha,
-        (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono) as total_mensajes
+        (SELECT cuerpo FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) AS ultimo_mensaje,
+        (SELECT fecha FROM mensajes WHERE cliente_telefono = c.telefono ORDER BY fecha DESC LIMIT 1) AS ultimo_mensaje_fecha,
+        (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono) AS total_mensajes,
+        (SELECT COUNT(*) FROM mensajes WHERE cliente_telefono = c.telefono AND leido = 0 AND emisor != 'operador') AS mensajes_no_leidos,
+        (SELECT assigned_operator_username FROM tickets WHERE cliente_telefono = c.telefono AND estado = 'ABIERTO' ORDER BY created_at DESC LIMIT 1) AS operador,
+        (SELECT assigned_operator_id FROM tickets WHERE cliente_telefono = c.telefono AND estado = 'ABIERTO' ORDER BY created_at DESC LIMIT 1) AS operador_id
       FROM clientes c
       ORDER BY c.ultima_interaccion DESC
     `);
 
-    console.log(`📋 ${rows && rows.length ? rows.length : 0} clientes obtenidos`);
     return rows || [];
   } catch (error) {
     console.error('❌ Error en obtenerTodosLosClientes:', error);
@@ -449,17 +453,23 @@ const listarSubdelegaciones = async () => {
 };
 
 const LOCALIDADES_ALIASES = {
-  mendoza: ['mendoza', 'mza'],
-  general_alvear: ['general alvear', 'general_alvear', 'gral alvear'],
-  malargue: ['malargue', 'malargüe'],
-  san_rafael: ['san rafael', 'san_rafael', 'sanrafael']
+  sede_central: ['sede central', 'sede_central', 'central', 'sc'],
+  rio_tunyuan_superior: ['rio tunyuan superior', 'tunuyan superior', 'rts', 'sub. río tunuyán superior', 'subdelegacion rio tunuyan superior'],
+  rio_mendoza: ['rio mendoza', 'mendoza', 'rm', 'sub. río mendoza', 'subdelegacion rio mendoza'],
+  rio_atuel: ['rio atuel', 'atuel', 'ra', 'sub. río atuel', 'subdelegacion rio atuel'],
+  zona_riego_malargue: ['zona de riego malargue', 'malargue', 'zrm', 'zona riego malargue', 'malargüe'],
+  rio_diamante: ['rio diamante', 'diamante', 'rd', 'sub. río diamante', 'subdelegacion rio diamante'],
+  rio_tunyuan_inferior: ['rio tunyuan inferior', 'tunuyan inferior', 'rti', 'sub. río tunuyán inferior', 'subdelegacion rio tunuyan inferior']
 };
 
 const LOCALIDADES_CANONICAS = {
-  mendoza: 'Mendoza',
-  general_alvear: 'General Alvear',
-  malargue: 'Malargüe',
-  san_rafael: 'San Rafael'
+  sede_central: 'Sede Central',
+  rio_tunyuan_superior: 'Subdelegación Río Tunuyán Superior',
+  rio_mendoza: 'Subdelegación Río Mendoza',
+  rio_atuel: 'Subdelegación Río Atuel',
+  zona_riego_malargue: 'Zona de Riego Malargüe',
+  rio_diamante: 'Subdelegación Río Diamante',
+  rio_tunyuan_inferior: 'Subdelegación Río Tunuyán Inferior'
 };
 
 const toLookupKey = (value = '') => String(value || '')

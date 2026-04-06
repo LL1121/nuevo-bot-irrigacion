@@ -39,6 +39,23 @@ body {
     animation: fadeIn 0.3s ease-out;
   }
 
+  @keyframes chatEntry {
+    0% {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.985);
+      filter: saturate(0.85);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: saturate(1);
+    }
+  }
+
+  .animate-chat-entry {
+    animation: chatEntry 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
   @keyframes messageSlideIn {
     from {
       opacity: 0;

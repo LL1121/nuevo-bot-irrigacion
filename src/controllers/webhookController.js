@@ -82,6 +82,49 @@ const isLikelyValidPersonName = (value = '') => {
   return true;
 };
 
+const NAME_STOPWORDS = new Set([
+  'yo',
+  'me',
+  'mi',
+  'mio',
+  'mía',
+  'llamo',
+  'llamo,',
+  'nombre',
+  'es',
+  'soy',
+  'hola',
+  'buenas',
+  'mucho',
+  'gusto'
+]);
+
+const extractLikelyNameFromInput = (value = '') => {
+  const raw = normalizePersonName(value);
+  if (!raw) return '';
+
+  let candidate = raw
+    .replace(/^(hola|buenas|buenos dias|buen día|buen dia|buenas tardes|buenas noches)[,!\s]*/i, '')
+    .replace(/^(me\s+llamo|mi\s+nombre\s+es|soy|nombre\s*[:\-]?|yo\s+soy)\s+/i, '')
+    .replace(/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!candidate) return '';
+
+  const words = candidate
+    .split(' ')
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .filter((w) => !NAME_STOPWORDS.has(w.toLowerCase()));
+
+  if (!words.length) return '';
+
+  // Tomamos hasta 3 tokens para evitar capturar frases largas.
+  const compact = words.slice(0, 3).join(' ');
+  return formatPersonName(compact);
+};
+
 const getServiceErrorMessage = (payload, fallbackMessage = '') => {
   if (!payload) return fallbackMessage;
 
@@ -226,10 +269,13 @@ const saveBoletoPublicCopy = async (sourcePdfPath, targetFileName = '') => {
 };
 
 const LOCALIDADES_PROMPT = [
-  { id: 'mendoza', title: 'Mendoza', description: 'Seleccionar esta localidad' },
-  { id: 'general_alvear', title: 'General Alvear', description: 'Seleccionar esta localidad' },
-  { id: 'malargue', title: 'Malargüe', description: 'Seleccionar esta localidad' },
-  { id: 'san_rafael', title: 'San Rafael', description: 'Seleccionar esta localidad' }
+  { id: 'sede_central', title: 'Sede Central', description: 'Subdelegación Sede Central' },
+  { id: 'rio_tunyuan_superior', title: 'Río Tunuyán Superior', description: 'Subdelegación Río Tunuyán Superior' },
+  { id: 'rio_mendoza', title: 'Río Mendoza', description: 'Subdelegación Río Mendoza' },
+  { id: 'rio_atuel', title: 'Río Atuel', description: 'Subdelegación Río Atuel' },
+  { id: 'zona_riego_malargue', title: 'Zona de Riego Malargüe', description: 'Zona de Riego Malargüe' },
+  { id: 'rio_diamante', title: 'Río Diamante', description: 'Subdelegación Río Diamante' },
+  { id: 'rio_tunyuan_inferior', title: 'Río Tunuyán Inferior', description: 'Subdelegación Río Tunuyán Inferior' }
 ];
 
 // Memoria temporal para estados de usuarios
@@ -257,6 +303,7 @@ const emitToTenantRoom = async (phone, eventName, payload) => {
   const room = subdelegacionInfo?.id ? `zona_${subdelegacionInfo.id}` : null;
   if (room) {
     global.io.to(room).emit(eventName, payload);
+    global.io.to('zona_admin').emit(eventName, payload);
   } else {
     global.io.emit(eventName, payload);
   }
@@ -266,16 +313,16 @@ const sendSubdelegacionPrompt = async (from) => {
   const sections = [];
   for (let index = 0; index < LOCALIDADES_PROMPT.length; index += 10) {
     sections.push({
-      title: index === 0 ? 'Localidades' : 'Más opciones',
+      title: index === 0 ? 'Subdelegaciones' : 'Más opciones',
       rows: LOCALIDADES_PROMPT.slice(index, index + 10)
     });
   }
 
   await whatsappService.sendInteractiveList(
     from,
-    'Tu localidad',
-    'Antes de seguir, decime de qué localidad sos.',
-    'Elegir localidad',
+    'Su subdelegación',
+    'Antes de seguir, decime a qué subdelegación corresponde su terreno.',
+    'Elegir subdelegación',
     sections
   );
 
@@ -284,9 +331,9 @@ const sendSubdelegacionPrompt = async (from) => {
     tipo: 'interactive',
     cuerpo: JSON.stringify({
       type: 'interactive_list',
-      header: 'Tu localidad',
-      body: 'Antes de seguir, decime de qué localidad sos.',
-      buttonText: 'Elegir localidad',
+      header: 'Su subdelegación',
+      body: 'Antes de seguir, decime a qué subdelegación corresponde su terreno.',
+      buttonText: 'Elegir subdelegación',
       sections
     }),
     emisor: 'bot',
@@ -296,9 +343,9 @@ const sendSubdelegacionPrompt = async (from) => {
   if (global.io) {
     const menuData = {
       type: 'interactive_list',
-      header: 'Tu localidad',
-      body: 'Antes de seguir, decime de qué localidad sos.',
-      buttonText: 'Elegir localidad',
+      header: 'Su subdelegación',
+      body: 'Antes de seguir, decime a qué subdelegación corresponde su terreno.',
+      buttonText: 'Elegir subdelegación',
       sections
     };
 
@@ -319,7 +366,7 @@ const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = ''
   if (!selection?.id) {
     await sendMessageAndSave(
       from,
-      'No pude identificar tu localidad. Elegí una opción de la lista o escribila tal como aparece.'
+      'No pude identificar la subdelegación. Elegí una opción de la lista.'
     );
     await sendSubdelegacionPrompt(from);
     return;
@@ -337,7 +384,7 @@ const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = ''
 
   await sendMessageAndSave(
     from,
-    `Perfecto, te registramos como *${subdelegacion.nombre}*. Ahora sí, podés elegir una opción del menú.`
+    `Perfecto, te registramos en *${subdelegacion.nombre}*. Ahora sí, podés elegir una opción del menú.`
   );
   await sendMenuList(from, false);
 };
@@ -428,7 +475,7 @@ const intentarDerivarOperador = async (from, motivo = 'DERIVACION_BOT', options 
     };
   }
 
-  const waitingText = `👤 Solicitud enviada\n\nTe pusimos en *espera* para hablar con un operador humano.${subdelegacionInfo?.nombre ? `\n\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}\n\nApenas un operador tome tu consulta, te avisamos por este chat.`;
+  const waitingText = `👤 Solicitud enviada\n\nTe pusimos en *espera* para hablar con un operador.${subdelegacionInfo?.nombre ? `\n\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}\n\n¡Enseguida te respondemos!`;
   await sendMessageAndSave(from, waitingText);
 
   const handoff = await solicitarOperadorEnEspera(from, motivo);
@@ -616,33 +663,34 @@ const receiveMessage = async (req, res) => {
         if (!userStates[from]) {
           // Usuario nuevo
           const nombreDetectado = cliente?.nombre_whatsapp || pushName;
-          const requiereNombreManual = !Boolean(cliente?.nombre_validado);
 
-          userStates[from] = { 
-            step: requiereNombreManual ? 'AWAITING_USER_NAME' : 'START', 
-            padron: null, 
+          userStates[from] = {
+            step: 'START',
+            padron: null,
             nombreCliente: isLikelyValidPersonName(nombreDetectado) ? formatPersonName(nombreDetectado) : '',
             esClienteNuevo,
             subdelegacion: cliente?.subdelegacion || null,
             lastMessageTime: now,
-            namePromptSent: false
+            namePromptSent: false,
+            needsNamePrompt: !Boolean(cliente?.nombre_validado)
           };
         } else {
           // Usuario existente: verificar tiempo de inactividad
           const timeSinceLastMessage = now - (userStates[from].lastMessageTime || 0);
-          
+
           if (timeSinceLastMessage > TWELVE_HOURS) {
             // Pasaron más de 12 horas: saludar de nuevo pero mantener datos del cliente
             console.log(`⏰ Han pasado ${Math.round(timeSinceLastMessage / (60 * 60 * 1000))} horas desde el último mensaje de ${from}`);
             userStates[from].step = 'START';
-            userStates[from].shouldGreet = true; // Flag para indicar que debe saludar
+            userStates[from].shouldGreet = true;
           }
-          
+
           // Actualizar el timestamp del último mensaje
           userStates[from].lastMessageTime = now;
 
           if (!Boolean(cliente?.nombre_validado) && userStates[from].step !== 'AWAITING_USER_NAME') {
-            userStates[from].step = 'AWAITING_USER_NAME';
+            userStates[from].step = 'START';
+            userStates[from].needsNamePrompt = true;
             userStates[from].namePromptSent = false;
           }
         }
@@ -662,13 +710,6 @@ const receiveMessage = async (req, res) => {
         // Anti-loop: ignorar webhooks sin input util (evita reenviar menú por eventos vacíos)
         if (!String(optionId || '').trim() && !String(messageBody || '').trim()) {
           console.log(`🔇 Evento sin contenido útil para ${from}: se ignora para evitar loop de menú`);
-          return res.sendStatus(200);
-        }
-
-        if (userStates[from].step === 'AWAITING_USER_NAME' && !userStates[from].namePromptSent) {
-          const askNameMsg = '👋 Antes de continuar, ¿me compartís tu nombre y apellido para registrarte?\n\nEjemplo: Juan Perez';
-          await sendMessageAndSave(from, askNameMsg);
-          userStates[from].namePromptSent = true;
           return res.sendStatus(200);
         }
 
@@ -724,6 +765,11 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       if (shouldGreet) {
         await sendWelcomeMessage(from, userStates[from].nombreCliente, userStates[from].esClienteNuevo);
         userStates[from].shouldGreet = false; // Resetear el flag
+      }
+      if (userStates[from].needsNamePrompt && !userStates[from].namePromptSent) {
+        userStates[from].namePromptSent = true;
+        userStates[from].step = 'AWAITING_USER_NAME';
+        break;
       }
       if (!userStates[from].subdelegacion) {
         await sendSubdelegacionPrompt(from);
@@ -887,6 +933,14 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       await handleOperatorSurveyResponse(from, optionToProcess);
       break;
 
+    case 'AWAITING_OPINION_CHOICE':
+      await handleOpinionChoice(from, optionToProcess);
+      break;
+
+    case 'AWAITING_OPINION_TEXT':
+      await handleOpinionText(from, messageBody);
+      break;
+
     case 'AWAITING_OPERATOR_FOLLOWUP':
       await handleOperatorPostFollowUp(from, optionToProcess);
       break;
@@ -906,9 +960,9 @@ const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = tru
     // Saludo genérico para clientes nuevos
     welcomeMessage = `👋 ¡Bienvenido/a!
 
-Estás comunicado con la Jefatura de Zona de Riego de ríos Malargüe, Grande, Barranca y Colorado.
+  Te comunicás con el *chat automatizado de Irrigación*.
 
-Soy el asistente virtual y estoy para ayudarte con tus gestiones hídricas de forma ágil y clara. 💧`;
+  Para comenzar, ¿cómo es su nombre?`;
   } else {
     // Saludo personalizado para clientes conocidos
     const nombre = nombreCliente ? nombreCliente.split(' ')[0] : 'amigo'; // Usar solo el primer nombre
@@ -921,7 +975,7 @@ Soy el asistente virtual y estoy para ayudarte con tus gestiones hídricas de fo
 
 const handleUserNameInput = async (from, messageBody) => {
   try {
-    const nombre = formatPersonName(messageBody);
+    const nombre = extractLikelyNameFromInput(messageBody);
 
     if (!isLikelyValidPersonName(nombre)) {
       const invalidNameMsg = '⚠️ Ese nombre no parece válido.\n\nPor favor escribí tu nombre real (mínimo 2 letras).\nEjemplo: Maria Gomez';
@@ -936,9 +990,10 @@ const handleUserNameInput = async (from, messageBody) => {
     userStates[from].esClienteNuevo = false;
     userStates[from].step = 'START';
     userStates[from].namePromptSent = false;
+    userStates[from].needsNamePrompt = false;
 
-    await sendMessageAndSave(from, `✅ ¡Gracias ${nombre.split(' ')[0]}! Ya guardé tu nombre.`);
-    await sendWelcomeMessage(from, nombre, false);
+    const primerNombre = nombre.split(' ')[0];
+    await sendMessageAndSave(from, `Un gusto *${primerNombre}*! ¿A qué subdelegación corresponde su terreno?`);
 
     if (!userStates[from].subdelegacion) {
       await sendSubdelegacionPrompt(from);
@@ -3419,11 +3474,53 @@ const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
   await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
 
   await sendMessageAndSave(from, '¡Gracias por tu respuesta! 🙌');
+  await sendButtonReplyAndSave(from, '¿Querés dejarnos alguna opinión?', [
+    { id: 'op_opinion_si', title: '✅ Sí' },
+    { id: 'op_opinion_no', title: '❌ No' }
+  ]);
+
+  userStates[from].step = 'AWAITING_OPINION_CHOICE';
+};
+
+const handleOpinionChoice = async (from, optionToProcess = '') => {
+  if (optionToProcess === 'op_opinion_si') {
+    await sendMessageAndSave(from, '✍️ Escribí tu opinión y la registramos:');
+    userStates[from].step = 'AWAITING_OPINION_TEXT';
+    return;
+  }
+
+  if (optionToProcess === 'op_opinion_no') {
+    await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
+      { id: 'op_mas_ayuda_si', title: '✅ Sí' },
+      { id: 'op_mas_ayuda_no', title: '❌ No' }
+    ]);
+    userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
+    return;
+  }
+
+  await sendMessageAndSave(from, 'Por favor elegí una opción: *Sí* o *No*.');
+};
+
+const handleOpinionText = async (from, messageBody = '') => {
+  const opinion = String(messageBody || '').trim();
+  if (!opinion) {
+    await sendMessageAndSave(from, '✍️ Por favor escribí tu opinión:');
+    return;
+  }
+
+  await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'text',
+    cuerpo: `[OPINIÓN DEL CLIENTE]: ${opinion}`,
+    emisor: 'bot',
+    url_archivo: null
+  });
+
+  await sendMessageAndSave(from, '¡Gracias por su opinión! La misma nos ayuda a mejorar continuamente. 🙏');
   await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
     { id: 'op_mas_ayuda_si', title: '✅ Sí' },
     { id: 'op_mas_ayuda_no', title: '❌ No' }
   ]);
-
   userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
 };
 
@@ -3438,7 +3535,8 @@ const handleOperatorPostFollowUp = async (from, optionToProcess = '') => {
   if (optionToProcess === 'op_mas_ayuda_no') {
     await clienteService.actualizarEstadoConversacion(from, 'BOT');
     await sendMessageAndSave(from, 'Perfecto. Gracias por comunicarte con nosotros. ¡Que tengas un gran día! 👋');
-    userStates[from].step = 'MAIN_MENU';
+    userStates[from].step = 'START';
+    userStates[from].shouldGreet = true;
     return;
   }
 
