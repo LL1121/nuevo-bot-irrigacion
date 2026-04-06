@@ -4209,5 +4209,17 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
 
 module.exports = {
   verifyWebhook,
-  receiveMessage
+  receiveMessage,
+  // Exported for unit testing only
+  _testHelpers: {
+    extractLikelyNameFromInput,
+    isLikelyValidPersonName,
+    formatPersonName,
+    normalizePersonName,
+    handleOperatorSurveyResponse,
+    handleOpinionChoice,
+    handleOpinionText,
+    handleOperatorPostFollowUp,
+    userStates,
+  }
 };
