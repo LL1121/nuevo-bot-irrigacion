@@ -13,6 +13,29 @@ import {
   addContext,
 } from './monitoring';
 
+// Mock env to enable logging so console.debug/info/warn calls inside monitoring.ts fire
+vi.mock('../config/env', () => ({
+  env: {
+    enableLogging: true,
+    enableSentry: false,
+    sentryDsn: '',
+    apiUrl: 'http://localhost:3000',
+    socketUrl: 'http://localhost:3000',
+    tokenKey: 'token',
+    operadorKey: 'operador',
+    jwtExpiryMs: 3600000,
+    requestTimeoutMs: 30000,
+    socketReconnectDelayMs: 1000,
+    socketReconnectAttempts: 5,
+    sessionTimeoutMs: 86400000,
+    messageCacheMaxChats: 250,
+    messageCacheMaxMessagesPerChat: 1500,
+    messageCacheTtlMs: 604800000,
+    isProduction: false,
+    isDevelopment: true,
+  },
+}));
+
 // Mock web-vitals
 vi.mock('web-vitals', () => ({
   onCLS: vi.fn((callback) => callback({ value: 0.05, rating: 'good', id: '1' })),
