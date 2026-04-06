@@ -188,6 +188,7 @@ router.post('/mark-read/:telefono', verifyToken, apiController.marcarLeido);
  */
 // Estadísticas del panel (protegido)
 router.get('/stats', verifyToken, apiController.obtenerEstadisticas);
+router.get('/subdelegaciones', verifyToken, apiController.listarSubdelegaciones);
 
 // Tickets abiertos de la subdelegación del operador autenticado
 router.get('/tickets', verifyToken, apiController.listarTickets);

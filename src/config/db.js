@@ -155,7 +155,6 @@ async function createPostgresSchema() {
     `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_cliente ON tickets(cliente_telefono, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_estado ON tickets(estado)`,
-    `CREATE INDEX IF NOT EXISTS idx_tickets_assigned_operator ON tickets(assigned_operator_id, estado)`,
     `CREATE INDEX IF NOT EXISTS idx_horarios_lookup ON horarios_atencion(subdelegacion_id, dia_semana, habilitado)`,
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
     `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
@@ -184,7 +183,8 @@ async function createPostgresSchema() {
     `ALTER TABLE operadores ADD COLUMN IF NOT EXISTS subdelegacion_id INTEGER`,
     `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_operator_id INTEGER`,
     `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_operator_username TEXT`,
-    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP`
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP`,
+    `CREATE INDEX IF NOT EXISTS idx_tickets_assigned_operator ON tickets(assigned_operator_id, estado)`
   ];
 
   for (const sql of statements) {

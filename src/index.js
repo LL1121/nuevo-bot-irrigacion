@@ -242,6 +242,9 @@ const bootstrap = async () => {
       if (decoded?.subdelegacion_id) {
         socket.join(`zona_${decoded.subdelegacion_id}`);
       }
+      if (decoded?.role === 'admin') {
+        socket.join('zona_admin');
+      }
       return next();
     } catch (_) {
       return next();

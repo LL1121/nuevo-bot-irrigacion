@@ -5,6 +5,7 @@ type NormalizedMessage = {
 };
 
 const templateTextMap: Record<string, string> = {
+  plantilla_reactivacion: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.',
   reactivacion_tramite: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.',
   reactivaciontramite: 'Plantilla de reactivación enviada. Respondé este mensaje para continuar con el trámite.'
 };
