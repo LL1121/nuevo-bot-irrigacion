@@ -1,7 +1,7 @@
 services:
   # Backend API Node.js
   backend:
-    build:
+    build: ./backend
       context: .
       dockerfile: Dockerfile
     container_name: irrigacion_backend
