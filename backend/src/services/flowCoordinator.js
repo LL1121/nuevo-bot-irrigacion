@@ -262,11 +262,37 @@ const invalidateCache = (telefono, tipo = 'dni') => {
  */
 const cacheSize = () => prefetchCache.size;
 
+/**
+ * Retorna la primera entrada no-expirada del caché para un teléfono,
+ * sin importar el tipo de padrón.
+ *
+ * Usado por el FlowController cuando no sabe qué tipo tiene el usuario
+ * (el tipo fue resuelto internamente en preFetchDebt al guardar la entrada).
+ *
+ * @param {string} telefono
+ * @returns {{ status: string, data?: Object, error?: string, userMessage?: string, createdAt: number, resolvedAt: number|null } | null}
+ */
+const getAnyPrefetchedData = (telefono) => {
+  const prefix = `${telefono}::`;
+  const now    = Date.now();
+
+  for (const [key, entry] of prefetchCache) {
+    if (key.startsWith(prefix) && now - entry.createdAt <= TTL_MS) {
+      logger.debug(`${PREFIX} [${telefono}] getAny — hit en '${key}' (status: ${entry.status})`);
+      return entry;
+    }
+  }
+
+  logger.debug(`${PREFIX} [${telefono}] getAny — miss`);
+  return null;
+};
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
   preFetchDebt,
   getPrefetchedData,
+  getAnyPrefetchedData,
   invalidateCache,
   cacheSize,
 };

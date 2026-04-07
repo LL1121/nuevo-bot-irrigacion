@@ -180,6 +180,8 @@ const bootstrap = async () => {
     console.log('📄 Cargando rutas...');
     const webhookRoutes = require('./routes/webhookRoutes');
     console.log('✅ Rutas de webhook cargadas');
+    const flowRoutes = require('./routes/flowRoutes');
+    console.log('✅ Rutas de WhatsApp Flows cargadas');
     const apiRoutes = require('./routes/apiRoutes');
     console.log('✅ Rutas de API cargadas');
     const auditRoutes = require('./routes/auditRoutes');
@@ -198,6 +200,7 @@ const bootstrap = async () => {
   app.post('/api/auth/login', authLimiter, (req, res, next) => next());
 
   app.use('/webhook', webhookRoutes);
+  app.use('/webhook', flowRoutes);
   app.use('/api', apiRoutes);
   app.use('/api', auditRoutes);
   app.use('/api', healthRoutes);
