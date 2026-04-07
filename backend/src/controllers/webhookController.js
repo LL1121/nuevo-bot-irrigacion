@@ -1,6 +1,7 @@
 const whatsappService = require('../services/whatsappService');
 const debtScraperService = require('../services/debtScraperService');
 const debtApiService = require('../services/debtApiService');
+const flowCoordinator = require('../services/flowCoordinator');
 const turnadoScraperService = require('../services/turnadoScraperService');
 const turnadoApiService = require('../services/turnadoApiService');
 const mensajeService = require('../services/mensajeService');
@@ -1178,6 +1179,8 @@ const handleMainMenu = async (from, option) => {
     case 'option_1':
     case 'deuda':
       // Solicitar Deuda: Consultar deuda y ofrecer pago online
+      // Pre-fetch en background para que el Flow endpoint responda < 100 ms
+      flowCoordinator.preFetchDebt(from);
       await handleConsultarDeuda(from);
       break;
 
