@@ -145,7 +145,7 @@ app.use('/uploads', express.static(uploadsPath));
 app.use(express.static(publicPath));
 
 // Servir archivos estáticos del build de frontend (producción)
-const frontendBuildPath = path.join(__dirname, '../Frontend/dist');
+const frontendBuildPath = path.join(__dirname, '../../frontend/dist');
 app.use(express.static(frontendBuildPath));
 
 const bootstrap = async () => {
@@ -225,7 +225,7 @@ const bootstrap = async () => {
     if (require('fs').existsSync(indexPath)) {
       res.sendFile(indexPath);
     } else {
-      res.status(404).send('Frontend no encontrado. Ejecuta: cd Frontend && npm run build');
+      res.status(404).send('Frontend no encontrado. Ejecuta: cd frontend && npm run build');
     }
   });
 
