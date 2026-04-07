@@ -25,6 +25,16 @@ const POLL_TIMEOUT_MS  = 1500;  // max espera al pre-fetch → deja ~1.5 s para 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
+ * Formatea un número como pesos argentinos: $12.500,00
+ * Recibe number | string | null | undefined.
+ */
+const formatArs = (value) => {
+  const num = Number(value);
+  if (isNaN(num)) return '$0,00';
+  return '$' + num.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+/**
  * Lee FLOWS_PRIVATE_KEY desde env y convierte escapes \n → salto de línea real.
  * Soporta opcionalmente FLOWS_PRIVATE_KEY_PASSPHRASE.
  */
@@ -182,10 +192,28 @@ const handleDataExchange = async (req, res) => {
           ? cacheEntry.resolvedAt - cacheEntry.createdAt
           : '?';
         logger.info(`${PREFIX} [${senderPhone}] Datos listos (prefetch tardó ${resolvedMs} ms)`);
+
+        // Mapear campos del servicio → nombres que espera el Flow JSON:
+        //   total    → total  (mismo nombre)
+        //   linkPago → link_pago (camelCase → snake_case)
+        const raw = cacheEntry.data || {};
+        const flowData = {
+          titular:    String(raw.titular    ?? 'No disponible'),
+          cuit:       String(raw.cuit       ?? 'No disponible'),
+          hectareas:  String(raw.hectareas  ?? 'No disponible'),
+          hijuela:    String(raw.hijuela    ?? 'No disponible'),
+          capital:    formatArs(raw.capital),
+          interes:    formatArs(raw.interes),
+          apremio:    formatArs(raw.apremio),
+          eventuales: formatArs(raw.eventuales),
+          total:      formatArs(raw.total),
+          link_pago:  String(raw.linkPago   ?? raw.link_pago ?? ''),
+        };
+
         responsePayload = {
           version,
-          screen,
-          data: cacheEntry.data,
+          screen: 'RESULTS',
+          data: flowData,
         };
       }
 
