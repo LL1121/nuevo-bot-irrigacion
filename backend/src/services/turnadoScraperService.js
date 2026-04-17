@@ -293,21 +293,34 @@ async function buscarPorTitular(nombreCompleto) {
     const currentUrl = page.url();
     console.log('🌐 URL actual después de búsqueda:', currentUrl);
     
-    // Si fue redirigida a turno.php, usamos esa página
+    // Si fue redirigida a turno.php, esperar a que carguen los datos de la tabla
     if (currentUrl.includes('turno.php')) {
-      console.log('✅ Redirigida a turno.php, extrayendo datos de allá...');
-      await delay(2000);
+      console.log('✅ Redirigida a turno.php, esperando carga de datos...');
+      try {
+        // Esperar a que aparezca alguna tabla con filas de datos
+        await page.waitForSelector('table tr:nth-child(2), .resultado, #resultado_titular, div[id*="resultado"]', { timeout: 8000 });
+        console.log('✅ Datos detectados en DOM');
+      } catch (e) {
+        console.log('⚠️ waitForSelector expiró, continuando de todas formas...');
+        await delay(3000);
+      }
     }
     
-    await delay(2000);
+    await delay(1000);
     
     // Extraer información del recuadro de resultados
     console.log('📋 Extrayendo información del turno...');
     const turnoInfo = await page.evaluate(() => {
-      // Buscar el contenedor de resultados
-      const resultContainer = document.querySelector('.resultado, .info-turno, div[class*="result"]') || document.body;
-      
-      const text = resultContainer.innerText || resultContainer.textContent || '';
+      // Intentar primero extraer de la tabla directamente
+      const tableRows = Array.from(document.querySelectorAll('table tr'));
+      const tableText = tableRows.map(r => r.innerText || r.textContent || '').join('\n');
+
+      // Usar el contenedor más específico disponible, o el body
+      const resultContainer = document.querySelector('.resultado, .info-turno, #resultado_titular, div[id*="resultado"], div[class*="result"]') || document.body;
+      const bodyText = resultContainer.innerText || resultContainer.textContent || '';
+
+      // Combinar texto de tabla + contenedor para máxima cobertura
+      const text = tableText.length > bodyText.length ? tableText : bodyText;
       
       // Extraer datos con patrones más flexibles
       const extractField = (patterns) => {

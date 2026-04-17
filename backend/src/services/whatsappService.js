@@ -5,7 +5,7 @@ const { isNetworkOrIdempotentRequestError } = require('axios-retry');
 const { validateFileIntegrity } = require('./fileValidator');
 const { withWhatsAppRetry } = require('./retryService');
 
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v24.0';
 
 // Create axios instance with timeout and retry logic
 const axiosClient = axios.create({
@@ -77,6 +77,8 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
   return withWhatsAppRetry(async () => {
     const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
+    console.log('📤 [sendTemplate] templateName:', JSON.stringify(templateName), '| languageCode:', JSON.stringify(languageCode), '| to:', to);
+
     const templatePayload = {
       name: templateName,
       language: { code: languageCode }
@@ -95,10 +97,11 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
     const config = {
       headers: {
         'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json; charset=utf-8'
+        'Content-Type': 'application/json'
       }
     };
 
+    console.log('📤 [sendTemplate] payload final a Meta:', JSON.stringify(data));
     const response = await axiosClient.post(url, data, config);
     console.log('✅ Template enviado correctamente:', response.data);
     return response.data;
@@ -574,6 +577,60 @@ const sendButtonReply = async (to, text, buttons) => {
   }
 };
 
+/**
+ * Envía un mensaje interactivo de tipo "flow" para abrir un WhatsApp Flow.
+ *
+ * @param {string} to            - Número de teléfono del destinatario
+ * @param {string} flowId        - ID del Flow en el panel de Meta
+ * @param {string} flowToken     - Token que identifica la sesión (usamos el teléfono)
+ * @param {string} [bodyText]    - Texto del cuerpo del mensaje
+ * @param {Object} [screenData]  - Datos inyectados en la primera pantalla del Flow
+ */
+const sendFlowMessage = async (to, flowId, flowToken, bodyText = '', screenData = {}) => {
+  // Normalizar: Meta tiene el número verificado sin el 9 argentino (549→54)
+  const toNormalizado = to.startsWith('549') ? '54' + to.slice(3) : to;
+
+  return withWhatsAppRetry(async () => {
+    const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+    const data = {
+      messaging_product: 'whatsapp',
+      to: toNormalizado,
+      type: 'interactive',
+      interactive: {
+        type: 'flow',
+        body: { text: bodyText || '💧 Consultá tu deuda de irrigación de forma rápida y segura.' },
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            flow_token: flowToken,
+            flow_id: flowId,
+            mode: process.env.WHATSAPP_FLOW_MODE || 'draft',
+            flow_cta: 'Consultar deuda',
+            flow_action: 'navigate',
+            flow_action_payload: {
+              screen: 'SAVED_DNI',
+              data: screenData,
+            },
+          },
+        },
+      },
+    };
+
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+    };
+
+    const response = await axiosClient.post(url, data, config);
+    console.log(`🔄 Flow message enviado a ${toNormalizado} - ID: ${response.data?.messages?.[0]?.id || 'N/A'}`);
+    return response.data;
+  }, `sendFlowMessage to ${to}`);
+};
+
 module.exports = {
   sendMessage,
   sendTemplate,
@@ -587,5 +644,6 @@ module.exports = {
   sendLocation,
   getMediaInfo,
   fetchMediaStream,
-  downloadMedia
+  downloadMedia,
+  sendFlowMessage,
 };

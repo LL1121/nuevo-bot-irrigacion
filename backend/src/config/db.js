@@ -94,6 +94,17 @@ async function createPostgresSchema() {
       closed_at TIMESTAMP
     )`,
 
+    `CREATE TABLE IF NOT EXISTS encuestas_operador (
+      id SERIAL PRIMARY KEY,
+      cliente_telefono VARCHAR(30) NOT NULL REFERENCES clientes(telefono) ON DELETE CASCADE,
+      ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+      calificacion INTEGER CHECK (calificacion BETWEEN 1 AND 5),
+      opinion TEXT,
+      canal TEXT DEFAULT 'whatsapp',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
     `CREATE TABLE IF NOT EXISTS horarios_atencion (
       id SERIAL PRIMARY KEY,
       subdelegacion_id INTEGER REFERENCES subdelegaciones(id) ON DELETE CASCADE,
@@ -155,6 +166,8 @@ async function createPostgresSchema() {
     `CREATE INDEX IF NOT EXISTS idx_ultima_interaccion ON clientes(ultima_interaccion)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_cliente ON tickets(cliente_telefono, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_estado ON tickets(estado)`,
+    `CREATE INDEX IF NOT EXISTS idx_encuestas_operador_cliente ON encuestas_operador(cliente_telefono, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_encuestas_operador_ticket ON encuestas_operador(ticket_id)`,
     `CREATE INDEX IF NOT EXISTS idx_horarios_lookup ON horarios_atencion(subdelegacion_id, dia_semana, habilitado)`,
     `CREATE INDEX IF NOT EXISTS idx_cliente_fecha ON mensajes(cliente_telefono, fecha)`,
     `CREATE INDEX IF NOT EXISTS idx_message_id ON mensajes(message_id)`,
@@ -184,6 +197,11 @@ async function createPostgresSchema() {
     `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_operator_id INTEGER`,
     `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_operator_username TEXT`,
     `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP`,
+    `ALTER TABLE encuestas_operador ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL`,
+    `ALTER TABLE encuestas_operador ADD COLUMN IF NOT EXISTS calificacion INTEGER`,
+    `ALTER TABLE encuestas_operador ADD COLUMN IF NOT EXISTS opinion TEXT`,
+    `ALTER TABLE encuestas_operador ADD COLUMN IF NOT EXISTS canal TEXT DEFAULT 'whatsapp'`,
+    `ALTER TABLE encuestas_operador ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
     `CREATE INDEX IF NOT EXISTS idx_tickets_assigned_operator ON tickets(assigned_operator_id, estado)`
   ];
 

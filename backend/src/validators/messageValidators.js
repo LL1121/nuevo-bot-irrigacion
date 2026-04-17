@@ -56,6 +56,7 @@ const reactivateSchema = Joi.object({
               type: Joi.string()
                 .valid('text', 'currency', 'date_time', 'image', 'document', 'video')
                 .required(),
+              parameter_name: Joi.string().optional(),
               text: Joi.string().when('type', {
                 is: 'text',
                 then: Joi.required()

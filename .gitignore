@@ -73,6 +73,7 @@ tunnel.token
 Frontend/ssl/*.crt
 Frontend/ssl/*.key
 Frontend/ssl/*.pem
+backend/keys/
 !Frontend/ssl/.gitkeep
 
 # Build outputs

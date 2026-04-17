@@ -1,5 +1,6 @@
 const whatsappService = require('../services/whatsappService');
 const mensajeService = require('../services/mensajeService');
+const clienteService = require('../services/clienteService');
 const { getPool } = require('../config/db');
 
 /**
@@ -70,10 +71,16 @@ const reactivate = async (req, res) => {
   try {
     const { phone } = req.params;
     const {
-      templateName = 'hello_world',
-      languageCode = templateName === 'hello_world' ? 'en_US' : 'es',
+      templateName: rawTemplateName,
+      languageCode: rawLanguageCode,
       components
     } = req.body || {};
+
+    const templateName = rawTemplateName || 'hello_world';
+    const languageCode = rawLanguageCode || (templateName === 'hello_world' ? 'en_US' : 'es');
+
+    console.log('📥 [reactivate] req.body raw:', JSON.stringify(req.body));
+    console.log('📥 [reactivate] templateName:', JSON.stringify(templateName), '| languageCode:', JSON.stringify(languageCode));
 
     // Enviar plantilla por WhatsApp
     const sendResult = await whatsappService.sendTemplate(
@@ -91,6 +98,11 @@ const reactivate = async (req, res) => {
       url_archivo: null,
       emisor: 'bot'
     });
+
+    // La plantilla de reactivación se usa para retomar conversación con operador:
+    // dejamos el bot pausado para evitar respuestas automáticas al usuario.
+    await clienteService.cambiarEstadoBot(phone, false, 'OPERATOR_REACTIVATION_TEMPLATE');
+    await clienteService.actualizarEstadoConversacion(phone, 'HUMANO');
 
     return res.status(201).json({
       success: true,

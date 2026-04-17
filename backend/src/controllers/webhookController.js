@@ -51,6 +51,43 @@ const formatPersonName = (value = '') => {
 
 const normalizeSingleLine = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
 
+const formatCurrencyArs = (value) => {
+  if (value === null || value === undefined) return '$0,00';
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `$${value.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return '$0,00';
+
+  // Si ya viene con símbolo y no logramos parsear bien, lo devolvemos tal cual.
+  const hasCurrencySymbol = raw.includes('$');
+
+  const cleaned = raw.replace(/[^0-9,.-]/g, '');
+  const lastComma = cleaned.lastIndexOf(',');
+  const lastDot = cleaned.lastIndexOf('.');
+
+  let normalizedNumeric = cleaned;
+  if (lastComma > -1 && lastDot > -1) {
+    // Detectar separador decimal por la última ocurrencia.
+    if (lastComma > lastDot) {
+      normalizedNumeric = cleaned.replace(/\./g, '').replace(',', '.');
+    } else {
+      normalizedNumeric = cleaned.replace(/,/g, '');
+    }
+  } else if (lastComma > -1) {
+    normalizedNumeric = cleaned.replace(',', '.');
+  }
+
+  const amount = Number(normalizedNumeric);
+  if (!Number.isFinite(amount)) {
+    return hasCurrencySymbol ? raw : `$${raw}`;
+  }
+
+  return `$${amount.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
 const stripListSelectionDescription = (title = '', description = '') => {
   let cleanTitle = normalizeSingleLine(String(title || '').split('\n')[0]);
   const cleanDescription = normalizeSingleLine(description);
@@ -65,6 +102,24 @@ const stripListSelectionDescription = (title = '', description = '') => {
   }
 
   return cleanTitle;
+};
+
+const normalizeChoiceText = (value = '') => String(value || '')
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9_]+/g, '_')
+  .replace(/^_+|_+$/g, '');
+
+const parseSatisfactionScore = (rawOption = '') => {
+  const normalized = normalizeChoiceText(rawOption);
+  const direct = normalized.match(/(?:^|_)op_satisfaccion_([1-5])(?:_|$)/);
+  if (direct) return Number(direct[1]);
+
+  const simple = normalized.match(/(?:^|_)([1-5])(?:_|$)/);
+  if (simple) return Number(simple[1]);
+
+  return null;
 };
 
 const isLikelyValidPersonName = (value = '') => {
@@ -100,13 +155,55 @@ const NAME_STOPWORDS = new Set([
   'gusto'
 ]);
 
+const NAME_TRAILING_STOPWORDS = new Set([
+  'y',
+  'quiero',
+  'queria',
+  'quería',
+  'necesito',
+  'necesitaria',
+  'necesitaria',
+  'consultar',
+  'consulta',
+  'tramite',
+  'trámite',
+  'hacer',
+  'iniciar',
+  'saber',
+  'por',
+  'para',
+  'sobre',
+  'porque'
+]);
+
 const extractLikelyNameFromInput = (value = '') => {
   const raw = normalizePersonName(value);
   if (!raw) return '';
 
-  let candidate = raw
+  const lowerRaw = raw.toLowerCase();
+  const introPatterns = [
+    /\bme\s+llamo\b/i,
+    /\bmi\s+nombre\s+es\b/i,
+    /\byo\s+soy\b/i,
+    /\bsoy\b/i,
+    /\bnombre\s*[:\-]?\b/i
+  ];
+
+  let candidate = '';
+  for (const pattern of introPatterns) {
+    const match = lowerRaw.match(pattern);
+    if (!match || match.index === undefined) continue;
+    const start = match.index + match[0].length;
+    candidate = raw.slice(start).trim();
+    if (candidate) break;
+  }
+
+  if (!candidate) {
+    candidate = raw;
+  }
+
+  candidate = candidate
     .replace(/^(hola|buenas|buenos dias|buen día|buen dia|buenas tardes|buenas noches)[,!\s]*/i, '')
-    .replace(/^(me\s+llamo|mi\s+nombre\s+es|soy|nombre\s*[:\-]?|yo\s+soy)\s+/i, '')
     .replace(/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -121,8 +218,12 @@ const extractLikelyNameFromInput = (value = '') => {
 
   if (!words.length) return '';
 
+  const cutIndex = words.findIndex((w, idx) => idx > 0 && NAME_TRAILING_STOPWORDS.has(w.toLowerCase()));
+  const usableWords = cutIndex > 0 ? words.slice(0, cutIndex) : words;
+  if (!usableWords.length) return '';
+
   // Tomamos hasta 3 tokens para evitar capturar frases largas.
-  const compact = words.slice(0, 3).join(' ');
+  const compact = usableWords.slice(0, 3).join(' ');
   return formatPersonName(compact);
 };
 
@@ -269,6 +370,32 @@ const saveBoletoPublicCopy = async (sourcePdfPath, targetFileName = '') => {
   return `/uploads/boletos/${fileName}`;
 };
 
+const buildServicioPagoLink = (tipoPadron, datos = {}) => {
+  const baseUrl = 'https://autogestion.cloud.irrigacion.gov.ar/servicio';
+
+  if (tipoPadron === 'superficial') {
+    const codigoCauce = String(datos.codigoCauce || '').trim();
+    const numeroPadron = String(datos.numeroPadron || '').trim();
+    if (!codigoCauce || !numeroPadron) return null;
+    return `${baseUrl}/A/${codigoCauce}/${numeroPadron}`;
+  }
+
+  if (tipoPadron === 'subterraneo') {
+    const codigoDepartamento = String(datos.codigoDepartamento || '').trim();
+    const numeroPozo = String(datos.numeroPozo || '').trim();
+    if (!codigoDepartamento || !numeroPozo) return null;
+    return `${baseUrl}/B/${codigoDepartamento}/${numeroPozo}`;
+  }
+
+  if (tipoPadron === 'contaminacion') {
+    const numeroContaminacion = String(datos.numeroContaminacion || '').trim();
+    if (!numeroContaminacion) return null;
+    return `${baseUrl}/C/${numeroContaminacion}`;
+  }
+
+  return null;
+};
+
 const LOCALIDADES_PROMPT = [
   { id: 'sede_central', title: 'Sede Central', description: 'Subdelegación Sede Central' },
   { id: 'rio_tunyuan_superior', title: 'Río Tunuyán Superior', description: 'Subdelegación Río Tunuyán Superior' },
@@ -321,8 +448,8 @@ const sendSubdelegacionPrompt = async (from) => {
 
   await whatsappService.sendInteractiveList(
     from,
-    'Su subdelegación',
-    'Antes de seguir, decime a qué subdelegación corresponde su terreno.',
+    'Registro inicial',
+    'Para continuar, indíquenos la subdelegación correspondiente a su terreno.',
     'Elegir subdelegación',
     sections
   );
@@ -332,8 +459,8 @@ const sendSubdelegacionPrompt = async (from) => {
     tipo: 'interactive',
     cuerpo: JSON.stringify({
       type: 'interactive_list',
-      header: 'Su subdelegación',
-      body: 'Antes de seguir, decime a qué subdelegación corresponde su terreno.',
+      header: 'Registro inicial',
+      body: 'Para continuar, indíquenos la subdelegación correspondiente a su terreno.',
       buttonText: 'Elegir subdelegación',
       sections
     }),
@@ -344,8 +471,8 @@ const sendSubdelegacionPrompt = async (from) => {
   if (global.io) {
     const menuData = {
       type: 'interactive_list',
-      header: 'Su subdelegación',
-      body: 'Antes de seguir, decime a qué subdelegación corresponde su terreno.',
+      header: 'Registro inicial',
+      body: 'Para continuar, indíquenos la subdelegación correspondiente a su terreno.',
       buttonText: 'Elegir subdelegación',
       sections
     };
@@ -364,10 +491,10 @@ const sendSubdelegacionPrompt = async (from) => {
 const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = '') => {
   const selection = await clienteService.resolverSubdelegacionDesdeEntrada(optionToProcess || messageBody);
 
-  if (!selection?.id) {
+  if (!selection?.id && !selection?.nombre) {
     await sendMessageAndSave(
       from,
-      'No pude identificar la subdelegación. Elegí una opción de la lista.'
+      'No pudimos identificar la subdelegación seleccionada.\n\nPor favor, elegí una opción de la lista.'
     );
     await sendSubdelegacionPrompt(from);
     return;
@@ -385,7 +512,7 @@ const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = ''
 
   await sendMessageAndSave(
     from,
-    `Perfecto, te registramos en *${subdelegacion.nombre}*. Ahora sí, podés elegir una opción del menú.`
+    `✅ Subdelegación registrada: *${subdelegacion.nombre}*.\n\nA continuación, podrá elegir una opción del menú de atención.`
   );
   await sendMenuList(from, false);
 };
@@ -476,7 +603,14 @@ const intentarDerivarOperador = async (from, motivo = 'DERIVACION_BOT', options 
     };
   }
 
-  const waitingText = `👤 Solicitud enviada\n\nTe pusimos en *espera* para hablar con un operador.${subdelegacionInfo?.nombre ? `\n\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}\n\n¡Enseguida te respondemos!`;
+  const waitingText = `┏━━━━━━━━━━━━━━━━━━━━━━┓
+┃  👤 SOPORTE OPERADOR  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━┛
+
+✅ *Solicitud enviada correctamente*
+🕒 Estado: *En espera*${subdelegacionInfo?.nombre ? `\n🏢 Localidad: *${subdelegacionInfo.nombre}*` : ''}
+
+¡Enseguida te respondemos!`;
   await sendMessageAndSave(from, waitingText);
 
   const handoff = await solicitarOperadorEnEspera(from, motivo);
@@ -602,6 +736,10 @@ const receiveMessage = async (req, res) => {
           messageBody = message.document?.filename || '[Documento]';
           mediaUrl = message.document?.id;
           tipoMensaje = 'document';
+        } else if (message.type === 'button') {
+          // Respuesta a botón de plantilla (template quick reply)
+          messageBody = message.button?.text?.trim() || '';
+          message._optionId = message.button?.payload?.trim() || messageBody;
         }
 
         console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${tipoMensaje})`);
@@ -701,6 +839,10 @@ const receiveMessage = async (req, res) => {
           userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
         } else if (estadoConversacion === 'ENCUESTA_POST_OPERADOR') {
           userStates[from].step = 'AWAITING_OPERATOR_SURVEY';
+        } else if (estadoConversacion === 'OPINION_POST_OPERADOR') {
+          userStates[from].step = 'AWAITING_OPINION_CHOICE';
+        } else if (estadoConversacion === 'OPINION_POST_OPERADOR_TEXTO') {
+          userStates[from].step = 'AWAITING_OPINION_TEXT';
         } else if (estadoConversacion === 'FOLLOWUP_POST_OPERADOR') {
           userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
         }
@@ -959,15 +1101,11 @@ const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = tru
   
   if (esClienteNuevo) {
     // Saludo genérico para clientes nuevos
-    welcomeMessage = `👋 ¡Bienvenido/a!
-
-  Te comunicás con el *chat automatizado de Irrigación*.
-
-  Para comenzar, ¿cómo es su nombre?`;
+    welcomeMessage = `👋 ¡Bienvenido/a!\n\nTe comunicás con el canal automatizado de *Irrigación Mendoza*.\n\nPara empezar, ¿cómo es tu *nombre y apellido*?`;
   } else {
     // Saludo personalizado para clientes conocidos
     const nombre = nombreCliente ? nombreCliente.split(' ')[0] : 'amigo'; // Usar solo el primer nombre
-    welcomeMessage = `👋 ¡Hola ${nombre}! ¿En qué puedo ayudarte hoy?`;
+    welcomeMessage = `👋 Hola *${nombre}*.\n\nEstamos para ayudarte. Elegí una opción del menú y avanzamos.`;
   }
   
   await sendMessageAndSave(from, welcomeMessage);
@@ -979,7 +1117,7 @@ const handleUserNameInput = async (from, messageBody) => {
     const nombre = extractLikelyNameFromInput(messageBody);
 
     if (!isLikelyValidPersonName(nombre)) {
-      const invalidNameMsg = '⚠️ Ese nombre no parece válido.\n\nPor favor escribí tu nombre real (mínimo 2 letras).\nEjemplo: Maria Gomez';
+      const invalidNameMsg = '⚠️ No pude reconocer bien ese nombre.\n\nPor favor escribí tu nombre real (mínimo 2 letras).\nEjemplo: Maria Gomez';
       await sendMessageAndSave(from, invalidNameMsg);
       userStates[from].step = 'AWAITING_USER_NAME';
       userStates[from].namePromptSent = true;
@@ -994,7 +1132,7 @@ const handleUserNameInput = async (from, messageBody) => {
     userStates[from].needsNamePrompt = false;
 
     const primerNombre = nombre.split(' ')[0];
-    await sendMessageAndSave(from, `Un gusto *${primerNombre}*! ¿A qué subdelegación corresponde su terreno?`);
+    await sendMessageAndSave(from, `Gracias, *${primerNombre}*.\n\n¿A qué subdelegación corresponde su terreno?`);
 
     if (!userStates[from].subdelegacion) {
       await sendSubdelegacionPrompt(from);
@@ -1052,7 +1190,9 @@ const sendMenuList = async (from, isFollowUp = false) => {
 
   // Cambiar el mensaje según si es seguimiento o primera vez
   const header = 'Atención al Ciudadano';
-  const body = isFollowUp ? '¿Desea realizar otro trámite?' : '¿Qué trámite desea realizar hoy?';
+  const body = isFollowUp
+    ? '¿Querés realizar otra gestión?'
+    : '¿Qué trámite querés realizar hoy?';
   const headerImageUrl = process.env.MENU_HEADER_IMAGE_URL || null;
   
   await whatsappService.sendInteractiveList(
@@ -1208,7 +1348,7 @@ const handleMainMenu = async (from, option) => {
 
       const hasMemory = Boolean(userStates[from].lastTitular || userStates[from].lastCCPP);
       // Ofrecer opciones de búsqueda de turno
-      const turnosIntro = `🗓️ *Consulta de Turnos*\n\n¿Cómo desea buscar su turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}\n\n_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
+      const turnosIntro = `🗓️ *Consulta de Turnos*\n\n¿Cómo querés buscar tu turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}\n\n_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       await sendMessageAndSave(from, turnosIntro);
 
       await sendInteractiveButtonsAndSave(
@@ -1623,6 +1763,47 @@ Gracias por usar el sistema de Irrigación Malargüe.
  */
 const handleConsultarDeuda = async (from) => {
   try {
+    // Flows temporalmente deshabilitados (requiere cuenta Meta verificada)
+    // Cambiar a: process.env.WHATSAPP_FLOW_ID_DEUDA cuando esté habilitado
+    const flowId = null;
+
+    if (!flowId) {
+      return handleConsultarDeudaTexto(from);
+    }
+
+    // Obtener nombre y DNI guardado para pre-poblar la pantalla SAVED_DNI
+    const [cliente, dniGuardado] = await Promise.all([
+      clienteService.obtenerCliente(from),
+      clienteService.obtenerDni(from),
+    ]);
+
+    const nombreUsuario = cliente?.nombre_whatsapp || cliente?.nombre_asignado || 'Usuario';
+    const primerNombre = nombreUsuario.split(' ')[0];
+
+    const screenData = {
+      nombre_usuario: primerNombre,
+      dni_guardado: dniGuardado || '',
+    };
+
+    const bodyText = dniGuardado
+      ? `Hola ${primerNombre}, podes consultar tu deuda de irrigacion de forma rapida y segura.`
+      : `Hola ${primerNombre}, consulta el estado de tu deuda de irrigacion.`;
+
+    const flowToken = `session_${Date.now()}`;
+    await whatsappService.sendFlowMessage(from, flowId, flowToken, bodyText, screenData);
+    console.log(`🔄 [Flow Deuda] Enviado a ${from} (DNI guardado: ${dniGuardado || 'ninguno'})`);
+
+  } catch (error) {
+    console.error('❌ Error en handleConsultarDeuda:', error);
+    return handleConsultarDeudaTexto(from);
+  }
+};
+
+/**
+ * Fallback de texto para cuando el Flow no está disponible
+ */
+const handleConsultarDeudaTexto = async (from) => {
+  try {
     const preguntaMsg = `📝 *¿Cómo querés consultar tu deuda?*
 
 _📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
@@ -1634,18 +1815,12 @@ _📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await sendButtonReplyAndSave(
-      from,
-      'Elegí una opción:',
-      buttons
-    );
+    await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
 
     userStates[from].step = 'AWAITING_MODO_CONSULTA';
     userStates[from].operacion = 'deuda';
-    console.log(`📝 Esperando elección de modo (DNI vs Servicio) para deuda de ${from}`);
-    
   } catch (error) {
-    console.error('❌ Error en handleConsultarDeuda:', error);
+    console.error('❌ Error en handleConsultarDeudaTexto:', error);
     const errorMsg = '❌ Ocurrió un error al procesar tu solicitud. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
@@ -2001,7 +2176,12 @@ const handleDescargarBoleto = async (from) => {
     }
     
     // Enviar mensaje de procesamiento
-    const sendingMsg = '📤 Enviando boleto de pago...';
+    const sendingMsg =
+      `┏━━━━━━━━━━━━━━━━━━━━━━┓\n` +
+      `┃       📄 TU BOLETO        ┃\n` +
+      `┗━━━━━━━━━━━━━━━━━━━━━━┛\n\n` +
+      `⏳ Estamos preparando tu boleto de pago...\n\n` +
+      `_En instantes lo recibirás como archivo adjunto._`;
     await sendMessageAndSave(from, sendingMsg);
     
     // Subir PDF a WhatsApp
@@ -2053,7 +2233,11 @@ const handleDescargarBoleto = async (from) => {
     delete userStates[from].tempPdf;
     console.log(`🗑️ PDF eliminado: ${pdfPath}`);
     
-    const successMsg = '✅ Boleto enviado correctamente.\n\n¿Necesitas algo más?';
+    const successMsg =
+      `✅ *Boleto enviado correctamente.*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `_Guardá el archivo para presentarlo al momento del pago._\n` +
+      `_Podés abonar en cualquier sucursal habilitada o por homebanking._`;
     await sendMessageAndSave(from, successMsg);
     await sendMenuList(from, true);
     
@@ -2271,8 +2455,10 @@ const buildActionFailedMessage = (actionLabel) => {
 };
 
 const buildTurnoLookupFailedMessage = (inputLabel, detail = '') => {
-  const detailLine = detail ? `${detail}\n\n` : '';
-  return `❌ No se pudo consultar el turno.\n\n${detailLine}Podés reintentar ingresando ${inputLabel} nuevamente o escribir *volver*.`;
+  // Limpiar emojis/prefijos del detail para evitar doble ❌
+  const cleanDetail = detail.replace(/^[❌⚠️✅🔴🟡\s]+/, '').trim();
+  const detailLine = cleanDetail ? `_${cleanDetail}_\n\n` : '';
+  return `⚠️ *No se pudo consultar el turno.*\n\n${detailLine}Podés reintentar ingresando ${inputLabel} nuevamente o escribir *volver*.`;
 };
 
 const formatInicioTurno = (data = {}) => {
@@ -2307,27 +2493,43 @@ const buildTurnoResponse = ({ data = {}, titularFallback = 'No disponible', ccpp
 
   if (data.restringido) {
     const contactoInspeccion = resolveInspeccionContact(inspeccion);
-    const hijuelaLine = includeHijuela ? `\n• Hijuela: ${hijuela}` : '';
+    const hijuelaLine = includeHijuela ? `\n🚜 *Hijuela:* ${hijuela}` : '';
 
-    return `🚫 *Estado del turno: RESTRINGIDO*\n\n` +
-      `⚠️ El turno figura como restringido para este servicio.\n\n` +
-      `• Titular: ${titular}\n` +
-      `• Inspección de cauce: ${inspeccion}${hijuelaLine}\n\n` +
-      `Si creés que es un error, comunicate con la inspección de cauce:\n` +
-      `📞/✉️ ${contactoInspeccion}`;
+    return `┏━━━━━━━━━━━━━━━━━━━━━━┓\n` +
+      `┃      🌊 TURNO DE RIEGO      ┃\n` +
+      `┗━━━━━━━━━━━━━━━━━━━━━━┛\n\n` +
+      `👤 *Titular:* ${titular}\n` +
+      `🏞️ *Inspección:* ${inspeccion}` +
+      `${hijuelaLine}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🚫 *TURNO RESTRINGIDO*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `⚠️ El turno figura como restringido para este servicio. Si creés que es un error, comunicate con tu inspección de cauce:\n\n` +
+      `📞 *Contacto:* ${contactoInspeccion}`;
   }
 
   const tomero1 = data.telAmaya || 'No disponible';
   const tomero2 = data.telContreras || 'No disponible';
 
-  return `✅ *Turno encontrado*\n\n` +
-    `• Inspección de cauce: ${inspeccion}${includeHijuela ? `\n• Hijuela: ${hijuela}` : ''}\n` +
-    `• C.C.-P.P.: ${ccpp}\n` +
-    `• Titular: ${titular}\n` +
-    `• Inicio de turno: ${inicioTurnoFormato}\n` +
-    `• Fin de turno: ${finTurnoFormato}\n` +
-    `• Tomero 1: ${tomero1}\n` +
-    `• Tomero 2: ${tomero2}`;
+  return `┏━━━━━━━━━━━━━━━━━━━━━━┓\n` +
+    `┃      🌊 TURNO DE RIEGO      ┃\n` +
+    `┗━━━━━━━━━━━━━━━━━━━━━━┛\n\n` +
+    `👤 *Titular:* ${titular}\n` +
+    `🏞️ *Inspección:* ${inspeccion}\n` +
+    (includeHijuela ? `🚜 *Hijuela:* ${hijuela}\n` : '') +
+    `📍 *C.C.-P.P.:* ${ccpp}\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🗓️ *HORARIO ASIGNADO*\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `▸ Inicio:   ${inicioTurnoFormato}\n` +
+    `▸ Fin:      ${finTurnoFormato}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `📞 *CONTACTO TOMERO*\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `▸ Tomero 1: ${tomero1}\n` +
+    `▸ Tomero 2: ${tomero2}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `_💧 Ante cualquier inconveniente, contactá a tu tomero._`;
 };
 
 /**
@@ -3033,18 +3235,31 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     
     // Formatear mensaje de deuda
     const datos = resultado.data;
-    const deudaMsg = datos.formattedMessage || (`📊 *Resumen de deuda del padrón ${tipoPadron.toUpperCase()}*\n\n` +
+    const capitalFmt = formatCurrencyArs(datos.capital);
+    const interesFmt = formatCurrencyArs(datos.interes);
+    const apremioFmt = formatCurrencyArs(datos.apremio);
+    const eventualesFmt = formatCurrencyArs(datos.eventuales);
+    const totalFmt = formatCurrencyArs(datos.total);
+    const deudaMsg = (
+      `┏━━━━━━━━━━━━━━━━━━━━━━┓\n` +
+      `┃    📋 ESTADO DE CUENTA    ┃\n` +
+      `┗━━━━━━━━━━━━━━━━━━━━━━┛\n\n` +
       `👤 *Titular:* ${datos.titular}\n` +
       `🆔 *CUIT:* ${datos.cuit}\n` +
-      `🌾 *Hectáreas:* ${datos.hectareas}\n\n` +
-      `🚜 *Hijuela:* ${datos.hijuela || 'No disponible'}\n\n` +
-      `💰 *DEUDA:*\n` +
-      `Capital: ${datos.capital}\n` +
-      `Interés: ${datos.interes}\n` +
-      `Apremio: ${datos.apremio}\n` +
-      `Eventuales: ${datos.eventuales}\n\n` +
-      `*💵 TOTAL A PAGAR: ${datos.total}*\n\n` +
-      `_💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`);
+      `🌾 *Hectáreas:* ${datos.hectareas}\n` +
+      `🚜 *Hijuela:* ${datos.hijuela || 'No disponible'}\n` +
+      `📋 *Padrón:* ${tipoPadron.toUpperCase()}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `💰 *DETALLE DE DEUDA*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `▸ Capital:      ${capitalFmt}\n` +
+      `▸ Interés:      ${interesFmt}\n` +
+      `▸ Apremio:      ${apremioFmt}\n` +
+      `▸ Eventuales:   ${eventualesFmt}\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `*💵 TOTAL A PAGAR: ${totalFmt}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `_💡 Pagando el total, se descuenta el 50% de los intereses._`);
     
     await sendMessageAndSave(from, deudaMsg);
     
@@ -3052,7 +3267,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Ofrecer pagar deuda o volver
-    const opcionesMsg = `💳 *¿Querés pagar tu deuda online?*`;
+    const opcionesMsg = `💳 *¿Deseas regularizar tu deuda ahora?*`;
     await sendMessageAndSave(from, opcionesMsg);
     
     // Pequeña pausa antes de enviar botones
@@ -3117,7 +3332,12 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     
     if (resultado.pdfPath) {
       // Subir PDF a WhatsApp primero
-      const sendingMsg = '📤 Preparando envío del boleto...';
+      const sendingMsg =
+        `┏━━━━━━━━━━━━━━━━━━━━━━┓\n` +
+        `┃       📄 TU BOLETO        ┃\n` +
+        `┗━━━━━━━━━━━━━━━━━━━━━━┛\n\n` +
+        `⏳ Estamos preparando tu boleto de pago...\n\n` +
+        `_En instantes lo recibirás como archivo adjunto._`;
       await sendMessageAndSave(from, sendingMsg);
       
       try {
@@ -3196,21 +3416,11 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       await sendButtonReplyAndSave(from, '¿Desea pagar el boleto?', buttons);
       userStates[from].step = 'AWAITING_PAGO_BOLETO';
 
-      const periBole = resultado?.data?.periBole;
-      const numeBole = resultado?.data?.numeBole;
-      const appBaseUrl = (
-        process.env.BASE_URL
-        || process.env.PUBLIC_BASE_URL
-        || process.env.BACKEND_URL
-        || `http://localhost:${process.env.PORT || 3000}`
-      ).replace(/\/$/, '');
-      const redirectLink = (periBole && numeBole)
-        ? `${appBaseUrl}/pagar-boleto/${periBole}/${numeBole}`
-        : null;
-      console.log('🧭 [FLOW] Link de redirección de pago generado', {
-        periBole,
-        numeBole,
-        redirectDisponible: Boolean(redirectLink)
+      const directServicioLink = buildServicioPagoLink(tipoPadron, datosParaScrap);
+      console.log('🧭 [FLOW] Link de servicio para pago de boleto', {
+        tipoPadron,
+        datosParaScrap,
+        linkDisponible: Boolean(directServicioLink)
       });
       
       // Guardar datos para el pago
@@ -3218,7 +3428,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         tipoPadron,
         tipoCuota,
         datos: datosParaScrap,
-        redirectLink
+        redirectLink: directServicioLink
       };
       
     } else {
@@ -3322,7 +3532,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
       await sendMessageAndSave(from, esperaMsg);
 
       let linkPago = boletoPago.redirectLink;
-      console.log(`🧭 [FLOW] Pago boleto: usando ${linkPago ? 'redirect /pagar-boleto' : 'scraper link fallback'}`);
+      console.log(`🧭 [FLOW] Pago boleto: usando ${linkPago ? 'link directo /servicio' : 'scraper link fallback'}`);
       if (!linkPago) {
         const resultado = await debtScraperService.obtenerLinkPagoBoleto(
           boletoPago.tipoPadron,
@@ -3351,9 +3561,10 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
         `🔗 ${linkPago}\n\n` +
         `*Pasos sugeridos:*\n` +
         `1️⃣ Ingresá al link\n` +
-        `2️⃣ Elegí tu método de pago preferido (tarjeta, Mercado Pago, etc.)\n` +
-        `3️⃣ Completá el pago siguiendo las instrucciones del portal\n` +
-        `4️⃣ Guardá el comprobante de pago\n\n` +
+        `2️⃣ Dentro del portal, presioná el botón *"Pagar"*\n` +
+        `3️⃣ Elegí tu método de pago preferido (tarjeta, Mercado Pago, etc.)\n` +
+        `4️⃣ Completá el pago siguiendo las instrucciones del portal\n` +
+        `5️⃣ Guardá el comprobante de pago\n\n` +
         `_✅ El pago se acreditará en 24-48 horas hábiles._`;
       
       await sendMessageAndSave(from, instruccionesMsg);
@@ -3461,22 +3672,21 @@ const handleOperatorWaitingInput = async (from, messageBody = '', optionToProces
 };
 
 const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
-  const validOptions = new Set([
-    'op_satisfaccion_1',
-    'op_satisfaccion_2',
-    'op_satisfaccion_3',
-    'op_satisfaccion_4',
-    'op_satisfaccion_5'
-  ]);
-
-  if (!validOptions.has(optionToProcess)) {
+  const score = parseSatisfactionScore(optionToProcess);
+  if (!score) {
     await sendMessageAndSave(from, '🙏 Por favor elegí una opción de la encuesta usando los botones.');
     return;
   }
 
-  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
+  try {
+    await clienteService.guardarEncuestaSatisfaccionOperador(from, score, 'whatsapp');
+  } catch (error) {
+    console.error('❌ Error guardando encuesta de satisfacción:', error.message);
+  }
 
-  await sendMessageAndSave(from, '¡Gracias por tu respuesta! 🙌');
+  await clienteService.actualizarEstadoConversacion(from, 'OPINION_POST_OPERADOR');
+
+  await sendMessageAndSave(from, `¡Gracias por tu respuesta! 🙌\n\nRegistramos tu calificación: *${score}⭐*`);
   await sendButtonReplyAndSave(from, '¿Querés dejarnos alguna opinión?', [
     { id: 'op_opinion_si', title: '✅ Sí' },
     { id: 'op_opinion_no', title: '❌ No' }
@@ -3486,13 +3696,16 @@ const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
 };
 
 const handleOpinionChoice = async (from, optionToProcess = '') => {
-  if (optionToProcess === 'op_opinion_si') {
+  const normalized = normalizeChoiceText(optionToProcess);
+  if (normalized === 'op_opinion_si' || normalized === 'si' || normalized === 'opinion_si') {
+    await clienteService.actualizarEstadoConversacion(from, 'OPINION_POST_OPERADOR_TEXTO');
     await sendMessageAndSave(from, '✍️ Escribí tu opinión y la registramos:');
     userStates[from].step = 'AWAITING_OPINION_TEXT';
     return;
   }
 
-  if (optionToProcess === 'op_opinion_no') {
+  if (normalized === 'op_opinion_no' || normalized === 'no' || normalized === 'opinion_no') {
+    await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
     await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
       { id: 'op_mas_ayuda_si', title: '✅ Sí' },
       { id: 'op_mas_ayuda_no', title: '❌ No' }
@@ -3515,10 +3728,17 @@ const handleOpinionText = async (from, messageBody = '') => {
     telefono: from,
     tipo: 'text',
     cuerpo: `[OPINIÓN DEL CLIENTE]: ${opinion}`,
-    emisor: 'bot',
+    emisor: 'usuario',
     url_archivo: null
   });
 
+  try {
+    await clienteService.guardarOpinionEncuestaOperador(from, opinion);
+  } catch (error) {
+    console.error('❌ Error guardando opinión de encuesta:', error.message);
+  }
+
+  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
   await sendMessageAndSave(from, '¡Gracias por su opinión! La misma nos ayuda a mejorar continuamente. 🙏');
   await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
     { id: 'op_mas_ayuda_si', title: '✅ Sí' },

@@ -214,6 +214,75 @@ const preFetchDebt = (telefono) => {
 };
 
 /**
+ * Pre-fetch manual: el usuario ingresó su DNI o padrón directamente en el Flow.
+ * Construye un objeto cliente mínimo con el dato proporcionado y lanza la consulta.
+ *
+ * @param {string} telefono
+ * @param {'dni'|'padron'} tipoConsulta - Tipo elegido en el radio button del Flow
+ * @param {string} inputValor           - Valor ingresado por el usuario en el Flow
+ * @returns {void}
+ */
+const preFetchDebtManual = (telefono, tipoConsulta, inputValor) => {
+  const tipo = tipoConsulta === 'padron' ? 'superficial' : 'dni';
+  const key  = buildKey(telefono, tipo);
+
+  // Resetear entrada anterior para forzar nuevo resultado
+  prefetchCache.set(key, {
+    status     : 'pending',
+    data       : null,
+    error      : null,
+    userMessage: null,
+    createdAt  : Date.now(),
+    resolvedAt : null,
+  });
+
+  logger.info(`${PREFIX} [${telefono}] Pre-fetch manual iniciado (tipo: ${tipo}, valor: ${inputValor})`);
+
+  (async () => {
+    try {
+      // Construir cliente sintético con el dato que ingresó el usuario
+      const clienteSintetico = tipoConsulta === 'padron'
+        ? { tipo_consulta_preferido: 'superficial', padron_superficial: inputValor }
+        : { tipo_consulta_preferido: null,          padron: inputValor };
+
+      const resultado = await ejecutarConsultaDeuda(telefono, clienteSintetico);
+
+      if (resultado.success) {
+        prefetchCache.set(key, {
+          status     : 'ready',
+          data       : resultado.data || resultado,
+          error      : null,
+          userMessage: null,
+          createdAt  : prefetchCache.get(key)?.createdAt ?? Date.now(),
+          resolvedAt : Date.now(),
+        });
+        logger.info(`${PREFIX} [${telefono}] Pre-fetch manual completado OK`);
+      } else {
+        prefetchCache.set(key, {
+          status     : 'error',
+          data       : null,
+          error      : resultado.error || 'consulta_fallida',
+          userMessage: resultado.userMessage || 'No pudimos consultar tu deuda. Intentá nuevamente.',
+          createdAt  : prefetchCache.get(key)?.createdAt ?? Date.now(),
+          resolvedAt : Date.now(),
+        });
+        logger.error(`${PREFIX} [${telefono}] Pre-fetch manual falló: ${resultado.error}`);
+      }
+    } catch (err) {
+      prefetchCache.set(key, {
+        status     : 'error',
+        data       : null,
+        error      : err.message,
+        userMessage: 'Hubo un error inesperado. Por favor intentá más tarde.',
+        createdAt  : prefetchCache.get(key)?.createdAt ?? Date.now(),
+        resolvedAt : Date.now(),
+      });
+      logger.error(`${PREFIX} [${telefono}] Error en pre-fetch manual: ${err.message}`);
+    }
+  })();
+};
+
+/**
  * Recupera los datos pre-fetcheados desde el caché.
  * Llamado desde el endpoint de Data Exchange (Fase 3) cuando Meta solicita datos.
  *
@@ -291,6 +360,7 @@ const getAnyPrefetchedData = (telefono) => {
 
 module.exports = {
   preFetchDebt,
+  preFetchDebtManual,
   getPrefetchedData,
   getAnyPrefetchedData,
   invalidateCache,

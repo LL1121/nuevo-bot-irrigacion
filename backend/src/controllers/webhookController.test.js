@@ -28,6 +28,8 @@ jest.mock('../services/clienteService', () => ({
   verificarDisponibilidadOperador: jest.fn().mockResolvedValue({ disponible: false, mensaje: 'Sin operadores' }),
   obtenerContextoOperador: jest.fn(),
   cambiarEstadoBot: jest.fn().mockResolvedValue(true),
+  guardarEncuestaSatisfaccionOperador: jest.fn().mockResolvedValue({ id: 1 }),
+  guardarOpinionEncuestaOperador: jest.fn().mockResolvedValue({ id: 1 }),
 }));
 jest.mock('../services/pdfCompressionService', () => ({ compressPdfForFrontend: jest.fn() }));
 jest.mock('fs');

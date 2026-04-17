@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX } from 'lucide-react';
+import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX, Wifi, WifiOff } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
@@ -262,6 +262,8 @@ export default function App() {
   });
   const [showPreferences, setShowPreferences] = useState(false);
   const [showNewConversation, setShowNewConversation] = useState(false);
+  const [isOnline, setIsOnline] = useState<boolean>(() => navigator.onLine);
+  const [isSocketConnected, setIsSocketConnected] = useState<boolean>(socket.connected);
 
   // Persist preferences to localStorage whenever they change
   useEffect(() => { try { localStorage.setItem('pref_darkMode', String(darkMode)); } catch {} }, [darkMode]);
@@ -428,8 +430,8 @@ export default function App() {
           {
             type: 'body',
             parameters: [
-              { type: 'text', text: primerNombre },
-              { type: 'text', text: tema }
+              { type: 'text', parameter_name: 'nombre_cliente', text: primerNombre },
+              { type: 'text', parameter_name: 'tema', text: tema }
             ]
           }
         ]
@@ -637,9 +639,7 @@ export default function App() {
         selectChatById(takenChatId);
       }
 
-      toast.success('Chat tomado por operador', {
-        description: `Se activó la atención humana para ${phone}.`
-      });
+      // Sin toast: el estado cambia en UI en tiempo real.
     } catch (error) {
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
       if ((status === 409 || status === 423) && axios.isAxiosError(error)) {
@@ -735,9 +735,7 @@ export default function App() {
 
       removePendingTicket({ phone, ticketId });
 
-      toast.success('Conversación finalizada', {
-        description: 'El backend continuará con encuesta y seguimiento automático.'
-      });
+      toast.success('Conversación finalizada');
     } catch (error) {
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
       if ((status === 409 || status === 423) && axios.isAxiosError(error)) {
@@ -975,6 +973,28 @@ const normalizeConversationStatus = (value?: string | null): OperatorConversatio
   return null;
 };
 
+const formatHandoffReason = (reason?: string | null) => {
+  const raw = String(reason || '').trim();
+  if (!raw) return '';
+
+  const upper = raw.toUpperCase();
+  const mapped: Record<string, string> = {
+    MAIN_MENU_OPERATOR: 'Solicitud desde menú principal',
+    AUTH_MENU_OPERATOR: 'Solicitud desde menú autenticado',
+    SCRAPER_ERROR_OPERATOR_CHOICE: 'Asistencia por consulta no resuelta',
+    DERIVACION_BOT: 'Derivación automática del bot',
+    DERIVACION_HUMANO: 'Derivación a operador',
+    OPERATOR_REACTIVATION_TEMPLATE: 'Reactivación de conversación'
+  };
+
+  if (mapped[upper]) return mapped[upper];
+
+  return raw
+    .replace(/_/g, ' ')
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
 const isWaitingOperator = (status?: string | null) => normalizeConversationStatus(status) === 'ESPERA_OPERADOR';
 const isHumanConversation = (status?: string | null) => normalizeConversationStatus(status) === 'HUMANO';
 
@@ -990,7 +1010,7 @@ const getStatusBadgeMeta = (status?: string | null, botActive?: boolean | null) 
 
   if (normalized === 'HUMANO') {
     return {
-      label: 'Atención humana',
+      label: 'Operador',
       classes: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200'
     };
   }
@@ -1011,7 +1031,7 @@ const getStatusBadgeMeta = (status?: string | null, botActive?: boolean | null) 
 
   if (normalized === 'BOT' || botActive === true) {
     return {
-      label: 'Bot activo',
+      label: 'Automático',
       classes: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
     };
   }
@@ -1262,12 +1282,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       return;
     }
 
-    if (params.kind === 'success') {
-      toast.success(params.title, { description: params.description });
-      return;
-    }
-
-    toast.warning(params.title, { description: params.description });
+    // Las alertas de conexión warning/success se muestran con indicador visual.
   };
 
   // Auth handlers
@@ -1390,6 +1405,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     }
 
     const handleSocketConnect = () => {
+      setIsSocketConnected(true);
       const recoveredAfterAttempts = reconnectAttemptRef.current;
       authFailureCountRef.current = 0;
       reconnectAttemptRef.current = 0;
@@ -1410,6 +1426,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     };
 
     const handleSocketDisconnect = (reason: Socket.DisconnectReason) => {
+      setIsSocketConnected(false);
       trackSocketEvent('disconnect', { reason });
       if (!isAuthenticated) return;
 
@@ -1434,6 +1451,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     };
 
     const handleSocketConnectError = (error: Error) => {
+      setIsSocketConnected(false);
       const authError = isSocketAuthError(error);
       trackSocketEvent('connect_error', {
         message: error.message,
@@ -1483,6 +1501,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
     const handleOnline = () => {
       trackAction('network_online');
+      setIsOnline(true);
       if (!isAuthenticated || socket.connected) return;
       refreshSocketAuth();
       socket.connect();
@@ -1490,6 +1509,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
     const handleOffline = () => {
       trackAction('network_offline');
+      setIsOnline(false);
       emitConnectionAlert({
         kind: 'warning',
         title: 'Sin conexión a internet',
@@ -2001,7 +2021,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 
                 // Incrementar contador solo si es mensaje del usuario Y no es del operador
                 const isUserMessage = isUserSender(emisorLimpio);
-                if (isUserMessage && selectedChat !== existingChatIndex) {
+                const isActiveChat = selectedId === chat.id;
+                if (isUserMessage && !isActiveChat) {
                   // Solo incrementar si NO estamos en este chat
                   chat.unread = (chat.unread || 0) + 1;
                 }
@@ -2019,7 +2040,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 });
                 
                 // 📢 Mostrar notificación si el usuario no está en este chat
-                if (isUserMessage && selectedChat !== existingChatIndex) {
+                if (isUserMessage && !isActiveChat) {
                   const contactName = chat.nombre || chat.phone;
                   const messagePreview = messageText.substring(0, 100);
                   showNotification(`Mensaje de ${contactName}`, {
@@ -2117,7 +2138,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
       playNotificationSound();
       showNotification('Cliente esperando operador', {
-        body: `${phone}${ticket.motivo ? ` · ${ticket.motivo}` : ''}`,
+        body: `${phone}${ticket.motivo ? ` · ${formatHandoffReason(ticket.motivo)}` : ''}`,
         tag: `handoff-${normalizePhoneKey(phone)}`
       });
       toast.warning('Solicitud de operador en espera', {
@@ -2143,9 +2164,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         };
       }));
 
-      toast.success('Chat tomado por operador', {
-        description: payload.operador ? `Asignado a ${payload.operador}.` : `Cliente ${phone} en atención humana.`
-      });
+      // Sin toast: evita duplicados cuando se toma un chat.
     };
 
     const handleOperatorHandoffCompleted = (payload: OperatorHandoffCompletedPayload) => {
@@ -2164,9 +2183,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         };
       }));
 
-      toast.success('Atención finalizada', {
-        description: `Se activó el cierre automático para ${phone}.`
-      });
+      // Sin toast: el estado de cierre se refleja en la conversación.
     };
 
     const handleBotModeChanged = (data: BotModeChangedPayload) => {
@@ -2213,9 +2230,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           });
         }
 
-        toast.warning(`El bot se desactivó para ${chatLabel}.`, {
-          description: 'Se requiere intervención de un operador.'
-        });
+        // Sin toast: el cambio de modo se muestra con badges y estado del chat.
       }
     };
 
@@ -3357,9 +3372,6 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     }
   };
 
-  // Mock isOnline state for connection bar
-  const isOnline = true;
-
   const filteredMessages = useMemo(() => {
     const activeChat = selectedId !== undefined && selectedId !== null
       ? conversationsState.find((chat) => chat.id === selectedId) || null
@@ -3447,11 +3459,6 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
   return (
     <div className="flex h-screen bg-gray-100 dark:bg-gray-900 dark:text-gray-100 flex-col">
       <Toaster richColors closeButton position="top-right" />
-      {!isOnline && (
-        <div className="bg-orange-500 text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
-          Sin conexión - Intentando reconectar...
-        </div>
-      )}
       <div className="flex flex-1 overflow-hidden">
       {/* Sidebar - Lista de conversaciones */}
       <div className={`${selectedChat === null ? 'block' : 'hidden'} md:flex w-full md:w-96 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex-col`}>
@@ -3520,13 +3527,13 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
         {/* Conversaciones */}
         {canViewOperatorQueue && pendingOperatorTickets.length > 0 && (
-          <div className="mx-3 mt-3 rounded-xl border border-amber-300 bg-amber-50/90 dark:bg-amber-950/40 dark:border-amber-800 p-3 shadow-sm">
+          <div className="mx-3 mt-3 mb-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 p-3">
             <div className="flex items-center justify-between gap-2 mb-2">
-              <p className="text-sm font-semibold text-amber-800 dark:text-amber-100">
-                Clientes esperando operador: {pendingOperatorTickets.length}
+              <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                En espera de operador · {pendingOperatorTickets.length}
               </p>
               {operatorProfile?.subdelegacion_nombre && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-100">
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
                   {operatorProfile.subdelegacion_nombre}
                 </span>
               )}
@@ -3538,12 +3545,12 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 return (
                   <div
                     key={`${ticket.ticketId || 'pending'}-${phoneKey}`}
-                    className="rounded-lg border border-amber-200 dark:border-amber-800 bg-white/80 dark:bg-gray-900/50 px-3 py-2"
+                    className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/70 px-3 py-2"
                   >
                     <p className="text-xs text-gray-500 dark:text-gray-400">{ticket.subdelegacion || 'Sin subdelegación'}</p>
                     <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{ticket.phone}</p>
                     {ticket.motivo && (
-                      <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-2">{ticket.motivo}</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-2">{formatHandoffReason(ticket.motivo)}</p>
                     )}
                     <div className="mt-2 flex justify-end">
                       <button
@@ -3697,6 +3704,21 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             </div>
             );
           })}
+          </div>
+        </div>
+        <div className="mx-3 my-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 px-3 py-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {isOnline && isSocketConnected ? (
+                <Wifi size={14} className="text-emerald-500" />
+              ) : (
+                <WifiOff size={14} className="text-amber-500" />
+              )}
+              <span className={`text-xs font-medium ${isOnline && isSocketConnected ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}>
+                {isOnline && isSocketConnected ? 'Conectado' : 'Sin conexión'}
+              </span>
+            </div>
+            <span className="text-[11px] text-gray-500 dark:text-gray-400">Tiempo real</span>
           </div>
         </div>
       </div>

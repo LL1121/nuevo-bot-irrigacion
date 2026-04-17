@@ -635,16 +635,19 @@ const finalizarTicketOperador = async (req, res) => {
       ticket_id: ticketCerrado?.id || null
     });
 
-    await sendTextAndSave(phone, '🙏 Gracias por comunicarte con nuestro operador. Antes de cerrar, te pedimos una breve encuesta.');
-    await sendListAndSave(phone, 'Encuesta de satisfacción', '¿Cómo calificarías la atención recibida?', 'Elegir calificación', [
+    await sendTextAndSave(
+      phone,
+      '┏━━━━━━━━━━━━━━━━━━━━━━┓\n┃   ⭐ ENCUESTA RÁPIDA   ┃\n┗━━━━━━━━━━━━━━━━━━━━━━┛\n\nGracias por comunicarte con nuestro operador. Tu respuesta nos ayuda a mejorar la atención.'
+    );
+    await sendListAndSave(phone, 'Encuesta de satisfacción', '¿Cómo calificarías la atención recibida hoy?', 'Calificar atención', [
       {
-        title: 'Calificación',
+        title: 'Elegí una calificación',
         rows: [
-          { id: 'op_satisfaccion_1', title: '1 ⭐' },
-          { id: 'op_satisfaccion_2', title: '2 ⭐' },
-          { id: 'op_satisfaccion_3', title: '3 ⭐' },
-          { id: 'op_satisfaccion_4', title: '4 ⭐' },
-          { id: 'op_satisfaccion_5', title: '5 ⭐' }
+          { id: 'op_satisfaccion_1', title: '⭐ 1 - Muy mala', description: 'No resolvió mi consulta' },
+          { id: 'op_satisfaccion_2', title: '⭐⭐ 2 - Mala', description: 'Quedé con dudas importantes' },
+          { id: 'op_satisfaccion_3', title: '⭐⭐⭐ 3 - Regular', description: 'Aceptable, pero mejorable' },
+          { id: 'op_satisfaccion_4', title: '⭐⭐⭐⭐ 4 - Buena', description: 'Respuesta clara y útil' },
+          { id: 'op_satisfaccion_5', title: '⭐⭐⭐⭐⭐ 5 - Excelente', description: 'Atención rápida y completa' }
         ]
       }
     ]);

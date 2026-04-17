@@ -67,11 +67,12 @@ const decryptRequest = (payload, privateKeyPem, passphrase) => {
 /**
  * Cifra la respuesta del servidor para enviarla de vuelta a Meta.
  * Meta exige que el IV de respuesta sea el IV original con todos sus bits invertidos.
+ * La respuesta debe enviarse como texto plano (Content-Type: text/plain), NO como JSON.
  *
  * @param {Object} data    - Objeto a cifrar (será serializado a JSON)
  * @param {Buffer} aesKey  - La misma clave AES obtenida de decryptRequest()
  * @param {Buffer} iv      - El IV original obtenido de decryptRequest()
- * @returns {{ encrypted_data: string }} - Base64 de (ciphertext + auth tag)
+ * @returns {string} - String base64 de (ciphertext ‖ authTag), listo para res.send()
  */
 const encryptResponse = (data, aesKey, iv) => {
   // Invertir cada byte del IV (requisito de Meta para la respuesta)
@@ -79,17 +80,13 @@ const encryptResponse = (data, aesKey, iv) => {
 
   const cipher = crypto.createCipheriv('aes-128-gcm', aesKey, flippedIv);
 
-  const encrypted = Buffer.concat([
+  // getAuthTag() debe llamarse DESPUÉS de cipher.final()
+  // Meta espera el resultado como string base64 plano (text/plain), NO como JSON.
+  return Buffer.concat([
     cipher.update(JSON.stringify(data), 'utf8'),
     cipher.final(),
-  ]);
-
-  const tag = cipher.getAuthTag();
-
-  // Concatenar ciphertext + auth tag y devolver en base64
-  return {
-    encrypted_data: Buffer.concat([encrypted, tag]).toString('base64'),
-  };
+    cipher.getAuthTag(),
+  ]).toString('base64');
 };
 
 module.exports = { decryptRequest, encryptResponse };

@@ -454,12 +454,12 @@ const listarSubdelegaciones = async () => {
 
 const LOCALIDADES_ALIASES = {
   sede_central: ['sede central', 'sede_central', 'central', 'sc'],
-  rio_tunyuan_superior: ['rio tunyuan superior', 'tunuyan superior', 'rts', 'sub. río tunuyán superior', 'subdelegacion rio tunuyan superior'],
+  rio_tunyuan_superior: ['rio tunyuan superior', 'rio tunuyan superior', 'tunuyan superior', 'tunuyan sup', 'rts', 'sub. río tunuyán superior', 'subdelegacion rio tunuyan superior'],
   rio_mendoza: ['rio mendoza', 'mendoza', 'rm', 'sub. río mendoza', 'subdelegacion rio mendoza'],
   rio_atuel: ['rio atuel', 'atuel', 'ra', 'sub. río atuel', 'subdelegacion rio atuel'],
-  zona_riego_malargue: ['zona de riego malargue', 'malargue', 'zrm', 'zona riego malargue', 'malargüe'],
+  zona_riego_malargue: ['zona de riego malargue', 'zona de riego malargüe', 'zona riego malargue', 'zona riego malargüe', 'malargue', 'malargüe', 'zrm'],
   rio_diamante: ['rio diamante', 'diamante', 'rd', 'sub. río diamante', 'subdelegacion rio diamante'],
-  rio_tunyuan_inferior: ['rio tunyuan inferior', 'tunuyan inferior', 'rti', 'sub. río tunuyán inferior', 'subdelegacion rio tunuyan inferior']
+  rio_tunyuan_inferior: ['rio tunyuan inferior', 'rio tunuyan inferior', 'tunuyan inferior', 'tunuyan inf', 'rti', 'sub. río tunuyán inferior', 'subdelegacion rio tunuyan inferior']
 };
 
 const LOCALIDADES_CANONICAS = {
@@ -510,13 +510,16 @@ const resolverSubdelegacionDesdeEntrada = async (entrada = '') => {
     }
 
     const nombre = normalizeText(row.nombre);
+    const nombreKey = toLookupKey(nombre);
     const codigo = normalizeText(row.codigo);
     const rowKey = toLookupKey(row.nombre);
     const codigoKey = toLookupKey(row.codigo);
     return (
       nombre === normalizedInput ||
+      nombreKey === normalizedSlug ||
       codigo === normalizedInput ||
       nombre.includes(normalizedInput) ||
+      nombreKey.includes(normalizedSlug) ||
       keyMatches(rowKey, normalizedSlug) ||
       keyMatches(codigoKey, normalizedSlug) ||
       (aliasKey && (keyMatches(rowKey, aliasKey) || keyMatches(codigoKey, aliasKey)))
@@ -528,9 +531,15 @@ const resolverSubdelegacionDesdeEntrada = async (entrada = '') => {
   }
 
   if (aliasKey) {
+    const canonicalName = LOCALIDADES_CANONICAS[aliasKey] || aliasKey.replace(/_/g, ' ');
+    const dbMatchByCanonical = rows.find((row) => toLookupKey(row.nombre) === toLookupKey(canonicalName));
+    if (dbMatchByCanonical) {
+      return dbMatchByCanonical;
+    }
+
     return {
       id: null,
-      nombre: LOCALIDADES_CANONICAS[aliasKey] || aliasKey.replace(/_/g, ' '),
+      nombre: canonicalName,
       codigo: aliasKey,
       display_phone_number: null,
       fallback: true
@@ -941,6 +950,71 @@ const validarHorarioAtencionOperador = async (subdelegacionId = null, now = new 
   };
 };
 
+const obtenerUltimoTicketCerrado = async (telefono) => {
+  if (!telefono) return null;
+  return get(
+    `SELECT id
+     FROM tickets
+     WHERE cliente_telefono = ?
+       AND estado = 'CERRADO'
+     ORDER BY COALESCE(closed_at, updated_at, created_at) DESC
+     LIMIT 1`,
+    [telefono]
+  );
+};
+
+const guardarEncuestaSatisfaccionOperador = async (telefono, calificacion, canal = 'whatsapp') => {
+  const calificacionNum = Number(calificacion);
+  if (!telefono || Number.isNaN(calificacionNum) || calificacionNum < 1 || calificacionNum > 5) {
+    return null;
+  }
+
+  const ultimoTicket = await obtenerUltimoTicketCerrado(telefono);
+  const result = await run(
+    `INSERT INTO encuestas_operador (cliente_telefono, ticket_id, calificacion, canal, created_at, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [telefono, ultimoTicket?.id || null, calificacionNum, canal]
+  );
+
+  if (!result?.lastID) return null;
+  return get('SELECT * FROM encuestas_operador WHERE id = ? LIMIT 1', [result.lastID]);
+};
+
+const guardarOpinionEncuestaOperador = async (telefono, opinion) => {
+  const texto = String(opinion || '').trim();
+  if (!telefono || !texto) return null;
+
+  const ultimaEncuestaSinOpinion = await get(
+    `SELECT id
+     FROM encuestas_operador
+     WHERE cliente_telefono = ?
+       AND (opinion IS NULL OR trim(opinion) = '')
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [telefono]
+  );
+
+  if (ultimaEncuestaSinOpinion?.id) {
+    await run(
+      `UPDATE encuestas_operador
+       SET opinion = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [texto, ultimaEncuestaSinOpinion.id]
+    );
+    return get('SELECT * FROM encuestas_operador WHERE id = ? LIMIT 1', [ultimaEncuestaSinOpinion.id]);
+  }
+
+  const ultimoTicket = await obtenerUltimoTicketCerrado(telefono);
+  const result = await run(
+    `INSERT INTO encuestas_operador (cliente_telefono, ticket_id, opinion, canal, created_at, updated_at)
+     VALUES (?, ?, ?, 'whatsapp', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [telefono, ultimoTicket?.id || null, texto]
+  );
+
+  if (!result?.lastID) return null;
+  return get('SELECT * FROM encuestas_operador WHERE id = ? LIMIT 1', [result.lastID]);
+};
+
 module.exports = {
   obtenerOCrearCliente,
   obtenerTodosLosClientes,
@@ -973,5 +1047,7 @@ module.exports = {
   obtenerSubdelegacionInfo,
   listarTicketsPorSubdelegacion,
   listarTicketsEnEspera,
-  validarHorarioAtencionOperador
+  validarHorarioAtencionOperador,
+  guardarEncuestaSatisfaccionOperador,
+  guardarOpinionEncuestaOperador
 };

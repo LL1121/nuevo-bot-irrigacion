@@ -1,161 +1,248 @@
-{
-  "version": "3.1",
+{ 
+  "version": "7.3", 
+  "data_api_version": "3.0", 
+  "routing_model": { 
+    "SAVED_DNI": ["RESULTS", "CHOOSE_TYPE"],
+    "CHOOSE_TYPE": ["INPUT_NUMBER"],
+    "INPUT_NUMBER": ["RESULTS"],
+    "RESULTS": [] 
+  }, 
   "screens": [
-    {
-      "id": "INPUT",
-      "title": "Consultar Deuda",
-      "terminal": false,
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Form",
-            "name": "form_input",
-            "children": [
-              {
-                "type": "TextHeading",
-                "text": "Consultar tu deuda"
-              },
-              {
-                "type": "TextBody",
-                "text": "Seleccioná con qué dato querés consultar y luego ingresá el número correspondiente."
-              },
-              {
-                "type": "RadioButtonsGroup",
-                "label": "Tipo de consulta",
-                "name": "tipo_consulta",
-                "required": true,
-                "data-source": [
-                  { "id": "dni",    "title": "DNI / CUIT" },
-                  { "id": "padron", "title": "Número de Padrón" }
-                ]
-              },
-              {
-                "type": "TextInput",
-                "label": "Ingresá el número",
-                "name": "input_valor",
-                "required": true,
-                "input-type": "number",
-                "helper-text": "Sin puntos ni guiones (ej: 28456123)"
-              },
-              {
-                "type": "Footer",
-                "label": "Consultar",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "tipo_consulta": "${form_input.tipo_consulta}",
-                    "input_valor":   "${form_input.input_valor}"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-
-    {
-      "id": "RESULTS",
-      "title": "Detalle de Deuda",
-      "terminal": true,
+    { 
+      "id": "SAVED_DNI", 
+      "title": "Consultar Deuda", 
+      "terminal": false, 
       "data": {
-        "titular":    { "type": "string", "__example__": "María González" },
-        "cuit":       { "type": "string", "__example__": "27-12345678-3" },
-        "hectareas":  { "type": "string", "__example__": "5.00" },
-        "hijuela":    { "type": "string", "__example__": "Hijuela Norte" },
-        "capital":    { "type": "string", "__example__": "$12.500,00" },
-        "interes":    { "type": "string", "__example__": "$1.875,00" },
-        "apremio":    { "type": "string", "__example__": "$0,00" },
-        "eventuales": { "type": "string", "__example__": "$250,00" },
-        "total":      { "type": "string", "__example__": "$14.625,00" },
-        "link_pago":  { "type": "string", "__example__": "https://epagos.mendoza.gov.ar/pago/123456" }
+        "nombre_usuario": { "type": "string", "__example__": "Juan" },
+        "dni_guardado": { "type": "string", "__example__": "28456123" }
       },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-
-          {
-            "type": "TextHeading",
-            "text": "Titular"
-          },
-          {
-            "type": "TextBody",
-            "text": "${data.titular}"
-          },
-          {
-            "type": "TextCaption",
-            "text": "CUIT/DNI: ${data.cuit}"
-          },
-
-          {
-            "type": "TextSubheading",
-            "text": "────────────────────"
-          },
-
-          {
-            "type": "TextHeading",
-            "text": "Campo"
-          },
-          {
-            "type": "TextBody",
-            "text": "Hectáreas: ${data.hectareas}"
-          },
-          {
-            "type": "TextBody",
-            "text": "Hijuela: ${data.hijuela}"
-          },
-
-          {
-            "type": "TextSubheading",
-            "text": "────────────────────"
-          },
-
-          {
-            "type": "TextHeading",
-            "text": "Desglose de deuda"
-          },
-          {
-            "type": "TextBody",
-            "text": "Capital:     ${data.capital}"
-          },
-          {
-            "type": "TextBody",
-            "text": "Interés:     ${data.interes}"
-          },
-          {
-            "type": "TextBody",
-            "text": "Apremio:     ${data.apremio}"
-          },
-          {
-            "type": "TextBody",
-            "text": "Eventuales:  ${data.eventuales}"
-          },
-
-          {
-            "type": "TextSubheading",
-            "text": "────────────────────"
-          },
-
-          {
-            "type": "TextHeading",
-            "text": "💵 TOTAL A PAGAR: ${data.total}"
-          },
-          {
-            "type": "TextCaption",
-            "text": "💡 Si pagás el total de la deuda, tenés un 50% de descuento en intereses."
-          },
-
-          {
-            "type": "Footer",
-            "label": "Ir a Pagar Deuda",
-            "on-click-action": {
-              "name": "open_url",
-              "url":  "${data.link_pago}"
-            }
-          }
-        ]
-      }
-    }
-  ]
+      "layout": { 
+        "type": "SingleColumnLayout", 
+        "children": [ 
+          { 
+            "type": "Form", 
+            "name": "form_reutilizar", 
+            "children": [ 
+              { 
+                "type": "TextHeading", 
+                "text": "¡Hola ${data.nombre_usuario}!" 
+              }, 
+              { 
+                "type": "TextBody", 
+                "text": "¿Qué necesitás el día de hoy?" 
+              }, 
+              { 
+                "type": "RadioButtonsGroup", 
+                "label": "Opciones", 
+                "name": "decision", 
+                "required": true, 
+                "data-source": [ 
+                  { "id": "usar_guardado", "title": "Consultar deuda" }, 
+                  { "id": "usar_otro", "title": "Otro DNI o Padrón" } 
+                 ] 
+              }, 
+              { 
+                "type": "Footer", 
+                "label": "Siguiente", 
+                "on-click-action": { 
+                  "name": "data_exchange", 
+                  "payload": { 
+                    "paso": "0",
+                    "decision": "${form_reutilizar.decision}",
+                    "input_valor": "${data.dni_guardado}" 
+                  } 
+                } 
+              } 
+            ] 
+          } 
+        ] 
+      } 
+    },
+    { 
+      "id": "CHOOSE_TYPE", 
+      "title": "Consultar Deuda", 
+      "terminal": false, 
+      "layout": { 
+        "type": "SingleColumnLayout", 
+        "children": [ 
+          { 
+            "type": "Form", 
+            "name": "form_tipo", 
+            "children": [ 
+              { 
+                "type": "TextHeading", 
+                "text": "Paso 1: ¿Qué datos tiene?" 
+              }, 
+              { 
+                "type": "TextBody", 
+                "text": "Seleccioná con qué dato quiere consultar su deuda." 
+              }, 
+              { 
+                "type": "RadioButtonsGroup", 
+                "label": "Tipo de consulta", 
+                "name": "tipo_consulta", 
+                "required": true, 
+                "data-source": [ 
+                  { "id": "dni",    "title": "Número de DNI" }, 
+                  { "id": "padron", "title": "Número de Padrón" } 
+                 ] 
+              }, 
+              { 
+                "type": "Footer", 
+                "label": "Siguiente", 
+                "on-click-action": { 
+                  "name": "data_exchange", 
+                  "payload": { 
+                    "paso": "1",
+                    "tipo_consulta": "${form_tipo.tipo_consulta}" 
+                  } 
+                } 
+              } 
+            ] 
+          } 
+        ] 
+      } 
+    },
+    { 
+      "id": "INPUT_NUMBER", 
+      "title": "Consultar Deuda", 
+      "terminal": false, 
+      "data": {
+        "label_dinamico": { "type": "string", "__example__": "Ingresá tu padrón" },
+        "helper_dinamico": { "type": "string", "__example__": "Sin puntos ni guiones (ej: 28456123)" },
+        "tipo_elegido": { "type": "string", "__example__": "dni" }
+      },
+      "layout": { 
+        "type": "SingleColumnLayout", 
+        "children": [ 
+          { 
+            "type": "Form", 
+            "name": "form_numero", 
+            "children": [ 
+              { 
+                "type": "TextHeading", 
+                "text": "Paso 2: Ingrese sus datos" 
+              }, 
+              { 
+                "type": "TextInput", 
+                "label": "${data.label_dinamico}", 
+                "name": "input_valor", 
+                "required": true, 
+                "input-type": "number", 
+                "helper-text": "${data.helper_dinamico}" 
+              }, 
+              { 
+                "type": "Footer", 
+                "label": "Consultar", 
+                "on-click-action": { 
+                  "name": "data_exchange", 
+                  "payload": { 
+                    "paso": "2",
+                    "tipo_consulta": "${data.tipo_elegido}",
+                    "input_valor": "${form_numero.input_valor}" 
+                  } 
+                } 
+              } 
+            ] 
+          } 
+        ] 
+      } 
+    },
+    { 
+      "id": "RESULTS", 
+      "title": "Detalle de Deuda", 
+      "terminal": true, 
+      "data": { 
+        "titular":    { "type": "string", "__example__": "María González" }, 
+        "cuit":       { "type": "string", "__example__": "27-12345678-3" }, 
+        "hectareas":  { "type": "string", "__example__": "5.00" }, 
+        "hijuela":    { "type": "string", "__example__": "Hijuela Norte" }, 
+        "capital":    { "type": "string", "__example__": "$12.500,00" }, 
+        "interes":    { "type": "string", "__example__": "$1.875,00" }, 
+        "apremio":    { "type": "string", "__example__": "$0,00" }, 
+        "eventuales": { "type": "string", "__example__": "$250,00" }, 
+        "total":      { "type": "string", "__example__": "$14.625,00" }, 
+        "link_pago":  { "type": "string", "__example__": "https://epagos.mendoza.gov.ar/pago/123456" } 
+      }, 
+      "layout": { 
+        "type": "SingleColumnLayout", 
+        "children": [ 
+          { 
+            "type": "TextHeading", 
+            "text": "Titular" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "${data.titular}" 
+          }, 
+          { 
+            "type": "TextCaption", 
+            "text": "CUIT/DNI: ${data.cuit}" 
+          }, 
+          { 
+            "type": "TextSubheading", 
+            "text": "────────────────────" 
+          }, 
+          { 
+            "type": "TextHeading", 
+            "text": "Campo" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "Hectáreas: ${data.hectareas}" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "Hijuela: ${data.hijuela}" 
+          }, 
+          { 
+            "type": "TextSubheading", 
+            "text": "────────────────────" 
+          }, 
+          { 
+            "type": "TextHeading", 
+            "text": "Deuda" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "Capital:     ${data.capital}" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "Interés:     ${data.interes}" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "Apremio:     ${data.apremio}" 
+          }, 
+          { 
+            "type": "TextBody", 
+            "text": "Eventuales:  ${data.eventuales}" 
+          }, 
+          { 
+            "type": "TextSubheading", 
+            "text": "────────────────────" 
+          }, 
+          { 
+            "type": "TextHeading", 
+            "text": "💵 TOTAL A PAGAR: ${data.total}" 
+          }, 
+          { 
+            "type": "TextCaption", 
+            "text": "💡 Si pagás el total de la deuda, tenés un 50% de descuento en intereses." 
+          }, 
+          { 
+            "type": "Footer", 
+            "label": "Ir a Pagar Deuda", 
+            "on-click-action": { 
+              "name": "complete", 
+              "payload": { 
+                "link_pago": "${data.link_pago}" 
+              } 
+            } 
+          } 
+        ] 
+      } 
+    } 
+  ] 
 }
