@@ -764,22 +764,30 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
   switch (currentState) {
     case 'START':
     default:
-      // Enviar bienvenida + menú (personalizado si es cliente conocido o si pasaron 12 horas)
-      const shouldGreet = userStates[from].shouldGreet || userStates[from].step === 'START';
-      if (shouldGreet) {
-        await sendWelcomeMessage(from, userStates[from].nombreCliente, userStates[from].esClienteNuevo);
-        userStates[from].shouldGreet = false; // Resetear el flag
+      // Matriz de contexto para enrutar el inicio sin ifs dispersos.
+      const startContext = buildStartContext(userStates[from]);
+
+      if (startContext.shouldGreet) {
+        await sendWelcomeMessage(from, startContext);
+        userStates[from].shouldGreet = false;
       }
-      if (userStates[from].needsNamePrompt && !userStates[from].namePromptSent) {
+
+      if (startContext.needsNamePrompt && !userStates[from].namePromptSent) {
         userStates[from].namePromptSent = true;
         userStates[from].step = 'AWAITING_USER_NAME';
         break;
       }
-      if (!userStates[from].subdelegacion) {
+
+      if (startContext.needsSubdelegacionPrompt) {
+        if (startContext.hasName) {
+          const firstName = formatPersonName(userStates[from].nombreCliente).split(' ')[0];
+          await sendMessageAndSave(from, `Hola *${firstName}*, antes de continuar seleccioná tu subdelegación.`);
+        }
         await sendSubdelegacionPrompt(from);
         userStates[from].step = 'AWAITING_SUBDELEGACION';
         break;
       }
+
       await sendMenuList(from, false); // false = es la primera vez
       userStates[from].step = 'MAIN_MENU';
       break;
@@ -957,10 +965,24 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
  * @param {string} nombreCliente - Nombre del cliente (si existe)
  * @param {boolean} esClienteNuevo - Si es cliente nuevo o existente
  */
-const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = true) => {
+const buildStartContext = (state = {}) => {
+  const normalizedName = formatPersonName(state.nombreCliente || '');
+  const hasName = isLikelyValidPersonName(normalizedName);
+
+  return {
+    hasName,
+    firstName: hasName ? normalizedName.split(' ')[0] : '',
+    shouldGreet: Boolean(state.shouldGreet) || state.step === 'START',
+    needsNamePrompt: Boolean(state.needsNamePrompt) || !hasName,
+    needsSubdelegacionPrompt: !Boolean(state.subdelegacion),
+    isNewClient: Boolean(state.esClienteNuevo)
+  };
+};
+
+const sendWelcomeMessage = async (from, context = {}) => {
   let welcomeMessage = '';
-  
-  if (esClienteNuevo) {
+
+  if (!context.hasName || context.isNewClient) {
     // Saludo genérico para clientes nuevos
     welcomeMessage = `👋 ¡Bienvenido/a!
 
@@ -969,7 +991,7 @@ const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = tru
   Para comenzar, ¿cómo es su nombre?`;
   } else {
     // Saludo personalizado para clientes conocidos
-    const nombre = nombreCliente ? nombreCliente.split(' ')[0] : 'amigo'; // Usar solo el primer nombre
+    const nombre = context.firstName || 'vecino/a';
     welcomeMessage = `👋 ¡Hola ${nombre}! ¿En qué puedo ayudarte hoy?`;
   }
   

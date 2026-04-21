@@ -330,8 +330,6 @@ export default function App() {
   const reconnectFallbackTimerRef = useRef<number | null>(null);
   const authFailureCountRef = useRef(0);
   const reconnectAttemptRef = useRef(0);
-  const selectedConversationIdRef = useRef<number | null>(null);
-  const prevSelectedChatRef = useRef<number | null>(null);
   const alertStateRef = useRef<{ lastAt: number; lastKind: string | null }>({
     lastAt: 0,
     lastKind: null
@@ -2711,53 +2709,27 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     }, 300); // Duración de la animación slideOutRight
   };
 
-  // Mantener selectedChat válido cuando cambia la lista
+  // Mantener selectedChat sincronizado por ID (estable ante inserciones al inicio).
   useEffect(() => {
-    if (selectedChat === null) {
-      selectedConversationIdRef.current = null;
-      prevSelectedChatRef.current = null;
+    if (selectedChat === null || selectedId === null || selectedId === undefined) {
       return;
     }
 
     if (!conversationsState.length) {
-      selectedConversationIdRef.current = null;
-      prevSelectedChatRef.current = null;
       setSelectedChat(null);
       return;
     }
 
-    const selectedByIndex = conversationsState[selectedChat];
-    const selectedChatChanged = prevSelectedChatRef.current !== selectedChat;
-    const selectedIdSnapshot = selectedConversationIdRef.current;
-
-    if (!selectedByIndex) {
-      setSelectedChat(Math.max(0, conversationsState.length - 1));
-      prevSelectedChatRef.current = selectedChat;
+    const stableIndex = conversationsState.findIndex((chat) => chat.id === selectedId);
+    if (stableIndex === -1) {
+      setSelectedChat(Math.max(0, Math.min(selectedChat, conversationsState.length - 1)));
       return;
     }
 
-    if (selectedIdSnapshot !== null) {
-      // Si cambió el índice seleccionado, asumir cambio intencional y actualizar snapshot.
-      if (selectedChatChanged && selectedByIndex.id !== selectedIdSnapshot) {
-        selectedConversationIdRef.current = selectedByIndex.id;
-        prevSelectedChatRef.current = selectedChat;
-        return;
-      }
-
-      // Si el índice no cambió pero el id sí, hubo drift por cambios en la lista: restaurar por id.
-      if (!selectedChatChanged && selectedByIndex.id !== selectedIdSnapshot) {
-        const stableIndex = conversationsState.findIndex((chat) => chat.id === selectedIdSnapshot);
-        if (stableIndex !== -1 && stableIndex !== selectedChat) {
-          setSelectedChat(stableIndex);
-          prevSelectedChatRef.current = selectedChat;
-          return;
-        }
-      }
+    if (stableIndex !== selectedChat) {
+      setSelectedChat(stableIndex);
     }
-
-    selectedConversationIdRef.current = selectedByIndex.id;
-    prevSelectedChatRef.current = selectedChat;
-  }, [conversationsState, selectedChat]);
+  }, [conversationsState, selectedChat, selectedId]);
   
   // Funciones para control del bot
   const pauseBot = async (phone: string) => {
