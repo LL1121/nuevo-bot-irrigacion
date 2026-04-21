@@ -186,26 +186,35 @@ async function traducirDniAPadron(dni) {
   }
 
   try {
-    const response = await axios.get(BASE_URL_SERVICIOS_ALTA, {
-      params: {
-        'cuit.contains': normalizedDni,
-        'tipoServicioId.in': '1,2,3',
-        page: 0,
-        size: 20
-      },
-      timeout: 20000,
-      headers: {
-        Accept: 'application/json'
-      }
-    });
+    const PAGE_SIZE = 200;
+    const MAX_PAGES = 5;
+    const items = [];
 
-    const items = Array.isArray(response?.data)
-      ? response.data
-      : Array.isArray(response?.data?.content)
-        ? response.data.content
-        : Array.isArray(response?.data?.data)
-          ? response.data.data
-          : [];
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const response = await axios.get(BASE_URL_SERVICIOS_ALTA, {
+        params: {
+          'cuit.contains': normalizedDni,
+          'tipoServicioId.in': '1,2,3',
+          page,
+          size: PAGE_SIZE
+        },
+        timeout: 20000,
+        headers: {
+          Accept: 'application/json'
+        }
+      });
+
+      const pageItems = Array.isArray(response?.data)
+        ? response.data
+        : Array.isArray(response?.data?.content)
+          ? response.data.content
+          : Array.isArray(response?.data?.data)
+            ? response.data.data
+            : [];
+
+      items.push(...pageItems);
+      if (pageItems.length < PAGE_SIZE) break;
+    }
 
     debugLog('Resultado de traducción DNI/CUIT', { cantidad: items.length });
 
@@ -241,7 +250,10 @@ async function traducirDniAPadron(dni) {
 
         return {
           padron,
-          descripcion: item?.mapaHidrico?.nombre || 'Sin descripción'
+          descripcion: item?.mapaHidrico?.nombre || item?.nomenclatura || item?.uso?.nombre || 'Sin descripción',
+          codigo: item?.codigo || '',
+          tipoServicio: item?.tipoServicio?.codigo || '',
+          emiteBoleto: Boolean(item?.emiteBoleto)
         };
       })
       .filter(Boolean);
@@ -253,7 +265,8 @@ async function traducirDniAPadron(dni) {
     return {
       success: true,
       multiple: true,
-      opciones
+      opciones,
+      total: opciones.length
     };
   } catch (error) {
     debugLog('Error en traducirDniAPadron', {
