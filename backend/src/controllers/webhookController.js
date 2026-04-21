@@ -1156,6 +1156,39 @@ const sendButtonReplyAndSave = async (from, body, buttons) => {
   return mensajeGuardado;
 };
 
+const sendInteractiveListAndSave = async (from, header, body, buttonText, sections, headerImageUrl = null) => {
+  await whatsappService.sendInteractiveList(from, header, body, buttonText, sections, headerImageUrl);
+
+  const payload = {
+    type: 'interactive_list',
+    header,
+    body,
+    buttonText,
+    sections
+  };
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(payload),
+    emisor: 'bot',
+    url_archivo: null
+  });
+
+  if (global.io) {
+    global.io.emit('nuevo_mensaje', {
+      id: mensajeGuardado.id,
+      telefono: from,
+      mensaje: JSON.stringify(payload),
+      emisor: 'bot',
+      tipo: 'interactive',
+      timestamp: mensajeGuardado.fecha
+    });
+  }
+
+  return mensajeGuardado;
+};
+
 const sendInteractiveButtonsAndSave = async (from, body, buttons) => {
   await whatsappService.sendInteractiveButtons(from, body, buttons);
 
@@ -1650,21 +1683,23 @@ Gracias por usar el sistema de Irrigación Malargüe.
  */
 const handleConsultarDeuda = async (from) => {
   try {
-    const preguntaMsg = `📝 *¿Cómo querés consultar tu deuda?*
-
-_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
-    await sendMessageAndSave(from, preguntaMsg);
-
-    const buttons = [
-      { id: 'modo_dni', title: '🆔 Por DNI' },
-      { id: 'modo_padron', title: '📋 Por Servicio' },
-      { id: 'volver_menu', title: '↩️ Volver' }
+    const sections = [
+      {
+        title: 'Opciones de consulta',
+        rows: [
+          { id: 'modo_dni', title: '🆔 Por DNI', description: 'Buscar deuda con DNI o CUIT' },
+          { id: 'modo_padron', title: '📋 Por Servicio', description: 'Ingresar padrón manualmente' },
+          { id: 'volver_menu', title: '↩️ Volver', description: 'Regresar al menú principal' }
+        ]
+      }
     ];
 
-    await sendButtonReplyAndSave(
+    await sendInteractiveListAndSave(
       from,
-      'Elegí una opción:',
-      buttons
+      'Consulta de deuda',
+      '¿Cómo querés consultar tu deuda?',
+      'Ver opciones',
+      sections
     );
 
     userStates[from].step = 'AWAITING_MODO_CONSULTA';
