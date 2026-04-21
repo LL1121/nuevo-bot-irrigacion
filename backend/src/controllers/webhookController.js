@@ -2160,7 +2160,7 @@ const parsePadronFromHyphen = (padron) => {
   };
 };
 
-const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 8) => {
+const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 7) => {
   const safePage = Math.max(0, page);
   const start = safePage * pageSize;
   const slice = opciones.slice(start, start + pageSize);
@@ -2200,7 +2200,7 @@ const sendDniPadronSelectionPrompt = async (from) => {
     return;
   }
 
-  const pageSize = 8;
+  const pageSize = 7;
   const totalPages = Math.max(1, Math.ceil(opciones.length / pageSize));
   const rows = buildDniPadronSelectionRows(opciones, page, pageSize);
 
@@ -2377,7 +2377,7 @@ const handleDniPadronSelectionChoice = async (from, option) => {
     }
 
     if (option === 'dni_page_next') {
-      const pageSize = 8;
+      const pageSize = 7;
       const maxPage = Math.max(0, Math.ceil(selection.opciones.length / pageSize) - 1);
       selection.page = Math.min(maxPage, (selection.page || 0) + 1);
       await sendDniPadronSelectionPrompt(from);
@@ -2433,7 +2433,14 @@ const handleDniPadronSelectionChoice = async (from, option) => {
     await ejecutarScraperPadron(from, clienteMock, 'superficial', 'deuda');
   } catch (error) {
     console.error('❌ Error en handleDniPadronSelectionChoice:', error);
-    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar el servicio seleccionado.');
+    const optionValue = String(option || '');
+    if (optionValue === 'dni_page_next' || optionValue === 'dni_page_prev') {
+      await sendMessageAndSave(from, '⚠️ No pude cargar la siguiente página de servicios. Probá nuevamente.');
+      userStates[from].step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar la opción seleccionada.');
     await sendMenuList(from, true);
     userStates[from].step = 'MAIN_MENU';
   }
