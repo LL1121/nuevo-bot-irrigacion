@@ -428,6 +428,8 @@ export default function App() {
           {
             type: 'body',
             parameters: [
+              // Variables posicionales de la plantilla:
+              // 1) nombre del cliente, 2) tema.
               { type: 'text', text: primerNombre },
               { type: 'text', text: tema }
             ]
@@ -794,7 +796,7 @@ export default function App() {
       const response = await axios.post(
         `/api/tickets/${encodeURIComponent(currentChat.phone)}/transfer`,
         {
-          subdelegacion_destino_id: selectedSubdelegation,
+          subdelegacion_id: selectedSubdelegation,
           ...(transferMotive ? { motivo: transferMotive } : {})
         },
         { headers: token ? { Authorization: `Bearer ${token}` } : {} }
@@ -957,6 +959,29 @@ const isUserSender = (value?: string) => {
 };
 
 const normalizePhoneKey = (value?: string) => (value || '').replace(/\D/g, '');
+
+const formatPhoneForDisplay = (value?: string) => {
+  const digits = normalizePhoneKey(value);
+  if (!digits) return 'Sin teléfono';
+
+  if (digits.startsWith('549') && digits.length >= 13) {
+    const cc = digits.slice(0, 2);
+    const area = digits.slice(3, 6);
+    const part1 = digits.slice(6, 10);
+    const part2 = digits.slice(10, 13);
+    return `+${cc} 9 ${area} ${part1}-${part2}`;
+  }
+
+  if (digits.startsWith('54') && digits.length >= 12) {
+    const cc = digits.slice(0, 2);
+    const area = digits.slice(2, 5);
+    const part1 = digits.slice(5, 9);
+    const part2 = digits.slice(9, 12);
+    return `+${cc} ${area} ${part1}-${part2}`;
+  }
+
+  return `+${digits}`;
+};
 
 const phonesMatch = (a?: string, b?: string) => {
   const na = normalizePhoneKey(a);
@@ -3935,10 +3960,10 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       toast.success('Bot reactivado');
                     }
                   }}
-                  disabled={currentChatLock.isLockedByAnotherOperator}
-                  style={{ color: themeColors[theme].hex }}
+                  disabled={currentChatLock.isLockedByAnotherOperator || currentChat.botActive}
+                  style={{ color: currentChatLock.isLockedByAnotherOperator || currentChat.botActive ? '#999' : themeColors[theme].hex }}
                 >
-                  🤖 Reactivar Bot
+                  Reactivar bot
                 </button>
                 <button
                   className="w-full text-left px-3 py-2 hover:bg-blue-50 dark:hover:bg-blue-900/20"
@@ -5237,7 +5262,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 </button>
               </div>
             )}
-            <p style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}>+54 9 11 1234-5678</p>
+            <p style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}>{formatPhoneForDisplay(currentChat.phone)}</p>
           </div>
 
           <div className="space-y-4">

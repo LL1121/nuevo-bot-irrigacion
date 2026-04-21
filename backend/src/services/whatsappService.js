@@ -77,12 +77,39 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
   return withWhatsAppRetry(async () => {
     const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
+    const sanitizeComponents = (rawComponents) => {
+      if (!Array.isArray(rawComponents)) return undefined;
+
+      const cleaned = rawComponents
+        .filter((component) => component && typeof component === 'object' && String(component.type || '').trim())
+        .map((component) => {
+          const normalized = { ...component };
+
+          if (Array.isArray(normalized.parameters)) {
+            normalized.parameters = normalized.parameters
+              .filter((param) => param && typeof param === 'object')
+              .map((param) => {
+                const next = { ...param };
+                if ('name' in next && String(next.name || '').trim() === '') {
+                  delete next.name;
+                }
+                return next;
+              });
+          }
+
+          return normalized;
+        });
+
+      return cleaned.length ? cleaned : undefined;
+    };
+
     const templatePayload = {
       name: templateName,
       language: { code: languageCode }
     };
-    if (components && Array.isArray(components) && components.length > 0) {
-      templatePayload.components = components;
+    const safeComponents = sanitizeComponents(components);
+    if (safeComponents) {
+      templatePayload.components = safeComponents;
     }
 
     const data = {

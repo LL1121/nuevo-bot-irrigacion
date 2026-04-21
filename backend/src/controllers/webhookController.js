@@ -363,7 +363,7 @@ const sendSubdelegacionPrompt = async (from) => {
 const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = '') => {
   const selection = await clienteService.resolverSubdelegacionDesdeEntrada(optionToProcess || messageBody);
 
-  if (!selection?.id) {
+  if (!selection?.id && !selection?.nombre) {
     await sendMessageAndSave(
       from,
       'No pude identificar la subdelegación. Elegí una opción de la lista.'
@@ -700,6 +700,10 @@ const receiveMessage = async (req, res) => {
           userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
         } else if (estadoConversacion === 'ENCUESTA_POST_OPERADOR') {
           userStates[from].step = 'AWAITING_OPERATOR_SURVEY';
+        } else if (estadoConversacion === 'OPINION_POST_OPERADOR') {
+          userStates[from].step = 'AWAITING_OPINION_CHOICE';
+        } else if (estadoConversacion === 'OPINION_POST_OPERADOR_TEXTO') {
+          userStates[from].step = 'AWAITING_OPINION_TEXT';
         } else if (estadoConversacion === 'FOLLOWUP_POST_OPERADOR') {
           userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
         }
@@ -3471,7 +3475,10 @@ const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
     return;
   }
 
-  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
+  const score = Number((optionToProcess || '').split('_').pop());
+  userStates[from].operatorSurveyScore = Number.isFinite(score) ? score : null;
+
+  await clienteService.actualizarEstadoConversacion(from, 'OPINION_POST_OPERADOR');
 
   await sendMessageAndSave(from, '¡Gracias por tu respuesta! 🙌');
   await sendButtonReplyAndSave(from, '¿Querés dejarnos alguna opinión?', [
@@ -3484,12 +3491,25 @@ const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
 
 const handleOpinionChoice = async (from, optionToProcess = '') => {
   if (optionToProcess === 'op_opinion_si') {
+    await clienteService.actualizarEstadoConversacion(from, 'OPINION_POST_OPERADOR_TEXTO');
     await sendMessageAndSave(from, '✍️ Escribí tu opinión y la registramos:');
     userStates[from].step = 'AWAITING_OPINION_TEXT';
     return;
   }
 
   if (optionToProcess === 'op_opinion_no') {
+    const score = userStates[from].operatorSurveyScore;
+    if (score) {
+      await mensajeService.guardarMensaje({
+        telefono: from,
+        tipo: 'text',
+        cuerpo: `[ENCUESTA OPERADOR] Calificación: ${score} estrella(s) | Opinión: (sin opinión)`,
+        emisor: 'usuario',
+        url_archivo: null
+      });
+      delete userStates[from].operatorSurveyScore;
+    }
+    await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
     await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
       { id: 'op_mas_ayuda_si', title: '✅ Sí' },
       { id: 'op_mas_ayuda_no', title: '❌ No' }
@@ -3508,14 +3528,21 @@ const handleOpinionText = async (from, messageBody = '') => {
     return;
   }
 
+  const score = userStates[from].operatorSurveyScore;
+  const surveySummary = score
+    ? `[ENCUESTA OPERADOR] Calificación: ${score} estrella(s) | Opinión: ${opinion}`
+    : `[OPINIÓN DEL CLIENTE]: ${opinion}`;
+
   await mensajeService.guardarMensaje({
     telefono: from,
     tipo: 'text',
-    cuerpo: `[OPINIÓN DEL CLIENTE]: ${opinion}`,
-    emisor: 'bot',
+    cuerpo: surveySummary,
+    emisor: 'usuario',
     url_archivo: null
   });
 
+  delete userStates[from].operatorSurveyScore;
+  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
   await sendMessageAndSave(from, '¡Gracias por su opinión! La misma nos ayuda a mejorar continuamente. 🙏');
   await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
     { id: 'op_mas_ayuda_si', title: '✅ Sí' },

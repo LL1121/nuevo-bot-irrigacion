@@ -193,7 +193,7 @@ describe('handleOperatorSurveyResponse', () => {
     await handleOperatorSurveyResponse(TEST_PHONE, 'op_satisfaccion_3');
     expect(clienteService.actualizarEstadoConversacion).toHaveBeenCalledWith(
       TEST_PHONE,
-      'FOLLOWUP_POST_OPERADOR'
+      'OPINION_POST_OPERADOR'
     );
     // Debe preguntar si quiere dejar opinión
     expect(whatsappService.sendButtonReply).toHaveBeenCalledWith(
