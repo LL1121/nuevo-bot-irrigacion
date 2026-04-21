@@ -828,6 +828,10 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
       await handleDniPadronSelectionChoice(from, optionToProcess);
       break;
 
+    case 'AWAITING_DNI_PADRON_SEARCH':
+      await handleDniPadronSearchInput(from, messageBody);
+      break;
+
     case 'AWAITING_TIPO_PADRON':
       await handleTipoPadron(from, optionToProcess);
       break;
@@ -1132,39 +1136,6 @@ const sendButtonReplyAndSave = async (from, body, buttons) => {
     type: 'interactive_buttons',
     body,
     buttons
-  };
-
-  const mensajeGuardado = await mensajeService.guardarMensaje({
-    telefono: from,
-    tipo: 'interactive',
-    cuerpo: JSON.stringify(payload),
-    emisor: 'bot',
-    url_archivo: null
-  });
-
-  if (global.io) {
-    global.io.emit('nuevo_mensaje', {
-      id: mensajeGuardado.id,
-      telefono: from,
-      mensaje: JSON.stringify(payload),
-      emisor: 'bot',
-      tipo: 'interactive',
-      timestamp: mensajeGuardado.fecha
-    });
-  }
-
-  return mensajeGuardado;
-};
-
-const sendInteractiveListAndSave = async (from, header, body, buttonText, sections, headerImageUrl = null) => {
-  await whatsappService.sendInteractiveList(from, header, body, buttonText, sections, headerImageUrl);
-
-  const payload = {
-    type: 'interactive_list',
-    header,
-    body,
-    buttonText,
-    sections
   };
 
   const mensajeGuardado = await mensajeService.guardarMensaje({
@@ -1683,24 +1654,18 @@ Gracias por usar el sistema de Irrigación Malargüe.
  */
 const handleConsultarDeuda = async (from) => {
   try {
-    const sections = [
-      {
-        title: 'Opciones de consulta',
-        rows: [
-          { id: 'modo_dni', title: '🆔 Por DNI', description: 'Buscar deuda con DNI o CUIT' },
-          { id: 'modo_padron', title: '📋 Por Servicio', description: 'Ingresar padrón manualmente' },
-          { id: 'volver_menu', title: '↩️ Volver', description: 'Regresar al menú principal' }
-        ]
-      }
+    const preguntaMsg = `📝 *¿Cómo querés consultar tu deuda?*
+
+_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
+    await sendMessageAndSave(from, preguntaMsg);
+
+    const buttons = [
+      { id: 'modo_dni', title: '🆔 Por DNI' },
+      { id: 'modo_padron', title: '📋 Por Servicio' },
+      { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await sendInteractiveListAndSave(
-      from,
-      'Consulta de deuda',
-      '¿Cómo querés consultar tu deuda?',
-      'Ver opciones',
-      sections
-    );
+    await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
 
     userStates[from].step = 'AWAITING_MODO_CONSULTA';
     userStates[from].operacion = 'deuda';
@@ -2195,7 +2160,7 @@ const parsePadronFromHyphen = (padron) => {
   };
 };
 
-const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 7) => {
+const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 7, withSearch = false, withClearSearch = false) => {
   const safePage = Math.max(0, page);
   const start = safePage * pageSize;
   const slice = opciones.slice(start, start + pageSize);
@@ -2217,6 +2182,12 @@ const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 7) => {
   if (start + pageSize < opciones.length) {
     rows.push({ id: 'dni_page_next', title: '➡️ Ver más', description: 'Mostrar más servicios' });
   }
+  if (withSearch) {
+    rows.push({ id: 'dni_search', title: '🔎 Buscar servicio', description: 'Buscar por código o nombre' });
+  }
+  if (withClearSearch) {
+    rows.push({ id: 'dni_search_clear', title: '🧹 Limpiar búsqueda', description: 'Volver al listado completo' });
+  }
   rows.push({ id: 'dni_cancel', title: '↩️ Volver al menú', description: 'Cancelar esta búsqueda' });
 
   return rows;
@@ -2224,8 +2195,11 @@ const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 7) => {
 
 const sendDniPadronSelectionPrompt = async (from) => {
   const selection = userStates[from]?.dniPadronSelection;
-  const opciones = selection?.opciones || [];
+  const opciones = Array.isArray(selection?.filteredOpciones) && selection.filteredOpciones.length > 0
+    ? selection.filteredOpciones
+    : (selection?.opciones || []);
   const page = selection?.page || 0;
+  const isFiltered = Array.isArray(selection?.filteredOpciones) && selection.filteredOpciones.length > 0;
 
   if (!opciones.length) {
     await sendMessageAndSave(from, 'ℹ️ No encontramos servicios para seleccionar.');
@@ -2237,14 +2211,22 @@ const sendDniPadronSelectionPrompt = async (from) => {
 
   const pageSize = 7;
   const totalPages = Math.max(1, Math.ceil(opciones.length / pageSize));
-  const rows = buildDniPadronSelectionRows(opciones, page, pageSize);
+  const rows = buildDniPadronSelectionRows(
+    opciones,
+    page,
+    pageSize,
+    totalPages > 2 && !isFiltered,
+    isFiltered
+  );
 
   const sections = [{
     title: 'Servicios',
     rows
   }];
 
-  const body = `Encontramos *${opciones.length}* servicios para ese DNI/CUIT.\nSeleccioná el padrón a consultar.\n\nPágina *${page + 1}* de *${totalPages}*.`;
+  const body = isFiltered
+    ? `Resultados de búsqueda: *${opciones.length}* servicio(s).\nSeleccioná el padrón a consultar.\n\nPágina *${page + 1}* de *${totalPages}*.`
+    : `Encontramos *${opciones.length}* servicios para ese DNI/CUIT.\nSeleccioná el padrón a consultar.\n\nPágina *${page + 1}* de *${totalPages}*.`;
 
   await whatsappService.sendInteractiveList(
     from,
@@ -2395,10 +2377,23 @@ const ejecutarScraperBoleto = async (from, dni, tipoCuota) => {
   }
 };
 
+const normalizeModoConsultaOption = (option = '') => {
+  const normalized = normalizeSingleLine(option).toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'modo_dni' || normalized.includes('por dni')) return 'modo_dni';
+  if (normalized === 'modo_padron' || normalized.includes('por servicio')) return 'modo_padron';
+  if (normalized === 'volver_menu' || normalized.includes('volver')) return 'volver_menu';
+  return option;
+};
+
 const handleDniPadronSelectionChoice = async (from, option) => {
   try {
     const selection = userStates[from]?.dniPadronSelection;
-    if (!selection || !Array.isArray(selection.opciones) || selection.opciones.length === 0) {
+    const opcionesActuales = Array.isArray(selection?.filteredOpciones) && selection.filteredOpciones.length > 0
+      ? selection.filteredOpciones
+      : selection?.opciones;
+
+    if (!selection || !Array.isArray(opcionesActuales) || opcionesActuales.length === 0) {
       await sendMenuList(from, true);
       userStates[from].step = 'MAIN_MENU';
       return;
@@ -2413,7 +2408,7 @@ const handleDniPadronSelectionChoice = async (from, option) => {
 
     if (option === 'dni_page_next') {
       const pageSize = 7;
-      const maxPage = Math.max(0, Math.ceil(selection.opciones.length / pageSize) - 1);
+      const maxPage = Math.max(0, Math.ceil(opcionesActuales.length / pageSize) - 1);
       selection.page = Math.min(maxPage, (selection.page || 0) + 1);
       await sendDniPadronSelectionPrompt(from);
       userStates[from].step = 'AWAITING_DNI_PADRON_SELECTION';
@@ -2427,6 +2422,20 @@ const handleDniPadronSelectionChoice = async (from, option) => {
       return;
     }
 
+    if (option === 'dni_search') {
+      await sendMessageAndSave(from, '🔎 Escribí el código o nombre del servicio a buscar.\n\nEjemplo: *C00100732* o *RIO DIAMANTE*.\n\n_Para cancelar, escribí SALIR._');
+      userStates[from].step = 'AWAITING_DNI_PADRON_SEARCH';
+      return;
+    }
+
+    if (option === 'dni_search_clear') {
+      delete selection.filteredOpciones;
+      selection.page = 0;
+      await sendDniPadronSelectionPrompt(from);
+      userStates[from].step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
     if (!String(option || '').startsWith('dni_padron_')) {
       await sendMessageAndSave(from, '❌ Opción no válida. Elegí una opción de la lista.');
       await sendDniPadronSelectionPrompt(from);
@@ -2435,7 +2444,7 @@ const handleDniPadronSelectionChoice = async (from, option) => {
     }
 
     const index = Number(String(option).replace('dni_padron_', ''));
-    const chosen = Number.isInteger(index) ? selection.opciones[index] : null;
+    const chosen = Number.isInteger(index) ? opcionesActuales[index] : null;
     if (!chosen?.padron) {
       await sendMessageAndSave(from, '❌ No pude identificar ese padrón. Probá de nuevo.');
       await sendDniPadronSelectionPrompt(from);
@@ -2478,6 +2487,48 @@ const handleDniPadronSelectionChoice = async (from, option) => {
     await sendMessageAndSave(from, '❌ Ocurrió un error al procesar la opción seleccionada.');
     await sendMenuList(from, true);
     userStates[from].step = 'MAIN_MENU';
+  }
+};
+
+const handleDniPadronSearchInput = async (from, messageBody) => {
+  try {
+    const selection = userStates[from]?.dniPadronSelection;
+    if (!selection || !Array.isArray(selection.opciones) || selection.opciones.length === 0) {
+      await sendMenuList(from, true);
+      userStates[from].step = 'MAIN_MENU';
+      return;
+    }
+
+    const term = normalizeSingleLine(messageBody).toLowerCase();
+    if (!term || term === 'salir' || term === 'cancelar' || term === 'volver' || term === 'menu') {
+      userStates[from].step = 'AWAITING_DNI_PADRON_SELECTION';
+      await sendDniPadronSelectionPrompt(from);
+      return;
+    }
+
+    const filtered = selection.opciones.filter((opt) => {
+      const code = normalizeSingleLine(opt?.codigo || '').toLowerCase();
+      const desc = normalizeSingleLine(opt?.descripcion || '').toLowerCase();
+      const padron = normalizeSingleLine(opt?.padron || '').toLowerCase();
+      return code.includes(term) || desc.includes(term) || padron.includes(term);
+    });
+
+    if (!filtered.length) {
+      await sendMessageAndSave(from, 'ℹ️ No encontramos resultados para esa búsqueda. Probá con otro término.');
+      await sendMessageAndSave(from, '🔎 Escribí otro código o nombre, o escribí SALIR para volver al listado completo.');
+      userStates[from].step = 'AWAITING_DNI_PADRON_SEARCH';
+      return;
+    }
+
+    selection.filteredOpciones = filtered;
+    selection.page = 0;
+    userStates[from].step = 'AWAITING_DNI_PADRON_SELECTION';
+    await sendDniPadronSelectionPrompt(from);
+  } catch (error) {
+    console.error('❌ Error en handleDniPadronSearchInput:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar la búsqueda.');
+    userStates[from].step = 'AWAITING_DNI_PADRON_SELECTION';
+    await sendDniPadronSelectionPrompt(from);
   }
 };
 
@@ -2589,7 +2640,14 @@ const buildTurnoResponse = ({ data = {}, titularFallback = 'No disponible', ccpp
  * Manejar selección de método de consulta (DNI vs Padrón)
  */
 const handleModoConsulta = async (from, option) => {
+  if (userStates[from].modoConsultaLocked) {
+    console.log(`🔒 Ignorando selección duplicada de modo para ${from}`);
+    return;
+  }
+
+  userStates[from].modoConsultaLocked = true;
   try {
+    option = normalizeModoConsultaOption(option);
     const operacion = userStates[from].operacion || 'deuda';
 
     if (option === 'volver_menu') {
@@ -2680,6 +2738,8 @@ const handleModoConsulta = async (from, option) => {
     console.error('❌ Error en handleModoConsulta:', error);
     const errorMsg = '❌ Ocurrió un error. Por favor intenta de nuevo.';
     await sendMessageAndSave(from, errorMsg);
+  } finally {
+    userStates[from].modoConsultaLocked = false;
   }
 };
 
