@@ -2160,7 +2160,7 @@ const parsePadronFromHyphen = (padron) => {
   };
 };
 
-const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 7, withSearch = false, withClearSearch = false) => {
+const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 6, withSearch = false, withClearSearch = false) => {
   const safePage = Math.max(0, page);
   const start = safePage * pageSize;
   const slice = opciones.slice(start, start + pageSize);
@@ -2209,7 +2209,7 @@ const sendDniPadronSelectionPrompt = async (from) => {
     return;
   }
 
-  const pageSize = 7;
+  const pageSize = 6;
   const totalPages = Math.max(1, Math.ceil(opciones.length / pageSize));
   const rows = buildDniPadronSelectionRows(
     opciones,
@@ -2407,7 +2407,7 @@ const handleDniPadronSelectionChoice = async (from, option) => {
     }
 
     if (option === 'dni_page_next') {
-      const pageSize = 7;
+      const pageSize = 6;
       const maxPage = Math.max(0, Math.ceil(opcionesActuales.length / pageSize) - 1);
       selection.page = Math.min(maxPage, (selection.page || 0) + 1);
       await sendDniPadronSelectionPrompt(from);
