@@ -1089,7 +1089,7 @@ const sendMenuList = async (from, isFollowUp = false) => {
   ];
 
   // Cambiar el mensaje según si es seguimiento o primera vez
-  const header = 'Atención al Ciudadano';
+  const header = 'Atención al usuario';
   const body = isFollowUp ? '¿Desea realizar otro trámite?' : '¿Qué trámite desea realizar hoy?';
   const headerImageUrl = process.env.MENU_HEADER_IMAGE_URL || null;
   
