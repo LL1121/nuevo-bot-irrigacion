@@ -735,9 +735,7 @@ export default function App() {
 
       removePendingTicket({ phone, ticketId });
 
-      toast.success('Conversación finalizada', {
-        description: 'El backend continuará con encuesta y seguimiento automático.'
-      });
+      toast.success('Conversación finalizada');
     } catch (error) {
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
       if ((status === 409 || status === 423) && axios.isAxiosError(error)) {

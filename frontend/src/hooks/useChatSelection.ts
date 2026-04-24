@@ -14,26 +14,33 @@ export const useChatSelection = ({
   setSelectedChat
 }: UseChatSelectionParams) => {
   const selectedIdRef = useRef<number | null>(null);
+  const prevSelectedIndexRef = useRef<number | null>(null);
 
   const currentChat = useMemo(() => {
     if (selectedChat === null) {
       selectedIdRef.current = null;
+      prevSelectedIndexRef.current = null;
       return null;
     }
 
     const byIndex = conversationsState[selectedChat] ?? null;
+    const selectedIndexChanged = prevSelectedIndexRef.current !== selectedChat;
 
-    if (byIndex?.id !== undefined) {
-      selectedIdRef.current = byIndex.id;
-    }
-
+    // If index did not change, preserve pinned chat by id (prevents jumps when list reorders).
     if (selectedIdRef.current !== null) {
       const byId = conversationsState.find((chat) => chat.id === selectedIdRef.current) ?? null;
-      if (byId) {
+      if (!selectedIndexChanged && byId) {
+        prevSelectedIndexRef.current = selectedChat;
         return byId;
       }
     }
 
+    // Index changed intentionally (user action): adopt the chat currently at this index.
+    if (byIndex?.id !== undefined) {
+      selectedIdRef.current = byIndex.id;
+    }
+
+    prevSelectedIndexRef.current = selectedChat;
     return byIndex;
   }, [conversationsState, selectedChat]);
 

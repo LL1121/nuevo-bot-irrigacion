@@ -575,6 +575,11 @@ const receiveMessage = async (req, res) => {
         
         if (message.type === 'text') {
           messageBody = message.text?.body?.trim() || '';
+        } else if (message.type === 'button') {
+          // Respuesta a templates de tipo botón (quick reply CTA).
+          const buttonText = message.button?.text || message.button?.payload || '';
+          messageBody = String(buttonText).trim();
+          message._optionId = message.button?.payload || messageBody;
         } else if (message.type === 'interactive') {
           // Puede ser list_reply o button_reply
           let selectedOptionId = '';
