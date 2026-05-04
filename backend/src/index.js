@@ -25,6 +25,7 @@ const swaggerUi = require('swagger-ui-express');
 const { initializeDB } = require('./config/db');
 const { ipMiddleware } = require('./middlewares/ipMiddleware');
 const requestLogger = require('./middlewares/requestLoggerMiddleware');
+const { errorHandler } = require('./middlewares/errorHandler');
 const swaggerSpec = require('./config/swaggerConfig');
 const { initRedis } = require('./services/cacheService');
 const logger = require('./services/logService');
@@ -228,6 +229,8 @@ const bootstrap = async () => {
       res.status(404).send('Frontend no encontrado. Ejecuta: cd frontend && npm run build');
     }
   });
+
+  app.use(errorHandler);
 
   // Socket.io - Manejo de conexiones
   io.use((socket, next) => {

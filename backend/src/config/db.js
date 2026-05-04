@@ -5,6 +5,17 @@ const isPostgres = true;
 let pgPool = null;
 const pgTxStorage = new AsyncLocalStorage();
 
+function validateCriticalEnvOrExit() {
+  const missing = [];
+  if (!String(process.env.DB_PASSWORD || '').trim()) missing.push('DB_PASSWORD');
+  if (!String(process.env.JWT_SECRET || '').trim()) missing.push('JWT_SECRET');
+  if (missing.length) {
+    console.error('❌ Variables de entorno obligatorias no definidas:', missing.join(', '));
+    console.error('   Configurá el archivo .env o el entorno antes de iniciar el backend.');
+    process.exit(1);
+  }
+}
+
 function transformSqlForPg(sql) {
   let index = 0;
   return String(sql || '').replace(/\?/g, () => `$${++index}`);
@@ -18,13 +29,15 @@ function getPgExecutor() {
 async function initializePostgres() {
   if (pgPool) return pgPool;
 
+  validateCriticalEnvOrExit();
+
   const { Pool } = require('pg');
 
   pgPool = new Pool({
     host: process.env.DB_HOST || 'localhost',
     port: Number(process.env.DB_PORT || 5432),
     user: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || '',
+    password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME || 'bot_irrigacion',
     max: Number(process.env.DB_POOL_MAX || process.env.DB_POOL_SIZE || 20),
     min: Number(process.env.DB_POOL_MIN || 2),

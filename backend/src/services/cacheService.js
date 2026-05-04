@@ -79,6 +79,9 @@ const getRedis = () => {
   return redisClient;
 };
 
+/** @returns {boolean} */
+const isRedisReady = () => Boolean(redisClient && redisClient.isReady);
+
 /**
  * Guardar valor en cache con TTL (time to live)
  * @param {string} key - Clave del cache
@@ -229,6 +232,7 @@ const cacheAside = async (key, loader, ttl = 3600) => {
 module.exports = {
   initRedis,
   getRedis,
+  isRedisReady,
   cacheSet,
   cacheGet,
   cacheDel,
