@@ -71,18 +71,29 @@ function formatDateToDisplay(value) {
 }
 
 function buildDeudaSummaryMessage(tipoPadron, deudaData) {
-  return `📊 *Resumen de deuda del padrón ${String(tipoPadron || '').toUpperCase()}*\n\n` +
-    `👤 *Titular:* ${deudaData.titular || 'No disponible'}\n` +
-    `🆔 *CUIT:* ${deudaData.cuit || 'No disponible'}\n` +
-    `🌾 *Hectáreas:* ${deudaData.hectareas || 'No disponible'}\n\n` +
-    `🚜 *Hijuela:* ${deudaData.hijuela || 'No disponible'}\n\n` +
-    `💰 *DEUDA:*\n` +
-    `Capital: ${formatArs(deudaData.capital)}\n` +
-    `Interés: ${formatArs(deudaData.interes)}\n` +
-    `Apremio: ${formatArs(deudaData.apremio)}\n` +
-    `Eventuales: ${formatArs(deudaData.eventuales)}\n\n` +
-    `*💵 TOTAL A PAGAR: ${formatArs(deudaData.total)}*\n\n` +
-    `_💡 Si pagás el total de la deuda, te descontamos el 50% de los intereses._`;
+  const padronLabel = String(tipoPadron || '').toUpperCase() || 'NO DISPONIBLE';
+  return `┏━━━━━━━━━━━━━━━━━━━━━━┓
+┃    📋 ESTADO DE CUENTA    ┃
+┗━━━━━━━━━━━━━━━━━━━━━━┛
+
+👤 Titular: ${deudaData.titular || 'No disponible'}
+🆔 CUIT: ${deudaData.cuit || 'No disponible'}
+🌾 Hectáreas: ${deudaData.hectareas || 'No disponible'}
+🚜 Hijuela: ${deudaData.hijuela || 'No disponible'}
+📋 Padrón: ${padronLabel}
+
+━━━━━━━━━━━━━━━━━━━━━━
+💰 DETALLE DE DEUDA
+━━━━━━━━━━━━━━━━━━━━━━
+▸ Capital:      ${formatArs(deudaData.capital)}
+▸ Interés:      ${formatArs(deudaData.interes)}
+▸ Apremio:      ${formatArs(deudaData.apremio)}
+▸ Eventuales:   ${formatArs(deudaData.eventuales)}
+━━━━━━━━━━━━━━━━━━━━━━
+💵 TOTAL A PAGAR: ${formatArs(deudaData.total)}
+━━━━━━━━━━━━━━━━━━━━━━
+
+💡 Pagando el total, se descuenta el 50% de los intereses.`;
 }
 
 function pickFirstNonEmpty(...values) {
