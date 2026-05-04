@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, ChevronUp, Volume2, Volume1, VolumeX } from 'lucide-react';
+import { Send, Search, MoreVertical, Paperclip, Smile, Check, CheckCheck, X, Image as ImageIcon, FileText, Video, Music, Moon, Sun, ArrowLeft, Trash, Play, Pause, Copy, Volume2, Volume1, VolumeX } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import axios from 'axios';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import Login from './components/Login';
+import { SidebarContainer } from './components/SidebarContainer';
 import { toast, Toaster } from 'sonner';
 import { env } from './config/env';
 import { setupAxiosInterceptors } from './utils/axiosInterceptor';
@@ -13,7 +14,31 @@ import { parseTimestamp, formatMessageTime, formatChatHeaderTime, isSessionExpir
 import { sortAndDedupeMessages } from './utils/messageOrder';
 import { appendIncomingMessage, mergeMessageBatches } from './services/messageQueue';
 import { consumePendingByMatch, registerPendingMessage, removePendingMessage } from './services/optimisticUpdates';
-import { useChatStore } from './stores/chatStore';
+import {
+  useConversationsState,
+  useSetConversationsState,
+  useSelectedChatIndex,
+  useSetSelectedChat,
+  useAllMessagesCache,
+  useSetAllMessagesCache,
+  useMessagesLoading,
+  useSetMessagesLoading,
+  useMessagesEndReached,
+  useSetMessagesEndReached,
+  useCurrentMessageIndex,
+  useSetCurrentMessageIndex,
+  useTypingUsers,
+  useSetTypingUsers,
+  useIsLoadingMoreMessages,
+  useSetIsLoadingMoreMessages,
+  useMarkConversationReadById,
+  useSetConversationArchivedById,
+  useDeleteConversationByIdFromStore,
+  useResetChatStore
+} from './stores/chatStoreSelectors';
+import { useSocket } from './contexts/SocketProvider';
+import { logger } from './utils/logger';
+import { formatChatMarkdownToSafeHtml } from './utils/sanitize';
 import { getTemplateDisplayText, normalizeMessageContent } from './services/messageParser';
 import { useChatSelection } from './hooks/useChatSelection';
 import { useChatMutations } from './hooks/useChatMutations';
@@ -21,8 +46,9 @@ import { trackAction, trackErrorRecovery, trackSocketEvent } from './utils/monit
 import { applyMessageCachePolicy } from './utils/messageCachePolicy';
 import type { ChatMessage, Conversation, RawApiMessage, RawSocketMessage } from './types/chat';
 import type { OperadorInfo } from './config/auth';
-
-type MediaFilter = 'all' | 'images' | 'videos' | 'files' | 'urls';
+import type { MediaFilter } from './components/InfoPanel';
+import { InfoPanel } from './components/InfoPanel';
+import { normalizePhoneKey, phonesMatch } from './utils/phoneFormat';
 
 type RawChatSummary = {
   id: number;
@@ -171,22 +197,6 @@ axios.defaults.timeout = env.requestTimeoutMs;
 // Configurar interceptores de axios (refresh automático + reintentos)
 setupAxiosInterceptors(axios);
 
-// Configurar conexión con backend
-const socket: Socket = io(env.socketUrl, {
-  transports: ['websocket', 'polling'],
-  auth: (cb) => cb({ token: localStorage.getItem(env.tokenKey) || undefined }),
-  reconnection: true,
-  reconnectionDelay: env.socketReconnectDelayMs,
-  reconnectionDelayMax: Math.max(env.socketReconnectDelayMs * 10, 10_000),
-  reconnectionAttempts: env.socketReconnectAttempts,
-  timeout: Math.max(env.requestTimeoutMs, 10_000),
-  autoConnect: false
-});
-
-const refreshSocketAuth = () => {
-  socket.auth = { token: localStorage.getItem(env.tokenKey) || undefined };
-};
-
 const isSocketAuthError = (error: unknown) => {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
@@ -199,10 +209,10 @@ const isSocketAuthError = (error: unknown) => {
 };
 
 export default function App() {
+  const { socket, refreshSocketAuth } = useSocket();
+
   // Auth state
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return !!localStorage.getItem(env.tokenKey);
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => auth.isAuthenticated());
 
   // Theme color mapping
   const themeColors: Record<string, { primary: string; gradient: string; light: string; hex: string }> = {
@@ -212,28 +222,26 @@ export default function App() {
     amber: { primary: 'amber-600', gradient: 'from-amber-500 to-orange-500', light: 'amber-50', hex: '#d97706' }
   };
 
-  const {
-    conversationsState,
-    setConversationsState,
-    selectedChat,
-    setSelectedChat,
-    allMessagesCache,
-    setAllMessagesCache,
-    messagesLoading,
-    setMessagesLoading,
-    messagesEndReached,
-    setMessagesEndReached,
-    currentMessageIndex,
-    setCurrentMessageIndex,
-    typingUsers,
-    setTypingUsers,
-    isLoadingMoreMessages,
-    setIsLoadingMoreMessages,
-    markConversationReadById,
-    setConversationArchivedById,
-    deleteConversationById: deleteConversationByIdFromStore,
-    resetChatStore
-  } = useChatStore();
+  const conversationsState = useConversationsState();
+  const setConversationsState = useSetConversationsState();
+  const selectedChat = useSelectedChatIndex();
+  const setSelectedChat = useSetSelectedChat();
+  const allMessagesCache = useAllMessagesCache();
+  const setAllMessagesCache = useSetAllMessagesCache();
+  const messagesLoading = useMessagesLoading();
+  const setMessagesLoading = useSetMessagesLoading();
+  const messagesEndReached = useMessagesEndReached();
+  const setMessagesEndReached = useSetMessagesEndReached();
+  const currentMessageIndex = useCurrentMessageIndex();
+  const setCurrentMessageIndex = useSetCurrentMessageIndex();
+  const typingUsers = useTypingUsers();
+  const setTypingUsers = useSetTypingUsers();
+  const isLoadingMoreMessages = useIsLoadingMoreMessages();
+  const setIsLoadingMoreMessages = useSetIsLoadingMoreMessages();
+  const markConversationReadById = useMarkConversationReadById();
+  const setConversationArchivedById = useSetConversationArchivedById();
+  const deleteConversationByIdFromStore = useDeleteConversationByIdFromStore();
+  const resetChatStore = useResetChatStore();
 
   const [message, setMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -416,7 +424,7 @@ export default function App() {
     if (!currentChat?.phone) return;
     try {
       setReactivating(true);
-      const token = localStorage.getItem(env.tokenKey);
+      const token = auth.getToken();
       const primerNombre = (currentChat.name || '').split(' ')[0] || 'cliente';
       const tema = reactivationTema.trim() || 'su consulta de Irrigación';
       await axios.post(`/api/chats/${currentChat.phone}/reactivate`, {
@@ -465,7 +473,7 @@ export default function App() {
       // Plantilla de reactivación enviada
       toast.success('Plantilla de reactivación enviada');
     } catch (err) {
-      console.error('❌ Error enviando plantilla de reactivación:', err);
+      logger.error(err, { phase: 'reactivationTemplate' });
       toast.error('No se pudo enviar la plantilla de reactivación');
     } finally {
       setReactivating(false);
@@ -596,7 +604,7 @@ export default function App() {
     setHandoffActionLoading((prev) => ({ ...prev, [phoneKey]: 'accept' }));
 
     try {
-      const token = localStorage.getItem(env.tokenKey);
+      const token = auth.getToken();
       const operador = getOperatorName();
       const response = await axios.post(
         `/api/tickets/${encodeURIComponent(phone)}/accept`,
@@ -677,7 +685,7 @@ export default function App() {
         return;
       }
 
-      console.error('Error aceptando ticket de operador:', error);
+      logger.error(error, { phase: 'acceptOperatorTicket' });
       toast.error('No se pudo tomar el chat', {
         description: 'Reintenta en unos segundos.'
       });
@@ -701,7 +709,7 @@ export default function App() {
     setHandoffActionLoading((prev) => ({ ...prev, [phoneKey]: 'complete' }));
 
     try {
-      const token = localStorage.getItem(env.tokenKey);
+      const token = auth.getToken();
       const operador = getOperatorName();
       const response = await axios.post(
         `/api/tickets/${encodeURIComponent(phone)}/complete`,
@@ -762,7 +770,7 @@ export default function App() {
         return;
       }
 
-      console.error('Error finalizando ticket de operador:', error);
+      logger.error(error, { phase: 'completeOperatorTicket' });
       toast.error('No se pudo finalizar la conversación', {
         description: 'Reintenta en unos segundos.'
       });
@@ -788,7 +796,7 @@ export default function App() {
 
     setTransferLoading(true);
     try {
-      const token = localStorage.getItem(env.tokenKey);
+      const token = auth.getToken();
       const response = await axios.post(
         `/api/tickets/${encodeURIComponent(currentChat.phone)}/transfer`,
         {
@@ -825,14 +833,14 @@ export default function App() {
 
         // Refrescar la cola
         try {
-          const token = localStorage.getItem(env.tokenKey);
+          const token = auth.getToken();
           const response = await axios.get('/api/tickets', {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           const tickets = (response.data?.data || response.data || []) as OperatorHandoffTicket[];
           setPendingOperatorTickets(tickets);
         } catch {
-          console.error('Error refrescando cola después de transferencia conflictiva');
+          logger.warn('Error refrescando cola después de transferencia conflictiva');
         }
 
         toast.warning('Transferencia bloqueada', {
@@ -841,7 +849,7 @@ export default function App() {
         return;
       }
 
-      console.error('Error transfiriendo chat:', error);
+      logger.error(error, { phase: 'transferChat' });
       toast.error('No se pudo transferir el chat', {
         description: 'Verifica los datos e intenta nuevamente.'
       });
@@ -952,37 +960,6 @@ const isUserSender = (value?: string) => {
     'fromuser',
     'wa_in'
   ].includes(v);
-};
-
-const normalizePhoneKey = (value?: string) => (value || '').replace(/\D/g, '');
-
-const formatPhoneForDisplay = (value?: string) => {
-  const digits = normalizePhoneKey(value);
-  if (!digits) return 'Sin teléfono';
-
-  if (digits.startsWith('549') && digits.length >= 13) {
-    const cc = digits.slice(0, 2);
-    const area = digits.slice(3, 6);
-    const part1 = digits.slice(6, 10);
-    const part2 = digits.slice(10, 13);
-    return `+${cc} 9 ${area} ${part1}-${part2}`;
-  }
-
-  if (digits.startsWith('54') && digits.length >= 12) {
-    const cc = digits.slice(0, 2);
-    const area = digits.slice(2, 5);
-    const part1 = digits.slice(5, 9);
-    const part2 = digits.slice(9, 12);
-    return `+${cc} ${area} ${part1}-${part2}`;
-  }
-
-  return `+${digits}`;
-};
-
-const phonesMatch = (a?: string, b?: string) => {
-  const na = normalizePhoneKey(a);
-  const nb = normalizePhoneKey(b);
-  return !!na && !!nb && na === nb;
 };
 
 const normalizeConversationStatus = (value?: string | null): OperatorConversationStatus | null => {
@@ -1214,14 +1191,14 @@ const playNotificationSound = () => {
     oscillator.start(audioContext.currentTime);
     oscillator.stop(audioContext.currentTime + 0.5);
   } catch (e) {
-    console.log('No se pudo reproducir sonido:', e);
+    logger.warn('No se pudo reproducir sonido', e);
   }
 };
 
 // Función para mostrar notificación
 const showNotification = (title: string, options: NotificationOptions = {}) => {
   if (!('Notification' in window)) {
-    console.log('Este navegador no soporta notificaciones');
+    logger.warn('Este navegador no soporta notificaciones');
     return;
   }
 
@@ -1297,7 +1274,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     trackAction('login_success');
     requestNotificationPermission().then(granted => {
       if (granted) {
-        console.log('✅ Notificaciones push habilitadas');
+        logger.info('Notificaciones push habilitadas');
       }
     });
   };
@@ -1308,12 +1285,12 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       // Intentar logout en el backend (no bloquea si falla)
       await axios.post('/api/auth/logout').catch(err => {
         if (env.enableLogging) {
-          console.warn('⚠️ Logout en backend falló:', err.message);
+          logger.warn('Logout en backend falló', err.message);
         }
       });
     } catch (err) {
       if (env.enableLogging) {
-        console.warn('⚠️ Error durante logout:', err);
+        logger.warn('Error durante logout', err);
       }
     }
     
@@ -1377,7 +1354,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       return;
     }
 
-    const token = localStorage.getItem(env.tokenKey);
+    const token = auth.getToken();
     refreshSocketAuth();
 
     const loadAuthProfile = async () => {
@@ -1402,7 +1379,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           handleLogout();
           return;
         }
-        console.error('Error cargando perfil /api/auth/me:', error);
+        logger.error(error, { phase: 'authMe' });
       }
     };
 
@@ -1465,7 +1442,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       if (isSocketAuthError(error)) {
         authFailureCountRef.current += 1;
 
-        if (!localStorage.getItem(env.tokenKey) || authFailureCountRef.current >= 2) {
+        if (!auth.getToken() || authFailureCountRef.current >= 2) {
           handleLogout();
           return;
         }
@@ -1689,7 +1666,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           // Si no hay permisos para listar, mantenemos sincronización solo por eventos socket.
           return;
         }
-        console.error('Error cargando tickets pendientes:', error);
+        logger.error(error, { phase: 'pendingTickets' });
       }
     };
     
@@ -1711,10 +1688,10 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         const status = axios.isAxiosError(error) ? error.response?.status : undefined;
         if (status === 401 || status === 403) {
           // No hay permisos para cargar subdelegaciones
-          console.debug('No se pueden cargar subdelegaciones (403/401)');
+          logger.debug('No se pueden cargar subdelegaciones (403/401)');
           return;
         }
-        console.error('Error cargando subdelegaciones:', error);
+        logger.error(error, { phase: 'subdelegaciones' });
       } finally {
         setSubdelegacionesLoading(false);
       }
@@ -1741,7 +1718,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
     // Escuchar mensajes en tiempo real
     const normalizeSocketPayload = (payload: unknown): RawSocketMessage | null => {
       if (!payload || typeof payload !== 'object') {
-        console.warn('⚠️ Socket payload inválido (no es objeto):', payload);
+        logger.warn('Socket payload inválido (no es objeto)', payload);
         return null;
       }
 
@@ -1769,7 +1746,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         nestedFileUrl !== undefined;
 
       if (!phone || !hasMessageBody) {
-        console.warn('⚠️ Socket payload sin phone o mensaje:', {
+        logger.warn('Socket payload sin phone o mensaje', {
           tiene_phone: !!phone,
           tiene_mensaje: hasMessageBody,
           keys: Object.keys(raw)
@@ -1787,18 +1764,14 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       let shouldAnimateNewChat = false;
       let newChatPhoneForAnimation: string | null = null;
 
-      // 🔍 DEBUG: Log del mensaje entrante para ver estructura real
-      console.log('🔍 DEBUG - Mensaje recibido del socket:', {
-        raw_data: data,
-        emisor: data.emisor,
-        tipo: data.tipo,
-        telefono: data.telefono || data.cliente_telefono,
-        mensaje: data.mensaje,
-        cuerpo: data.cuerpo,
-        timestamp: data.timestamp || data.created_at || data.createdAt || data.fecha,
-        tiene_archivo: !!data.url_archivo,
-        nombre_archivo: data.archivo_nombre
-      });
+      if (env.enableLogging) {
+        logger.debug('Socket mensaje entrante', {
+          emisor: data.emisor,
+          tipo: data.tipo,
+          telefono: data.telefono || data.cliente_telefono,
+          tiene_archivo: !!data.url_archivo
+        });
+      }
       
       // Normalizar datos del socket: mapear campos de BD a campos esperados
       // IMPORTANTE: Asegurar que 'mensaje' siempre sea un string, no un objeto
@@ -1906,14 +1879,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 })
               : null;
             
-            // 🔍 DEBUG: Log del sender detection
-            console.log('🔍 DEBUG - Detección de emisor:', {
-              emisor: newMsg.emisor,
-              tipo: newMsg.tipo,
-              isUserSender_result: isUserSender(newMsg.emisor || newMsg.tipo),
-              incomingSent: incomingSent,
-              expected: 'sent=true significa operador (verde), sent=false significa usuario (blanco)'
-            });
+            if (env.enableLogging) {
+              logger.debug('Socket detección de emisor', { emisor: newMsg.emisor, tipo: newMsg.tipo, incomingSent });
+            }
             
             // ✅ DEDUPLICACIÓN CONTENT-BASED:
             // Verificar si el mensaje ya existe usando CONTENIDO como clave, no solo ID.
@@ -1945,16 +1913,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             
             const messageExists = existsInVisible || existsInCache;
             
-            console.log('🔍 DEBUG - Check duplicado:', {
-              messageExists,
-              contentSignature,
-              existsInVisible,
-              existsInCache,
-              newMsgId: newMsg.id,
-              newMsgText: newMsg.mensaje,
-              currentMessagesCount: chat.messages.length,
-              cacheSize: phoneCache.length
-            });
+            if (env.enableLogging) {
+              logger.debug('Socket check duplicado', { messageExists, newMsgId: newMsg.id, currentMessagesCount: chat.messages.length });
+            }
             
             if (!messageExists) {
               
@@ -2008,12 +1969,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                   duration: newMsg.duracion
                 };
                 
-                console.log('✅ ADDING MESSAGE:', {
-                  mappedMessageId: mappedMessage.id,
-                  mappedMessageText: mappedMessage.text,
-                  mappedMessageTime: mappedMessage.time,
-                  sent: mappedMessage.sent
-                });
+                if (env.enableLogging) {
+                  logger.debug('Socket agregando mensaje', { id: mappedMessage.id, sent: mappedMessage.sent });
+                }
                 
                 // Mantener el tamaño de ventana actualmente visible (si el operador ya cargó más,
                 // no volver a recortar a 20 al llegar un mensaje nuevo).
@@ -2022,7 +1980,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 
                 // Incrementar contador solo si es mensaje del usuario Y no es del operador
                 const isUserMessage = isUserSender(emisorLimpio);
-                if (isUserMessage && selectedChat !== existingChatIndex) {
+                const isCurrentOpenChat = selectedId !== null && selectedId !== undefined && selectedId === chat.id;
+                if (isUserMessage && !isCurrentOpenChat) {
                   // Solo incrementar si NO estamos en este chat
                   chat.unread = (chat.unread || 0) + 1;
                 }
@@ -2040,7 +1999,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                 });
                 
                 // 📢 Mostrar notificación si el usuario no está en este chat
-                if (isUserMessage && selectedChat !== existingChatIndex) {
+                if (isUserMessage && !isCurrentOpenChat) {
                   const contactName = chat.nombre || chat.phone;
                   const messagePreview = messageText.substring(0, 100);
                   showNotification(`Mensaje de ${contactName}`, {
@@ -2054,16 +2013,28 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             }
           }
           
-          // Actualizar último mensaje y mantener posición del chat
+          // Actualizar último mensaje y mover conversación al inicio inmediatamente.
           // newMsg.mensaje ya está normalizado a string en la parte superior de handleNewMessage
           chat.lastMessage = messagePreview || newMsg.mensaje || '[Mensaje sin contenido]';
           chat.lastMessageDate = msgTimestamp.toISOString();
           chat.time = formatTime(msgTimestamp);
-          
-          // NO mover el chat al inicio - mantener el orden de la lista
-          // Simplemente actualizar el chat en su posición actual
-          updated[existingChatIndex] = chat;
-          
+
+          const selectedIdSnapshot = selectedId !== null && selectedId !== undefined
+            ? selectedId
+            : (selectedChat !== null ? prev[selectedChat]?.id ?? null : null);
+
+          // Reordenar: el chat con nuevo mensaje sube al tope.
+          updated.splice(existingChatIndex, 1);
+          updated.unshift(chat);
+
+          // Mantener chat abierto por ID, no por posición.
+          if (selectedIdSnapshot !== null) {
+            const nextSelectedIndex = updated.findIndex((c) => c.id === selectedIdSnapshot);
+            if (nextSelectedIndex !== -1 && nextSelectedIndex !== selectedChat) {
+              setSelectedChat(nextSelectedIndex);
+            }
+          }
+
           return updated;
         } else {
           // Crear nueva conversación
@@ -2098,7 +2069,17 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           };
           shouldAnimateNewChat = true;
           newChatPhoneForAnimation = newMsg.telefono;
-          return [newChat, ...prev];
+          const withNewChatOnTop = [newChat, ...prev];
+          const selectedIdSnapshot = selectedId !== null && selectedId !== undefined
+            ? selectedId
+            : (selectedChat !== null ? prev[selectedChat]?.id ?? null : null);
+          if (selectedIdSnapshot !== null) {
+            const nextSelectedIndex = withNewChatOnTop.findIndex((c) => c.id === selectedIdSnapshot);
+            if (nextSelectedIndex !== -1 && nextSelectedIndex !== selectedChat) {
+              setSelectedChat(nextSelectedIndex);
+            }
+          }
+          return withNewChatOnTop;
         }
       });
 
@@ -2469,7 +2450,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           const cacheKey = `messages_${currentChat.phone}`;
           localStorage.removeItem(cacheKey);
           
-          const token = localStorage.getItem(env.tokenKey);
+          const token = auth.getToken();
           
           // Traer hasta 100 mensajes para optimizar y quedarnos con los últimos 20
           const response = await axios.get(`/api/messages/${currentChat.phone}?limit=100&offset=0`, {
@@ -2487,16 +2468,9 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             const tipo = normalizeSenderType(msg.emisor || msg.tipo || '');
             const sent = !isUserSender(tipo);
             
-            // 🔍 DEBUG: Log de detección de emisor al cargar mensajes
-            console.log('🔍 DEBUG - Mensaje cargado:', {
-              msg_id: msg.id,
-              tipo_raw: msg.tipo,
-              emisor_raw: msg.emisor,
-              tipo_normalizado: tipo,
-              isUserSender_result: isUserSender(tipo),
-              sent_final: sent,
-              contenido: (msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '').substring(0, 50)
-            });
+            if (env.enableLogging) {
+              logger.debug('Mensaje API mapeado', { msg_id: msg.id, tipo: tipo, sent });
+            }
             
             const rawTimestamp = msg.created_at ?? msg.createdAt ?? msg.fecha ?? msg.timestamp;
             const normalizedContent = normalizeMessageContent(msg.contenido ?? msg.cuerpo ?? msg.mensaje ?? '');
@@ -2610,8 +2584,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
           const responseData = axios.isAxiosError(error) ? error.response?.data : undefined;
           const errorMessage = error instanceof Error ? error.message : String(error);
 
-          console.error('❌ Error cargando mensajes:', error);
-          console.error('❌ Detalles del error:', {
+          logger.error(error, { phase: 'loadMessages' });
+          logger.warn('Detalles error carga mensajes', {
             status: responseStatus,
             statusText: responseStatusText,
             data: responseData,
@@ -2737,19 +2711,19 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       });
       // Bot pausado
     } catch (error) {
-      console.error('❌ Error pausando bot:', error);
+      logger.error(error, { phase: 'pauseBot' });
     }
   };
   
   const activateBot = async (phone: string) => {
     try {
-      const token = localStorage.getItem(env.tokenKey);
+      const token = auth.getToken();
       await axios.post(`/api/chats/${phone}/activate`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       // Bot activado
     } catch (error) {
-      console.error('❌ Error activando bot:', error);
+      logger.error(error, { phase: 'activateBot' });
     }
   };
 
@@ -2954,7 +2928,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             return;
           }
 
-          console.error('❌ Error enviando mensaje:', error);
+          logger.error(error, { phase: 'sendMessage' });
           trackAction('message_send_failed', { phone: currentChat.phone });
           emitConnectionAlert({
             kind: 'warning',
@@ -3348,7 +3322,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
       setCopiedMessageId(msg.id);
       setTimeout(() => setCopiedMessageId(null), 1200);
     } catch (e) {
-      console.error('No se pudo copiar', e);
+      logger.error(e, { phase: 'clipboardCopy' });
     }
   };
 
@@ -3448,253 +3422,45 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
-      {/* Sidebar - Lista de conversaciones */}
-      <div className={`${selectedChat === null ? 'block' : 'hidden'} md:flex w-full md:w-96 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex-col`}>
-        {/* Header */}
-        <div className="p-4 text-white" style={{ background: `linear-gradient(to right, ${themeColors[theme].hex}, #14b8a6)` }}>
-          <div className="flex items-center justify-center mb-4">
-            <img src="/Marca-IRRIGACIÓN-blanco.png" alt="Irrigación" className="h-24 w-auto" />
-            <div className="flex items-center gap-2 absolute left-6" ref={sidebarMenuRef}>
-              <button 
-                className="text-white hover:bg-white/20 p-2 rounded-lg transition-colors"
-                onClick={() => setShowSidebarMenu((v) => !v)}
-              >
-                <MoreVertical size={20} />
-              </button>
-              {showSidebarMenu && (
-                <div className="absolute left-0 top-full mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 animate-slideInDown">
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-100"
-                    onClick={() => { setShowNewConversation(true); setShowSidebarMenu(false); }}
-                  >
-                    Nueva conversación
-                  </button>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-100"
-                    onClick={() => setConversationsState(prev => prev.map(c => ({ ...c, unread: 0 })))}
-                  >
-                    Marcar todas como leídas
-                  </button>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-100"
-                    onClick={() => { setShowArchived(true); setShowSidebarMenu(false); }}
-                  >
-                    Archivar conversaciones
-                  </button>
-                  <div className="border-t border-gray-200 dark:border-gray-700 my-1"></div>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-100"
-                    onClick={() => { setShowPreferences(true); setShowSidebarMenu(false); }}
-                  >
-                    Configuración
-                  </button>
-                  <div className="border-t border-gray-200 dark:border-gray-700 my-1"></div>
-                  <button 
-                    className="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-red-600 dark:text-red-400"
-                    onClick={handleLogout}
-                  >
-                    Cerrar Sesión
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-          
-          {/* Search bar */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-700 dark:text-gray-200" size={18} />
-            <input
-              type="text"
-              placeholder="Buscar conversación..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 rounded-lg bg-white/90 focus:bg-white focus:outline-none focus:ring-2 focus:ring-white/50 transition-all text-gray-900 placeholder-gray-500 dark:bg-white/10 dark:text-white dark:placeholder-white dark:focus:bg-white/10"
-            />
-          </div>
-        </div>
-
-        {/* Conversaciones */}
-        {canViewOperatorQueue && pendingOperatorTickets.length > 0 && (
-          <div className="mx-3 mt-3 rounded-xl border border-amber-300 bg-amber-50/90 dark:bg-amber-950/40 dark:border-amber-800 p-3 shadow-sm">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <p className="text-sm font-semibold text-amber-800 dark:text-amber-100">
-                Clientes esperando operador: {pendingOperatorTickets.length}
-              </p>
-              {operatorProfile?.subdelegacion_nombre && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-100">
-                  {operatorProfile.subdelegacion_nombre}
-                </span>
-              )}
-            </div>
-            <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
-              {pendingOperatorTickets.map((ticket) => {
-                const phoneKey = normalizePhoneKey(ticket.phone);
-                const loading = handoffActionLoading[phoneKey] === 'accept';
-                return (
-                  <div
-                    key={`${ticket.ticketId || 'pending'}-${phoneKey}`}
-                    className="rounded-lg border border-amber-200 dark:border-amber-800 bg-white/80 dark:bg-gray-900/50 px-3 py-2"
-                  >
-                    <p className="text-xs text-gray-500 dark:text-gray-400">{ticket.subdelegacion || 'Sin subdelegación'}</p>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{ticket.phone}</p>
-                    {ticket.motivo && (
-                      <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-2">{ticket.motivo}</p>
-                    )}
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => void acceptOperatorChat(ticket.phone)}
-                        disabled={loading || !canTakeOperatorQueue}
-                        className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white disabled:opacity-60"
-                        style={{ backgroundColor: themeColors[theme].hex }}
-                      >
-                        {!canTakeOperatorQueue ? 'Solo lectura' : (loading ? 'Tomando...' : 'Tomar chat')}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        <div ref={conversationsContainerRef} className="flex-1 overflow-y-auto">
-          <div
-            style={{
-              height: `${conversationsVirtualizer.getTotalSize()}px`,
-              width: '100%',
-              position: 'relative'
-            }}
-          >
-          {conversationsVirtualizer.getVirtualItems().map((virtualRow) => {
-            const conv = filteredConversations[virtualRow.index];
-            if (!conv) return null;
-            // Determinar si la sesión está vencida
-            const sessionExpiredForChat = (() => {
-              if (conv.lastUserInteraction) {
-                const lastUser = new Date(conv.lastUserInteraction);
-                const diffMs = Date.now() - lastUser.getTime();
-                return diffMs > 24 * 60 * 60 * 1000;
-              }
-              if (!conv.messages || conv.messages.length === 0) return false;
-              for (let i = conv.messages.length - 1; i >= 0; i--) {
-                const m = conv.messages[i];
-                if (m && m.sent === false) {
-                  const lastUser = new Date(m.date);
-                  const diffMs = Date.now() - lastUser.getTime();
-                  return diffMs > 24 * 60 * 60 * 1000;
-                }
-              }
-              return false;
-            })();
-            const hasPendingHandoff = pendingOperatorTickets.some((ticket) => phonesMatch(ticket.phone, conv.phone));
-            const statusMeta = getStatusBadgeMeta(hasPendingHandoff ? 'ESPERA_OPERADOR' : conv.conversationStatus, conv.botActive);
-
-            return (
-            <div
-              key={conv.id ?? conv.phone ?? virtualRow.index}
-              ref={conversationsVirtualizer.measureElement}
-              data-index={virtualRow.index}
-              onContextMenu={(e) => openContextMenu(e, 'chat', conv.id)}
-              onClick={() => {
-                selectChatById(conv.id);
-                setChatClosed(false);
-                // Marcar como leído cuando se selecciona el chat
-                markChatReadById(conv.id);
-              }}
-              className={`p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-700 absolute left-0 top-0 w-full ${
-                newChatAnimations[normalizePhoneKey(conv.phone)] ? 'animate-chat-entry' : ''
-              } ${
-                sessionExpiredForChat ? 'opacity-60' : 'opacity-100'
-              }`}
-              style={selectedId === conv.id ? {
-                transform: `translateY(${virtualRow.start}px)`,
-                backgroundColor: darkMode ? `${themeColors[theme].hex}20` : `${themeColors[theme].hex}10`,
-                borderLeft: `4px solid ${themeColors[theme].hex}`,
-                borderRightWidth: sessionExpiredForChat ? '3px' : '0px',
-                borderRightColor: sessionExpiredForChat ? '#ef4444' : undefined,
-                borderRightStyle: sessionExpiredForChat ? 'solid' : undefined
-              } : {
-                transform: `translateY(${virtualRow.start}px)`,
-                borderRightWidth: sessionExpiredForChat ? '3px' : '0px',
-                borderRightColor: sessionExpiredForChat ? '#ef4444' : undefined,
-                borderRightStyle: sessionExpiredForChat ? 'solid' : undefined
-              }}
-            >
-              <div className="flex items-start gap-3">
-                <div className="relative">
-                  {conv.profilePic ? (
-                    <img 
-                      src={conv.profilePic} 
-                      alt={conv.name}
-                      className="w-12 h-12 rounded-full object-cover"
-                      onError={(e) => {
-                        // Fallback a las iniciales si la imagen falla
-                        e.currentTarget.style.display = 'none';
-                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
-                        if (fallback) fallback.style.display = 'flex';
-                      }}
-                    />
-                  ) : null}
-                  <div className="w-12 h-12 rounded-full flex items-center justify-center text-white font-semibold transition-colors" style={{
-                    backgroundColor: selectedId === conv.id ? themeColors[theme].hex : undefined,
-                    backgroundImage: selectedId !== conv.id ? `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)` : undefined,
-                    display: conv.profilePic ? 'none' : 'flex'
-                  }}>
-                    {conv.avatar}
-                  </div>
-                  {(() => {
-                    const lastMsgDate = conv.lastMessageDate 
-                      || (conv.messages && conv.messages.length > 0 
-                        ? conv.messages[conv.messages.length - 1].date 
-                        : new Date());
-                    const status = getContactStatus(lastMsgDate);
-                    return (
-                      <div className={`absolute bottom-0 right-0 w-3 h-3 ${status.color} rounded-full border-2 border-white dark:border-gray-800`}></div>
-                    );
-                  })()}
-                </div>
-                
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1 gap-2">
-                    <h3 className="font-semibold text-gray-900 dark:text-gray-100 truncate">{conv.name}</h3>
-                    {(conv.unread > 0 && selectedId !== conv.id) ? (
-                      <span 
-                        className="text-white text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 animate-pulse transition-all duration-300"
-                        style={{ 
-                          backgroundColor: themeColors[theme].hex,
-                          opacity: 1,
-                          transform: 'scale(1)'
-                        }}
-                      >
-                        {conv.unread}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0 transition-opacity duration-300">{conv.time}</span>
-                    )}
-                  </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-300 truncate mb-1">
-                    {normalizeMessage(conv.lastMessage)}
-                  </p>
-                  <div className="flex items-center justify-end gap-2">
-                    {statusMeta && (
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusMeta.classes}`}>
-                        {statusMeta.label}
-                      </span>
-                    )}
-                  </div>
-                  {isHumanConversation(conv.conversationStatus) && conv.operator && normalizeOperatorIdentity(conv.operator) !== normalizeOperatorIdentity(currentOperatorName) && (
-                    <p className="text-[11px] text-rose-600 dark:text-rose-300 mt-1 truncate text-right">
-                      Tomado por {conv.operator}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-            );
-          })}
-          </div>
-        </div>
-      </div>
+      <SidebarContainer
+        selectedChat={selectedChat}
+        theme={theme}
+        darkMode={darkMode}
+        themeColors={themeColors}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        showSidebarMenu={showSidebarMenu}
+        setShowSidebarMenu={setShowSidebarMenu}
+        sidebarMenuRef={sidebarMenuRef}
+        setShowNewConversation={setShowNewConversation}
+        setShowArchived={setShowArchived}
+        setShowPreferences={setShowPreferences}
+        handleLogout={handleLogout}
+        setConversationsState={setConversationsState}
+        canViewOperatorQueue={canViewOperatorQueue}
+        pendingOperatorTickets={pendingOperatorTickets}
+        operatorProfile={operatorProfile}
+        handoffActionLoading={handoffActionLoading}
+        acceptOperatorChat={acceptOperatorChat}
+        canTakeOperatorQueue={canTakeOperatorQueue}
+        conversationsContainerRef={conversationsContainerRef}
+        conversationsVirtualizer={conversationsVirtualizer}
+        filteredConversations={filteredConversations}
+        normalizePhoneKey={normalizePhoneKey}
+        openContextMenu={openContextMenu}
+        selectChatById={selectChatById}
+        setChatClosed={setChatClosed}
+        markChatReadById={markChatReadById}
+        newChatAnimations={newChatAnimations}
+        getContactStatus={getContactStatus}
+        selectedId={selectedId}
+        isHumanConversation={isHumanConversation}
+        normalizeOperatorIdentity={normalizeOperatorIdentity}
+        currentOperatorName={currentOperatorName}
+        getStatusBadgeMeta={getStatusBadgeMeta}
+        normalizeMessage={normalizeMessage}
+        phonesMatch={phonesMatch}
+      />
 
       {/* Chat Principal */}
       <div className={`${selectedChat === null ? 'hidden md:hidden' : 'flex md:flex'} flex-1 flex-col bg-gray-50 dark:bg-gray-900 transition-opacity duration-200`}>
@@ -4001,8 +3767,15 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
             '--msg-font-family': fontFamily === 'default' ? 'inherit' : fontFamily
           } as React.CSSProperties}
         >
-          {/* Botón Cargar Más Mensajes */}
-          {currentChat && currentChat.messages && currentChat.messages.length > 0 && !messagesEndReached[currentChat.phone] && (
+          {/* Botón Cargar Más Mensajes (solo si hay historial pendiente real) */}
+          {currentChat && currentChat.messages && currentChat.messages.length > 0 && (() => {
+            const phoneKey = normalizePhoneKey(currentChat.phone);
+            const cachedCount = (allMessagesCache[phoneKey] || []).length;
+            const visibleCount = currentChat.messages.length;
+            const hasMoreInCache = cachedCount > visibleCount;
+            const couldHaveMoreInBackend = cachedCount >= 100 && !messagesEndReached[currentChat.phone];
+            return hasMoreInCache || couldHaveMoreInBackend;
+          })() && (
             <div className="flex justify-center mb-4">
               <button
                 onClick={async () => {
@@ -4026,12 +3799,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                   const visibleCount = currentChat.messages?.length || 0;
 
                   if (env.enableLogging) {
-                    console.log('🔎 LOAD_MORE_START', {
-                      phone,
-                      visibleCount,
-                      cachedCount: cachedMessages.length,
-                      currentIndex
-                    });
+                    logger.debug('LOAD_MORE_START', { phone, visibleCount, cachedCount: cachedMessages.length, currentIndex });
                   }
                   
                   if (cachedMessages.length > visibleCount) {
@@ -4043,12 +3811,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                     const nextVisibleMessages = cachedMessages.slice(startIndex);
 
                     if (env.enableLogging) {
-                      console.log('🔎 LOAD_MORE_FROM_CACHE', {
-                        phone,
-                        nextVisibleCount,
-                        startIndex,
-                        resultingVisible: nextVisibleMessages.length
-                      });
+                      logger.debug('LOAD_MORE_FROM_CACHE', { phone, nextVisibleCount, startIndex, resultingVisible: nextVisibleMessages.length });
                     }
 
                     if (nextVisibleMessages.length === 0) {
@@ -4105,12 +3868,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                       let fetchedMessages: RawApiMessage[] = response.data.mensajes || response.data.messages || [];
 
                       if (env.enableLogging) {
-                        console.log('🔎 LOAD_MORE_API_PAGE', {
-                          phone,
-                          requestedOffset: currentOffset,
-                          requestedLimit: 100,
-                          fetchedCount: fetchedMessages.length
-                        });
+                        logger.debug('LOAD_MORE_API_PAGE', { phone, requestedOffset: currentOffset, fetchedCount: fetchedMessages.length });
                       }
                       
                       if (fetchedMessages.length > 0) {
@@ -4156,12 +3914,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                           const retryMessages: RawApiMessage[] = retryResponse.data.mensajes || retryResponse.data.messages || [];
 
                           if (env.enableLogging) {
-                            console.log('🔎 LOAD_MORE_API_RETRY', {
-                              phone,
-                              requestedOffset: 0,
-                              requestedLimit: expandedLimit,
-                              retryFetchedCount: retryMessages.length
-                            });
+                            logger.debug('LOAD_MORE_API_RETRY', { phone, requestedLimit: expandedLimit, retryFetchedCount: retryMessages.length });
                           }
 
                           if (retryMessages.length > fetchedMessages.length) {
@@ -4210,7 +3963,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         const nextVisibleMessages = updatedCache.slice(startIndex);
 
                         if (env.enableLogging) {
-                          console.log('🔎 LOAD_MORE_RESULT', {
+                          logger.debug('LOAD_MORE_RESULT', {
                             phone,
                             updatedCacheCount: updatedCache.length,
                             previousVisible: currentVisible.length,
@@ -4258,7 +4011,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                         setIsLoadingMoreMessages(false); // Desactivar flag si no hay más mensajes
                       }
                     } catch (error) {
-                      console.error('❌ Error al cargar más mensajes:', error);
+                      logger.error(error, { phase: 'loadMoreMessages' });
                       trackAction('messages_load_more_failed', { phone });
                       emitConnectionAlert({
                         kind: 'warning',
@@ -4919,12 +4672,8 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
                                 </a>
                               );
                             }
-                            let node: any = part;
-                            node = node.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
-                            node = node.replace(/_([^_]+)_/g, '<em>$1</em>');
-                            node = node.replace(/~([^~]+)~/g, '<del>$1</del>');
-                            
-                            return <span key={i} dangerouslySetInnerHTML={{ __html: node }} />;
+                            const safeHtml = formatChatMarkdownToSafeHtml(part);
+                            return <span key={i} dangerouslySetInnerHTML={{ __html: safeHtml }} />;
                           });
                         };
                         
@@ -5171,346 +4920,31 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
 
       {/* Panel lateral de información (toggleable) */}
       {showInfo && currentChat && (
-        <div className={`w-80 border-l p-6 pt-12 relative overflow-y-auto ${infoPanelClosing ? 'animate-slideOutRight' : 'animate-slideInRight'}`} style={{
-          backgroundColor: darkMode ? '#1f2937' : '#ffffff',
-          borderColor: darkMode ? '#374151' : '#e5e7eb'
-        }}>
-          <button
-            aria-label="Cerrar panel"
-            className="absolute top-4 right-4 p-2 rounded-full transition"
-            onClick={closeInfoPanel}
-            style={{ color: darkMode ? '#9ca3af' : '#4b5563', backgroundColor: darkMode ? '#374151' : '#f3f4f6' }}
-          >
-            <X className="w-4 h-4" />
-          </button>
-          <div className="text-center mb-6">
-            {currentChat.profilePic ? (
-              <img 
-                src={currentChat.profilePic} 
-                alt={currentChat.name}
-                className="w-24 h-24 mx-auto rounded-full object-cover mb-4"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  const fallback = e.currentTarget.nextElementSibling as HTMLElement;
-                  if (fallback) fallback.style.display = 'flex';
-                }}
-              />
-            ) : null}
-            <div className="w-24 h-24 mx-auto rounded-full flex items-center justify-center text-white text-3xl font-semibold mb-4" style={{
-              backgroundImage: `linear-gradient(135deg, ${themeColors[theme].hex}, #14b8a6)`,
-              display: currentChat.profilePic ? 'none' : 'flex'
-            }}>
-              {currentChat.avatar}
-            </div>
-            {editingName ? (
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={tempName}
-                  onChange={(e) => setTempName(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && saveEditName()}
-                  className="flex-1 px-3 py-1 rounded-md border focus:outline-none text-center font-semibold"
-                  style={{
-                    backgroundColor: darkMode ? '#1f2937' : '#ffffff',
-                    borderColor: darkMode ? '#4b5563' : '#d1d5db',
-                    color: darkMode ? '#f3f4f6' : '#111827'
-                  }}
-                  autoFocus
-                />
-                <button onClick={saveEditName} className="p-1 hover:bg-green-100 dark:hover:bg-green-900 rounded">
-                  <Check size={18} className="text-green-600" />
-                </button>
-                <button onClick={cancelEditName} className="p-1 hover:bg-red-100 dark:hover:bg-red-900 rounded">
-                  <X size={18} className="text-red-600" />
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center gap-2">
-                <h3 className="text-xl font-semibold mb-1" style={{ color: darkMode ? '#f3f4f6' : '#111827' }}>{currentChat.name}</h3>
-                <button onClick={startEditName} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded opacity-60 hover:opacity-100">
-                  <Copy size={14} style={{ color: darkMode ? '#9ca3af' : '#6b7280' }} />
-                </button>
-              </div>
-            )}
-            <p style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}>{formatPhoneForDisplay(currentChat.phone)}</p>
-          </div>
-
-          <div className="space-y-4">
-            {/* Datos del Padrón */}
-            <div className="rounded-lg p-4 border" style={{
-              backgroundColor: darkMode ? '#374151' : '#f9fafb',
-              borderColor: darkMode ? '#4b5563' : '#e5e7eb'
-            }}>
-              <h4 className="text-sm font-semibold mb-3" style={{ color: darkMode ? '#e5e7eb' : '#1f2937' }}>Datos del Padrón</h4>
-              <div className="space-y-3 text-sm">
-                <div className="flex flex-col gap-1">
-                  <label style={{ color: darkMode ? '#9ca3af' : '#4b5563', fontSize: '0.75rem' }}>Nº Padrón / Cuenta</label>
-                  <input
-                    type="number"
-                    value={currentChat.padron?.number || ''}
-                    onChange={(e) => updatePadronField('number', e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border focus:outline-none transition"
-                    style={{
-                      backgroundColor: darkMode ? '#1f2937' : '#ffffff',
-                      borderColor: darkMode ? '#4b5563' : '#d1d5db',
-                      color: darkMode ? '#f3f4f6' : '#111827',
-                      boxShadow: 'var(--tw-ring-offset-shadow), var(--tw-ring-shadow), 0 0 #0000'
-                    }}
-                    onFocus={(e) => e.currentTarget.style.boxShadow = `0 0 0 3px ${themeColors[theme].hex}40`}
-                    onBlur={(e) => e.currentTarget.style.boxShadow = ''}
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label style={{ color: darkMode ? '#9ca3af' : '#4b5563', fontSize: '0.75rem' }}>Ubicación</label>
-                  <input
-                    type="text"
-                    value={currentChat.padron?.location || ''}
-                    onChange={(e) => updatePadronField('location', e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border focus:outline-none transition"
-                    style={{
-                      backgroundColor: darkMode ? '#1f2937' : '#ffffff',
-                      borderColor: darkMode ? '#4b5563' : '#d1d5db',
-                      color: darkMode ? '#f3f4f6' : '#111827'
-                    }}
-                    onFocus={(e) => e.currentTarget.style.boxShadow = `0 0 0 3px ${themeColors[theme].hex}40`}
-                    onBlur={(e) => e.currentTarget.style.boxShadow = ''}
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label style={{ color: darkMode ? '#9ca3af' : '#4b5563', fontSize: '0.75rem' }}>Estado Deuda</label>
-                  <select
-                    value={currentChat.padron?.debtStatus || 'Al Día'}
-                    onChange={(e) => updatePadronField('debtStatus', e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border focus:outline-none transition"
-                    style={{
-                      backgroundColor: darkMode ? '#1f2937' : '#ffffff',
-                      borderColor: darkMode ? '#4b5563' : '#d1d5db',
-                      color: darkMode ? '#f3f4f6' : '#111827'
-                    }}
-                    onFocus={(e) => e.currentTarget.style.boxShadow = `0 0 0 3px ${themeColors[theme].hex}40`}
-                    onBlur={(e) => e.currentTarget.style.boxShadow = ''}
-                  >
-                    <option value="Al Día">🟢 Al Día</option>
-                    <option value="Con Deuda">🔴 Con Deuda</option>
-                    <option value="Plan de Pago">🟡 Plan de Pago</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Notas Internas */}
-            <div className="border rounded-lg p-4" style={{
-              backgroundColor: darkMode ? '#374151' : '#fffbeb',
-              borderColor: darkMode ? '#d97706' : '#fcd34d'
-            }}>
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-sm font-semibold" style={{ color: darkMode ? '#fbbf24' : '#92400e' }}>Notas Privadas 🔒</h4>
-                <span className="text-xs" style={{ color: darkMode ? '#f59e0b' : '#b45309' }}>Solo internos</span>
-              </div>
-              <div className="space-y-2 mb-3">
-                {(currentChat.notes || []).map((note) => (
-                  <div key={note.id} className="border rounded-md p-2 flex justify-between items-start transition" style={{
-                    backgroundColor: darkMode ? '#1f2937' : '#fef3c7',
-                    borderColor: darkMode ? '#92400e' : '#fcd34d',
-                    color: darkMode ? '#fbbf24' : '#92400e'
-                  }}>
-                    <span className="text-sm leading-tight">{note.text}</span>
-                    <button
-                      className="p-1 rounded-md transition"
-                      onClick={() => deleteNote(note.id)}
-                      style={{ backgroundColor: darkMode ? '#374151' : '#fed7aa', color: darkMode ? '#fbbf24' : '#b45309' }}
-                    >
-                      <Trash size={14} />
-                    </button>
-                  </div>
-                ))}
-                {(currentChat.notes || []).length === 0 && (
-                  <p className="text-sm" style={{ color: darkMode ? '#f59e0b' : '#b45309' }}>Sin notas aún.</p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <textarea
-                  placeholder="Nueva nota privada"
-                  value={noteDrafts[currentChat.id] || ''}
-                  onChange={(e) => setNoteDrafts(prev => ({ ...prev, [currentChat.id]: e.target.value }))}
-                  className="w-full h-16 px-3 py-2 rounded-md border focus:outline-none transition"
-                  style={{
-                    backgroundColor: darkMode ? '#1f2937' : '#fffbeb',
-                    borderColor: darkMode ? '#92400e' : '#fcd34d',
-                    color: darkMode ? '#9ca3af' : '#6b7280'
-                  }}
-                  onFocus={(e) => e.currentTarget.style.boxShadow = `0 0 0 3px ${themeColors[theme].hex}40`}
-                  onBlur={(e) => e.currentTarget.style.boxShadow = ''}
-                />
-                <button
-                  className="w-full px-3 py-2 rounded-md text-white font-semibold transition"
-                  onClick={addNote}
-                  style={{ backgroundColor: themeColors[theme].hex }}
-                  onMouseEnter={(e) => e.currentTarget.style.opacity = '0.9'}
-                  onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
-                >
-                  Guardar Nota
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-lg p-4 border" style={{
-              backgroundColor: darkMode ? '#374151' : '#f9fafb',
-              borderColor: darkMode ? '#4b5563' : '#e5e7eb'
-            }}>
-              <h4 className="text-sm font-semibold mb-2" style={{ color: darkMode ? '#e5e7eb' : '#374151' }}>Estado</h4>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${currentChat.status === 'online' ? 'bg-green-500' : 'bg-gray-400'}`}></div>
-                <span className="text-sm" style={{ color: darkMode ? '#d1d5db' : '#4b5563' }}>
-                  {currentChat.status === 'online' ? 'En línea' : 'Desconectado'}
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-lg p-4 border" style={{
-              backgroundColor: darkMode ? '#374151' : '#f9fafb',
-              borderColor: darkMode ? '#4b5563' : '#e5e7eb'
-            }}>
-              <h4 className="text-sm font-semibold mb-3" style={{ color: darkMode ? '#e5e7eb' : '#374151' }}>Etiquetas</h4>
-              <div className="flex flex-wrap gap-2">
-                <span className="px-3 py-1 rounded-full text-xs transition" style={{
-                  backgroundColor: darkMode ? '#3b82f620' : '#dbeafe',
-                  color: darkMode ? '#60a5fa' : '#1e40af'
-                }}>Cliente nuevo</span>
-                <span className="px-3 py-1 rounded-full text-xs transition" style={{
-                  backgroundColor: darkMode ? '#a855f720' : '#e9d5ff',
-                  color: darkMode ? '#d8b4fe' : '#6b21a8'
-                }}>Consulta</span>
-              </div>
-            </div>
-
-            <div className="rounded-lg p-4 border" style={{
-              backgroundColor: darkMode ? '#374151' : '#f9fafb',
-              borderColor: darkMode ? '#4b5563' : '#e5e7eb'
-            }}>
-              <h4 className="text-sm font-semibold mb-2" style={{ color: darkMode ? '#e5e7eb' : '#374151' }}>Información</h4>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}>Primera vez:</span>
-                  <span style={{ color: darkMode ? '#e5e7eb' : '#111827' }}>Hace 2 días</span>
-                </div>
-                <div className="flex justify-between">
-                  <span style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}>Mensajes:</span>
-                  <span style={{ color: darkMode ? '#e5e7eb' : '#111827' }}>{currentChat.messages.length}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Archivos Multimedia */}
-            <div className="rounded-lg p-4 border" style={{
-              backgroundColor: darkMode ? '#374151' : '#f9fafb',
-              borderColor: darkMode ? '#4b5563' : '#e5e7eb'
-            }}>
-              <button
-                onClick={() => setShowMediaMenu(!showMediaMenu)}
-                className="w-full flex items-center justify-between mb-3"
-              >
-                <h4 className="text-sm font-semibold" style={{ color: darkMode ? '#e5e7eb' : '#374151' }}>Archivos Multimedia</h4>
-                <ChevronUp 
-                  size={18} 
-                  className={`transition-transform ${showMediaMenu ? 'rotate-180' : ''}`}
-                  style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}
-                />
-              </button>
-
-              {showMediaMenu && (
-                <div className="space-y-3">
-                  <div className="flex gap-2 flex-wrap">
-                    {(['all', 'images', 'videos', 'files', 'urls'] as const).map((filter) => (
-                      <button
-                        key={filter}
-                        onClick={() => setMediaFilter(filter)}
-                        className="px-3 py-1 rounded-full text-xs transition"
-                        style={{
-                          backgroundColor: mediaFilter === filter ? themeColors[theme].hex : (darkMode ? '#4b5563' : '#e5e7eb'),
-                          color: mediaFilter === filter ? '#ffffff' : (darkMode ? '#d1d5db' : '#4b5563')
-                        }}
-                      >
-                        {filter === 'all' ? 'Todos' : filter === 'images' ? 'Imágenes' : filter === 'videos' ? 'Videos' : filter === 'files' ? 'Archivos' : 'URLs'}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 max-h-60 overflow-y-auto">
-                    {getMediaMessages().map((msg) => (
-                      <div 
-                        key={msg.id}
-                        className="aspect-square rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition border"
-                        style={{ borderColor: darkMode ? '#4b5563' : '#d1d5db' }}
-                        onClick={() => {
-                          if (msg.type === 'image') setLightboxImage(msg.fileUrl);
-                        }}
-                      >
-                        {msg.type === 'image' ? (
-                          <img src={msg.fileUrl} alt={msg.text} className="w-full h-full object-cover" />
-                        ) : msg.type === 'video' ? (
-                          <div className="relative w-full h-full bg-black">
-                            <video 
-                              src={msg.fileUrl} 
-                              className="w-full h-full object-cover"
-                              preload="metadata"
-                            />
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                              <Play size={24} className="text-white" />
-                            </div>
-                          </div>
-                        ) : msg.type === 'file' ? (
-                          (() => {
-                            const isPdf = msg.filename?.toLowerCase().endsWith('.pdf');
-                            const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(msg.filename || '');
-                            
-                            if (isPdf && msg.fileUrl) {
-                              return (
-                                <div className="relative w-full h-full">
-                                  <iframe 
-                                    src={`${msg.fileUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0`}
-                                    className="w-full h-full pointer-events-none"
-                                    style={{ transform: 'scale(1.5)', transformOrigin: 'top left' }}
-                                  />
-                                  <div className="absolute inset-0 flex items-end justify-center pb-2 bg-gradient-to-t from-black/60 to-transparent">
-                                    <span className="text-xs text-white font-medium">PDF</span>
-                                  </div>
-                                </div>
-                              );
-                            } else if (isImage && msg.fileUrl) {
-                              return <img src={msg.fileUrl} alt={msg.text} className="w-full h-full object-cover" />;
-                            } else {
-                              return (
-                                <div className="w-full h-full bg-gray-200 dark:bg-gray-700 flex flex-col items-center justify-center p-2">
-                                  <FileText size={24} className="text-emerald-600 mb-1" />
-                                  <span className="text-xs text-center truncate w-full" style={{ color: darkMode ? '#d1d5db' : '#4b5563' }}>
-                                    {msg.filename}
-                                  </span>
-                                </div>
-                              );
-                            }
-                          })()
-                        ) : (
-                          <div className="w-full h-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center p-2">
-                            <span className="text-xs text-center break-all text-blue-600 dark:text-blue-300">
-                              {msg.text.match(/https?:\/\/[^\s]+/)?.[0]}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {getMediaMessages().length === 0 && (
-                    <p className="text-xs text-center py-4" style={{ color: darkMode ? '#9ca3af' : '#6b7280' }}>
-                      No hay archivos multimedia
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <InfoPanel
+          currentChat={currentChat}
+          darkMode={darkMode}
+          theme={theme}
+          themeColors={themeColors}
+          infoPanelClosing={infoPanelClosing}
+          closeInfoPanel={closeInfoPanel}
+          editingName={editingName}
+          tempName={tempName}
+          setTempName={setTempName}
+          saveEditName={saveEditName}
+          cancelEditName={cancelEditName}
+          startEditName={startEditName}
+          updatePadronField={updatePadronField}
+          noteDrafts={noteDrafts}
+          setNoteDrafts={setNoteDrafts}
+          addNote={addNote}
+          deleteNote={deleteNote}
+          showMediaMenu={showMediaMenu}
+          setShowMediaMenu={setShowMediaMenu}
+          mediaFilter={mediaFilter}
+          setMediaFilter={setMediaFilter}
+          getMediaMessages={getMediaMessages}
+          setLightboxImage={setLightboxImage}
+        />
       )}
 
       {/* Custom Context Menu */}

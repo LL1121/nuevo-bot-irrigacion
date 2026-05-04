@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
 import ErrorBoundary from './components/ErrorBoundary'
+import { SocketProvider } from './contexts/SocketProvider'
 import { initLogger, captureException } from './utils/logger'
 import { initPerformanceMonitoring } from './utils/monitoring'
 import { env } from './config/env'
@@ -27,7 +28,9 @@ async function bootstrap() {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <ErrorBoundary>
-        <App />
+        <SocketProvider>
+          <App />
+        </SocketProvider>
       </ErrorBoundary>
     </React.StrictMode>
   );
