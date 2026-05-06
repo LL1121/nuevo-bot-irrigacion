@@ -96,7 +96,7 @@ echo "⏳ Esperando que la app inicie..."
 sleep 5
 
 echo "🏥 Verificando health check..."
-if curl -f http://localhost:3000/health > /dev/null 2>&1; then
+if curl -f http://localhost:3003/health > /dev/null 2>&1; then
     echo "✅ Health check OK"
 else
     echo "❌ Health check FALLIDO - Revisa logs"

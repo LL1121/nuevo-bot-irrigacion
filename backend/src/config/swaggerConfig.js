@@ -14,12 +14,12 @@ const options = {
       description: 'API completa para gestionar clientes, mensajes, scraping y auditoría del bot de WhatsApp',
       contact: {
         name: 'Bot Irrigación Support',
-        url: 'http://localhost:3000'
+        url: 'http://localhost:3003'
       }
     },
     servers: [
       {
-        url: 'http://localhost:3000',
+        url: 'http://localhost:3003',
         description: 'Desarrollo local'
       },
       {

@@ -81,7 +81,7 @@ const refreshAccessToken = async (): Promise<string | null> => {
     const refreshToken = sensitiveStorage.getRefreshToken();
     
     if (!refreshToken) {
-      logger.warn('⚠️ No hay refreshToken disponible');
+      logger.warn('No hay refreshToken disponible');
       return null;
     }
 
@@ -106,7 +106,7 @@ const refreshAccessToken = async (): Promise<string | null> => {
         sensitiveStorage.setTokenExpiresAt(expiresAt.toString());
       }
 
-      logger.info('✅ Token refrescado correctamente');
+      logger.info('Token refrescado correctamente');
       return newToken;
     }
   } catch (error) {

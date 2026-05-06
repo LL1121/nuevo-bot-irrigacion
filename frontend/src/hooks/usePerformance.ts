@@ -24,7 +24,7 @@ export const usePerformance = ({ componentName, threshold = 100 }: UsePerformanc
       trackComponentRender(componentName, duration);
 
       if (duration > threshold) {
-        console.warn(`⚠️ Slow render: ${componentName} took ${duration.toFixed(2)}ms`);
+        console.warn(`Slow render: ${componentName} took ${duration.toFixed(2)}ms`);
       }
     };
   }, [componentName, threshold]);

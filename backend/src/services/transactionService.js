@@ -25,13 +25,10 @@ const { run, runInTransaction } = require('../config/db');
  * });
  */
 const withTransaction = async (callback) => {
-  console.log('🔄 INICIANDO TRANSACCIÓN');
   try {
-    const result = await runInTransaction(callback);
-    console.log('✅ TRANSACCIÓN COMPLETADA (COMMIT)');
-    return result;
+    return await runInTransaction(callback);
   } catch (error) {
-    console.error('⏮️  TRANSACCIÓN REVERTIDA (ROLLBACK):', error.message);
+    console.error('Transaccion revertida (rollback):', error.message);
     throw error;
   }
 };
@@ -57,11 +54,10 @@ const executeTransaction = async (operations) => {
 
     for (const operation of operations) {
       try {
-        console.log(`   ▶ Ejecutando: ${operation.query.substring(0, 50)}...`);
         const result = await run(operation.query, operation.params);
         results.push(result);
       } catch (error) {
-        console.error(`   ❌ Error en operación: ${error.message}`);
+        console.error(`Error en operacion transaccional: ${error.message}`);
         throw error; // Trigger rollback
       }
     }
@@ -80,12 +76,10 @@ const executeTransaction = async (operations) => {
  */
 const safeTransaction = async (operation, operationName = 'Operación') => {
   try {
-    console.log(`🔐 Iniciando transacción segura: ${operationName}`);
     const result = await withTransaction(operation);
-    console.log(`✅ ${operationName} completada exitosamente`);
     return { success: true, data: result };
   } catch (error) {
-    console.error(`❌ ${operationName} falló:`, error.message);
+    console.error(`${operationName} fallo:`, error.message);
     return { success: false, error: error.message };
   }
 };

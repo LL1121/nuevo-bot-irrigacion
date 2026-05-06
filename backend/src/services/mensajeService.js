@@ -21,8 +21,6 @@ const guardarMensaje = async (data) => {
         message_id = null
       } = data;
 
-      console.log(`📨 Guardando mensaje + actualizando cliente en TRANSACCIÓN...`);
-      
       // DEDUP: Evitar guardar el mismo mensaje entrante dos veces
       if (message_id) {
         const existing = await get(
@@ -30,7 +28,6 @@ const guardarMensaje = async (data) => {
           [message_id]
         );
         if (existing) {
-          console.log(`   ⚠️ Mensaje duplicado ignorado (message_id: ${message_id})`);
           return {
             id: existing.id,
             telefono: existing.cliente_telefono,
@@ -48,7 +45,6 @@ const guardarMensaje = async (data) => {
         'INSERT INTO mensajes (cliente_telefono, tipo, cuerpo, url_archivo, emisor, message_id) VALUES (?, ?, ?, ?, ?, ?)',
         [telefono, tipo, cuerpo, url_archivo, emisor, message_id]
       );
-      console.log(`   ✅ Mensaje insertado - LastID: ${result.lastID}`);
 
       // OPERACIÓN 2: Actualizar última interacción del cliente (SOLO si el mensaje es del usuario)
       if (emisor === 'usuario') {
@@ -56,9 +52,6 @@ const guardarMensaje = async (data) => {
           'UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
           [telefono]
         );
-        console.log(`   ✅ Cliente actualizado`);
-      } else {
-        console.log(`   ⏭️ Cliente NO actualizado (emisor: ${emisor})`);
       }
 
       return {
@@ -71,7 +64,7 @@ const guardarMensaje = async (data) => {
         fecha: new Date()
       };
     } catch (error) {
-      console.error('❌ Error en transacción de mensaje:', error.message);
+      console.error('Error en transaccion de mensaje:', error.message);
       throw error; // Trigger rollback
     }
   });
@@ -106,7 +99,7 @@ const obtenerMensajes = async (telefono, limit = 50, offset = 0) => {
     // Invertir el array para que el frontend los reciba del más viejo al más nuevo
     return rows ? rows.reverse() : [];
   } catch (error) {
-    console.error('❌ Error obteniendo mensajes:', error);
+    console.error('Error obteniendo mensajes:', error);
     throw error;
   }
 };
@@ -121,7 +114,7 @@ const listarConversaciones = async () => {
     const clienteService = require('./clienteService');
     return await clienteService.obtenerTodosLosClientes();
   } catch (error) {
-    console.error('❌ Error listando conversaciones:', error);
+    console.error('Error listando conversaciones:', error);
     throw error;
   }
 };
@@ -134,26 +127,21 @@ const listarConversaciones = async () => {
 const marcarComoLeido = async (telefono) => {
   return withTransaction(async () => {
     try {
-      console.log(`👀 Marcando mensajes como leídos en TRANSACCIÓN...`);
-      
       // OPERACIÓN 1: Marcar mensajes como leídos
       const result = await run(
         'UPDATE mensajes SET leido = 1 WHERE cliente_telefono = ? AND leido = 0',
         [telefono]
       );
-      console.log(`   ✅ ${result.changes} mensajes marcados como leídos`);
 
       // OPERACIÓN 2: Actualizar metadata del cliente
       await run(
         'UPDATE clientes SET ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?',
         [telefono]
       );
-      console.log(`   ✅ Cliente actualizado`);
-      console.log(`✅ Mensajes marcados como leídos: ${telefono}`);
 
       return { changes: result.changes };
     } catch (error) {
-      console.error('❌ Error en transacción de lectura:', error.message);
+      console.error('Error en transaccion de lectura:', error.message);
       throw error;
     }
   });

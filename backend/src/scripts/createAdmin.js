@@ -1,4 +1,5 @@
 const bcrypt = require('bcrypt');
+require('../services/logService');
 const { initializeDB, getPool } = require('../config/db');
 
 const createAdmin = async () => {

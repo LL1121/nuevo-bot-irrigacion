@@ -5,6 +5,7 @@ const { getMediaInfo, fetchMediaStream } = require('../services/whatsappService'
 const fs = require('fs');
 const path = require('path');
 const { validateFileIntegrity } = require('../services/fileValidator');
+const logger = require('../services/logService');
 
 const emitToTenantRoom = async (phone, eventName, payload) => {
   if (!global.io) return;
@@ -134,7 +135,7 @@ const listarChats = async (req, res) => {
       total: clientes.length
     });
   } catch (error) {
-    console.error('❌ Error en listarChats:', error);
+    logger.error('❌ Error en listarChats:', error);
     res.status(500).json({
       success: false,
       error: 'Error al obtener conversaciones'

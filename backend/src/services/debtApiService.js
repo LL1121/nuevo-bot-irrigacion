@@ -1,6 +1,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { ACTION_FAILED } = require('../constants/userFacing');
 
 const BASE_URL_DEUDA_ATENCION = 'https://autogestion.cloud.irrigacion.gov.ar/services/ifinfogov/api/public/ctacte/deudaAtencion';
 const BASE_URL_CUOTA = 'https://www.irrigacion.gov.ar/boletoonline/ctacte/cuota';
@@ -287,7 +288,8 @@ async function traducirDniAPadron(dni) {
 
     return {
       success: false,
-      message: 'Error al consultar padrones para este DNI.'
+      message: 'Error al consultar padrones para este DNI.',
+      userMessage: ACTION_FAILED
     };
   }
 }
@@ -302,7 +304,7 @@ async function obtenerDeudaPadronSuperficial(datos) {
     return {
       success: false,
       error: 'Datos de padrón incompletos para consultar deuda.',
-      userMessage: '⚠️ No pude procesar ese padrón. Revisá el formato e intentá nuevamente.'
+      userMessage: ACTION_FAILED
     };
   }
 
@@ -420,7 +422,7 @@ async function obtenerDeudaPadronSuperficial(datos) {
     const status = error?.response?.status;
     const userMessage = status === 404
       ? '✅ No se encontró deuda para ese padrón.'
-      : '❌ No pude consultar la deuda ahora. Intentá de nuevo en unos minutos.';
+      : ACTION_FAILED;
 
     return {
       success: false,
@@ -465,6 +467,46 @@ function buildCodigosByTipoPadron(tipoPadron, datos) {
   };
 }
 
+/**
+ * Misma lógica que deudaAtencion: segundo tramo del padrón a 4 dígitos (p. ej. 728 → 0728).
+ * Sin esto la API de cuotas suele responder vacío o error y se cae al scraper.
+ */
+function normalizeCodigosForCuotaApi(tipoPadron, codigo1, codigo2) {
+  const c1 = String(codigo1 || '').trim();
+  let c2 = String(codigo2 || '').trim();
+  if (tipoPadron === 'superficial' || tipoPadron === 'subterraneo') {
+    if (c2 && /^\d+$/.test(c2)) {
+      c2 = c2.padStart(4, '0');
+    }
+  }
+  return { codigo1: c1, codigo2: c2 };
+}
+
+function extractCuotaArray(responseData) {
+  if (Array.isArray(responseData)) return responseData;
+  if (Array.isArray(responseData?.data)) return responseData.data;
+  if (Array.isArray(responseData?.content)) return responseData.content;
+  if (Array.isArray(responseData?.cuotas)) return responseData.cuotas;
+  return [];
+}
+
+/** Filas válidas: sin error de backend JDBC y con identificadores de boleto. */
+function filterValidCuotaRows(rows) {
+  return (rows || []).filter((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const peri = Number(item.periBole);
+    const nume = Number(item.numeBole);
+    const hasBoletoId = peri > 0 && nume > 0;
+    const hasDataBole = Boolean(String(item.dataBole || '').trim());
+
+    // El upstream a veces responde con error=":)" pero trae boleto válido.
+    if (hasBoletoId || hasDataBole) return true;
+
+    // Si no hay identificadores útiles, considerar fila inválida.
+    return false;
+  });
+}
+
 async function descargarPdfBoleto(pdfUrl, tipoPadron, tipoCuota, codigo1, codigo2) {
   const fileName = [
     'boleto',
@@ -492,7 +534,8 @@ async function descargarPdfBoleto(pdfUrl, tipoPadron, tipoCuota, codigo1, codigo
 
 async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
   const tipoServicio = mapTipoPadronToTipoServicio(tipoPadron);
-  const { codigo1, codigo2 } = buildCodigosByTipoPadron(tipoPadron, datos);
+  const raw = buildCodigosByTipoPadron(tipoPadron, datos);
+  const { codigo1, codigo2 } = normalizeCodigosForCuotaApi(tipoPadron, raw.codigo1, raw.codigo2);
 
   debugLog('Iniciando consulta de boletos por API', { tipoPadron, tipoBoleto, tipoServicio, codigo1, codigo2 });
 
@@ -500,7 +543,7 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
     return {
       success: false,
       error: 'Datos de padrón incompletos para consultar boletos.',
-      userMessage: '⚠️ No pude procesar ese padrón para generar el boleto.'
+      userMessage: ACTION_FAILED
     };
   }
 
@@ -521,30 +564,41 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
       }
     );
 
-    const cuotas = Array.isArray(response?.data)
-      ? response.data
-      : Array.isArray(response?.data?.data)
-        ? response.data.data
-        : [];
+    const cuotasRaw = extractCuotaArray(response?.data);
+    const cuotas = filterValidCuotaRows(cuotasRaw);
 
-    debugLog('Boletos obtenidos desde API', { cantidad: cuotas.length });
+    debugLog('Boletos obtenidos desde API', { cantidadRaw: cuotasRaw.length, cantidadValidas: cuotas.length });
 
     if (!cuotas.length) {
-      throw new Error('No se encontraron boletos para este padrón.');
+      debugLog('Sin filas válidas de cuota (posible error upstream o padrón sin boletos)', {
+        muestra: cuotasRaw[0] || null
+      });
+      throw new Error('No se encontraron boletos válidos para este padrón.');
     }
 
     const normalizedTipo = String(tipoBoleto || '').toLowerCase();
-    const boletoSeleccionado = cuotas.find((item) => {
-      const dataBole = String(item?.dataBole || '');
-      const isAnual = /anual/i.test(dataBole);
-      if (normalizedTipo === 'anual') {
-        return isAnual;
-      }
-      if (normalizedTipo === 'bimestral') {
-        return !isAnual;
-      }
-      return false;
-    });
+    const pickByTipo = (list) =>
+      list.find((item) => {
+        const dataBole = String(item?.dataBole || '');
+        const isAnual = /anual/i.test(dataBole);
+        if (normalizedTipo === 'anual') {
+          return isAnual;
+        }
+        if (normalizedTipo === 'bimestral') {
+          return !isAnual;
+        }
+        return false;
+      });
+
+    let boletoSeleccionado = pickByTipo(cuotas);
+
+    if (!boletoSeleccionado && normalizedTipo === 'bimestral') {
+      boletoSeleccionado = cuotas.find((item) => !/anual/i.test(String(item?.dataBole || '')));
+    }
+
+    if (!boletoSeleccionado && normalizedTipo === 'anual') {
+      boletoSeleccionado = cuotas.find((item) => /anual/i.test(String(item?.dataBole || '')));
+    }
 
     if (!boletoSeleccionado) {
       const etiqueta = normalizedTipo === 'anual' ? 'anual' : 'bimestral';
@@ -580,7 +634,7 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoBoleto) {
     return {
       success: false,
       error: error.message || 'Error consultando boletos por API.',
-      userMessage: '❌ No se pudo generar el boleto en este momento. Intentá nuevamente en unos minutos.'
+      userMessage: ACTION_FAILED
     };
   }
 }

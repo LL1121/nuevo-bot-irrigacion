@@ -11,7 +11,7 @@ async function runLoadTest() {
   console.log('🚀 Iniciando Load Test...\n');
   
   const result = await autocannon({
-    url: 'http://localhost:3000',
+    url: 'http://localhost:3003',
     connections: 100, // 100 conexiones simultáneas
     pipelining: 10, // 10 requests en pipeline
     duration: 30, // 30 segundos
@@ -159,7 +159,7 @@ async function runLoadTest() {
 const http = require('http');
 const checkServer = () => {
   return new Promise((resolve) => {
-    const req = http.get('http://localhost:3000/health', (res) => {
+    const req = http.get('http://localhost:3003/health', (res) => {
       resolve(res.statusCode === 200);
     }).on('error', () => resolve(false));
   });
@@ -168,7 +168,7 @@ const checkServer = () => {
 (async () => {
   const serverRunning = await checkServer();
   if (!serverRunning) {
-    console.error('❌ Servidor no está corriendo en http://localhost:3000');
+    console.error('❌ Servidor no está corriendo en http://localhost:3003');
     console.error('💡 Inicia el servidor con: npm start');
     process.exit(1);
   }

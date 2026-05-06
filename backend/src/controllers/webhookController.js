@@ -10,10 +10,13 @@ const fs = require('fs');
 const path = require('path');
 const botStateStore = require('../services/botStateStore');
 const { botState, tryBotState, replaceBotStateRoot, runBotStateSession } = require('../services/botStateContext');
+const { ACTION_FAILED } = require('../constants/userFacing');
+const logger = require('../services/logService');
 
 const BOLETOS_PUBLIC_DIR = path.join(__dirname, '../../public/uploads/boletos');
 const BOLETOS_RETENTION_HOURS = Number(process.env.BOLETOS_RETENTION_HOURS || 24);
 const BOLETOS_PREVIEW_PDFSETTINGS = process.env.BOLETOS_PREVIEW_PDFSETTINGS || 'ebook';
+const WEBHOOK_DEBUG = process.env.WEBHOOK_DEBUG === 'true';
 const TURNOS_CONTACTO_INSPECCION_DEFAULT = process.env.TURNOS_CONTACTO_INSPECCION || 'inspeccioncanadacolorada@gmail.com';
 const TURNOS_CONTACTOS_POR_INSPECCION = {
   'canada colorada': process.env.TURNOS_CONTACTO_INSPECCION_CANADA_COLORADA || TURNOS_CONTACTO_INSPECCION_DEFAULT,
@@ -128,15 +131,15 @@ const extractLikelyNameFromInput = (value = '') => {
 };
 
 const getServiceErrorMessage = (payload, fallbackMessage = '') => {
-  if (!payload) return fallbackMessage;
+  if (!payload) return fallbackMessage || ACTION_FAILED;
 
   const userMessage = normalizeSingleLine(payload.userMessage || '');
   if (userMessage) return userMessage;
 
-  const message = normalizeSingleLine(payload.message || payload.error || '');
-  if (message) return `❌ ${message}`;
+  const message = normalizeSingleLine(payload.message || '');
+  if (message) return message;
 
-  return fallbackMessage;
+  return fallbackMessage || ACTION_FAILED;
 };
 
 const isUnavailableValue = (value = '') => {
@@ -285,6 +288,9 @@ const LOCALIDADES_PROMPT = [
 
 // Bloqueo temporal de opciones deshabilitadas del menú principal
 const TEMP_DISABLED_MENU_OPTIONS = new Set([
+  'turnos',
+  '3',
+  'option_3',
   'ubicacion',
   'vencimientos',
   'empadronamiento',
@@ -294,6 +300,39 @@ const TEMP_DISABLED_MENU_OPTIONS = new Set([
   '4',
   'option_4'
 ]);
+
+/** Filas del menú principal (lista interactiva). Si el usuario está en otro paso y toca de nuevo la lista, hay que re-enrutar acá. */
+const MAIN_MENU_ROW_IDS = new Set([
+  'deuda',
+  'boleto',
+  'turnos',
+  'operador',
+  'ubicacion',
+  'empadronamiento',
+  'vencimientos',
+  'perforacion',
+  'renuncia',
+  'iniciar_perforacion'
+]);
+
+/**
+ * Normaliza id de fila, títulos de WhatsApp o códigos legacy (1/option_1, etc.).
+ */
+const resolveMainMenuKey = (raw) => {
+  const s = String(raw || '').toLowerCase().trim();
+  if (!s) return '';
+  if (['deuda', '1', 'option_1'].includes(s) || s.includes('solicitar deuda')) return 'deuda';
+  if (['boleto', '2', 'option_2'].includes(s) || s.includes('pago anual') || s.includes('bimestral')) return 'boleto';
+  if (['turnos', '3', 'option_3'].includes(s) || s.includes('consultar turnos')) return 'turnos';
+  if (['operador', '4', 'option_4'].includes(s) || s.includes('hablar con operador')) return 'operador';
+  if (s === 'ubicacion' || s.includes('ubicación')) return 'ubicacion';
+  if (s === 'empadronamiento' || s.includes('empadronamiento')) return 'empadronamiento';
+  if (s === 'vencimientos' || s.includes('vencimientos')) return 'vencimientos';
+  if (s === 'iniciar_perforacion') return 'iniciar_perforacion';
+  if (s === 'perforacion' || s.includes('perforación')) return 'perforacion';
+  if (s === 'renuncia' || s.includes('renuncia')) return 'renuncia';
+  return s;
+};
 
 const emitToTenantRoom = async (phone, eventName, payload) => {
   if (!global.io) return;
@@ -514,8 +553,15 @@ const verifyWebhook = (req, res) => {
 const receiveMessage = async (req, res) => {
   try {
     const body = req.body;
-
-    console.log('📩 Webhook recibido:', JSON.stringify(body, null, 2));
+    if (WEBHOOK_DEBUG) {
+      const msg = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      console.log('Webhook recibido', {
+        object: body?.object || null,
+        messageId: msg?.id || null,
+        type: msg?.type || null,
+        from: msg?.from || null
+      });
+    }
 
     // Verificar que el body tenga la estructura esperada
     if (body.object) {
@@ -529,7 +575,9 @@ const receiveMessage = async (req, res) => {
         const messageId = message.id;
         
         if (await botStateStore.isMessageProcessed(messageId)) {
-          console.log('🔄 Mensaje duplicado ignorado:', messageId);
+          if (WEBHOOK_DEBUG) {
+            console.log('Mensaje duplicado ignorado', { messageId });
+          }
           return res.sendStatus(200);
         }
 
@@ -599,7 +647,6 @@ const receiveMessage = async (req, res) => {
           tipoMensaje = 'document';
         }
 
-        console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${tipoMensaje})`);
 
         // Guardar mensaje del usuario en segundo plano (sin bloquear)
         const persistIncoming = async () => {
@@ -647,7 +694,7 @@ const receiveMessage = async (req, res) => {
         const botActivo = await clienteService.esBotActivo(from);
         
         if (!botActivo) {
-          console.log(`⏸️ Bot pausado para ${from} - Mensaje guardado, sin respuesta automática`);
+          console.log(`Bot pausado para ${from} - mensaje guardado sin respuesta automatica`);
           // No enviar respuesta automática
           return res.sendStatus(200);
         }
@@ -675,7 +722,7 @@ const receiveMessage = async (req, res) => {
           const timeSinceLastMessage = now - (sessionState.lastMessageTime || 0);
 
           if (timeSinceLastMessage > TWELVE_HOURS) {
-            console.log(`⏰ Han pasado ${Math.round(timeSinceLastMessage / (60 * 60 * 1000))} horas desde el último mensaje de ${from}`);
+            console.log(`Pasaron ${Math.round(timeSinceLastMessage / (60 * 60 * 1000))} horas desde el ultimo mensaje de ${from}`);
             sessionState.step = 'START';
             sessionState.shouldGreet = true;
           }
@@ -683,7 +730,17 @@ const receiveMessage = async (req, res) => {
           sessionState.lastMessageTime = now;
 
           const hasValidNameInState = isLikelyValidPersonName(sessionState.nombreCliente || '');
-          if (!Boolean(cliente?.nombre_validado) && !hasValidNameInState && sessionState.step !== 'AWAITING_USER_NAME') {
+          const hasStructuredReply =
+            tipoMensaje === 'interactive' ||
+            tipoMensaje === 'button' ||
+            Boolean(String(message._optionId || '').trim());
+          // No forzar de nuevo el flujo de nombre si el usuario está eligiendo ítem de lista/botón
+          if (
+            !Boolean(cliente?.nombre_validado) &&
+            !hasValidNameInState &&
+            sessionState.step !== 'AWAITING_USER_NAME' &&
+            !hasStructuredReply
+          ) {
             sessionState.step = 'START';
             sessionState.needsNamePrompt = true;
             sessionState.namePromptSent = false;
@@ -706,7 +763,7 @@ const receiveMessage = async (req, res) => {
         const optionId = message._optionId || messageBody;
 
         if (!String(optionId || '').trim() && !String(messageBody || '').trim()) {
-          console.log(`🔇 Evento sin contenido útil para ${from}: se ignora para evitar loop de menú`);
+          console.log(`Evento sin contenido util para ${from}: se ignora para evitar loop de menu`);
           await botStateStore.setUserState(from, sessionState);
           return res.sendStatus(200);
         }
@@ -719,11 +776,11 @@ const receiveMessage = async (req, res) => {
       // Siempre responder con 200 OK
       res.sendStatus(200);
     } else {
-      console.log('⚠️ Evento no reconocido');
+      console.log('Evento no reconocido');
       res.sendStatus(404);
     }
   } catch (error) {
-    console.error('❌ Error procesando webhook:', error);
+    console.error('Error procesando webhook:', error);
     // Responder 200 para evitar reintentos infinitos de Meta
     res.sendStatus(200);
   }
@@ -767,7 +824,6 @@ const sendWelcomeMessage = async (from, context = {}) => {
   }
   
   await sendMessageAndSave(from, welcomeMessage);
-  console.log(`👋 Mensaje de bienvenida enviado a ${from}`);
 };
 
 const handleUserNameInput = async (from, messageBody) => {
@@ -827,11 +883,6 @@ const sendMenuList = async (from, isFollowUp = false) => {
           title: '📄 Pago Anual o Bimestral',
           description: 'Obtener boleto y pagar online'
         },
-        { 
-          id: 'turnos', 
-          title: '🗓️ Consultar Turnos',
-          description: 'Información sobre turnos disponibles'
-        }
       ]
     },
     {
@@ -889,7 +940,6 @@ const sendMenuList = async (from, isFollowUp = false) => {
     });
   }
   
-  console.log(`📋 Lista de menú enviada a ${from} (ID: ${mensajeGuardado.id})`);
 };
 
 const sendButtonReplyAndSave = async (from, body, buttons) => {
@@ -958,19 +1008,19 @@ const sendInteractiveButtonsAndSave = async (from, body, buttons) => {
  * Maneja las opciones del menú principal
  */
 const handleMainMenu = async (from, option) => {
-  const normalizedOption = String(option || '').toLowerCase().trim();
+  const menuKey = resolveMainMenuKey(option);
 
-  if (TEMP_DISABLED_MENU_OPTIONS.has(normalizedOption)) {
+  if (TEMP_DISABLED_MENU_OPTIONS.has(menuKey)) {
     await sendMessageAndSave(
       from,
       '🔒 Esta opción quedó deshabilitada temporalmente. Por favor elegí una de las opciones disponibles del menú actual.'
     );
     await sendMenuList(from, true);
-    console.log(`🔒 Opción temporalmente deshabilitada: ${normalizedOption} | usuario=${from}`);
+    console.log(`🔒 Opción temporalmente deshabilitada: ${menuKey} | usuario=${from}`);
     return;
   }
 
-  switch (option) {
+  switch (menuKey) {
     case '1':
     case 'option_1':
     case 'deuda':
@@ -1217,7 +1267,7 @@ Por favor contactá a un operador para más información.`;
     default:
       // Opción no válida, reenviar solo la lista
       await sendMenuList(from, true);
-      console.log(`⚠️ Opción inválida de ${from}, reenviando menú`);
+      console.log(`⚠️ Opción inválida de ${from} (raw=${String(option)}, menuKey=${menuKey}), reenviando menú`);
       break;
   }
 };
@@ -2034,7 +2084,7 @@ const obtenerPadronDesdeDni = async (dni) => {
   if (!traduccion.success) {
     return {
       success: false,
-      userMessage: traduccion.message || 'No se encontraron padrones para este DNI.'
+      userMessage: traduccion.userMessage || traduccion.message || ACTION_FAILED
     };
   }
 
@@ -2051,7 +2101,7 @@ const obtenerPadronDesdeDni = async (dni) => {
   if (!parsed) {
     return {
       success: false,
-      userMessage: '❌ No se pudo interpretar el padrón devuelto para este DNI.'
+      userMessage: ACTION_FAILED
     };
   }
 
@@ -2097,8 +2147,7 @@ const ejecutarScraper = async (from, dni) => {
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraper:', error);
-    const errorMsg = '❌ Ocurrió un error al consultar la deuda. Por favor intenta más tarde.';
-    await sendMessageAndSave(from, errorMsg);
+    await sendMessageAndSave(from, ACTION_FAILED);
     await sendMenuList(from, true);
   }
 };
@@ -2146,7 +2195,7 @@ const normalizeModoConsultaOption = (option = '') => {
   if (normalized === 'modo_dni' || normalized.includes('por dni')) return 'modo_dni';
   if (normalized === 'modo_padron' || normalized.includes('por servicio')) return 'modo_padron';
   if (normalized === 'volver_menu' || normalized.includes('volver')) return 'volver_menu';
-  return option;
+  return normalized;
 };
 
 const handleDniPadronSelectionChoice = async (from, option) => {
@@ -2327,7 +2376,6 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
       });
     }
     
-    console.log(`✅ Mensaje enviado y guardado: ${telefono} (ID: ${mensajeGuardado.id})`);
     return true;
   } catch (error) {
     console.error('❌ Error en sendMessageAndSave:', error);
@@ -2335,9 +2383,7 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
   }
 };
 
-const buildActionFailedMessage = (actionLabel) => {
-  return `❌ No se pudo ${actionLabel} en este momento.\n\nPor favor intentá nuevamente en unos minutos.`;
-};
+const buildActionFailedMessage = (_actionLabel) => ACTION_FAILED;
 
 const buildTurnoLookupFailedMessage = (inputLabel, detail = '') => {
   const detailLine = detail ? `${detail}\n\n` : '';
@@ -2496,6 +2542,17 @@ const handleModoConsulta = async (from, option) => {
       }
 
       console.log(`📝 Flujo padrón invertido iniciado para ${operacion} de ${from}`);
+    } else {
+      const k = resolveMainMenuKey(option);
+      if (k && MAIN_MENU_ROW_IDS.has(k)) {
+        botState().step = 'MAIN_MENU';
+        await handleMainMenu(from, k);
+        return;
+      }
+      await sendMessageAndSave(
+        from,
+        '⚠️ Elegí *Por DNI* o *Por Servicio* con los botones del mensaje anterior.\n\nSi querés otro trámite, escribí *SALIR* y abrí de nuevo el menú principal.'
+      );
     }
   } catch (error) {
     console.error('❌ Error en handleModoConsulta:', error);
@@ -3252,7 +3309,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         
       } catch (uploadError) {
         console.error('❌ Error al subir PDF a WhatsApp:', uploadError);
-        await sendMessageAndSave(from, '❌ Error al enviar el boleto. Por favor intenta más tarde.');
+        await sendMessageAndSave(from, ACTION_FAILED);
         await sendMenuList(from, true);
         return;
       }
@@ -3280,7 +3337,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         process.env.BASE_URL
         || process.env.PUBLIC_BASE_URL
         || process.env.BACKEND_URL
-        || `http://localhost:${process.env.PORT || 3000}`
+        || `http://localhost:${process.env.PORT || 3003}`
       ).replace(/\/$/, '');
       const redirectLink = (periBole && numeBole)
         ? `${appBaseUrl}/pagar-boleto/${periBole}/${numeBole}`
@@ -4361,7 +4418,9 @@ registerWebhookDeps({
   handleOperatorSurveyResponse,
   handleOpinionChoice,
   handleOpinionText,
-  handleOperatorPostFollowUp
+  handleOperatorPostFollowUp,
+  resolveMainMenuKey,
+  mainMenuRowIds: MAIN_MENU_ROW_IDS
 });
 
 module.exports = {

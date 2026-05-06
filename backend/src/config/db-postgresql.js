@@ -1,5 +1,6 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { Pool } = require('pg');
+const logger = require('../services/logService');
 
 // Nombre de la base de datos objetivo
 const DB_NAME = process.env.DB_NAME || 'irrigacion_bot';

@@ -1,5 +1,6 @@
 const { botState } = require('../../services/botStateContext');
 const { getWebhookDeps } = require('./webhookDeps');
+const logger = require('../../services/logService');
 
 /**
  * Orquestación del flujo conversacional por estado (antes en webhookController).
@@ -9,7 +10,6 @@ module.exports = async function handleUserMessageFlow(from, messageBody, optionI
   const currentState = botState().step;
   const optionToProcess = optionId || messageBody;
 
-  console.log(`🔄 Estado actual de ${from}: ${currentState}`);
 
   if (messageBody === 'btn_descargar_boleto') {
     await d.handleDescargarBoleto(from);
@@ -20,7 +20,6 @@ module.exports = async function handleUserMessageFlow(from, messageBody, optionI
     const changeDniMsg = '📝 Entendido. Por favor escribí el nuevo DNI o CUIT a consultar (sin puntos ni guiones).';
     await d.sendMessageAndSave(from, changeDniMsg);
     botState().step = 'AWAITING_DNI';
-    console.log(`🔄 Usuario ${from} solicita cambiar DNI`);
     return;
   }
 
@@ -79,9 +78,17 @@ module.exports = async function handleUserMessageFlow(from, messageBody, optionI
       await d.handleDniInputBoleto(from, messageBody);
       break;
 
-    case 'AWAITING_MODO_CONSULTA':
+    case 'AWAITING_MODO_CONSULTA': {
+      const candidate = optionToProcess || messageBody;
+      const menuKey = d.resolveMainMenuKey(candidate);
+      if (menuKey && d.mainMenuRowIds.has(menuKey)) {
+        botState().step = 'MAIN_MENU';
+        await d.handleMainMenu(from, menuKey);
+        break;
+      }
       await d.handleModoConsulta(from, optionToProcess);
       break;
+    }
 
     case 'AWAITING_DNI_CHOICE':
       await d.handleDniChoice(from, optionToProcess);
@@ -184,29 +191,29 @@ module.exports = async function handleUserMessageFlow(from, messageBody, optionI
       break;
 
     case 'AWAITING_OPERATOR_CHOICE': {
-      console.log(`🔵 Opción recibida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
+      logger.info(`🔵 Opción recibida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
       if (optionToProcess === 'op_si_operador') {
         const handoff = await d.intentarDerivarOperador(from, 'SCRAPER_ERROR_OPERATOR_CHOICE');
         if (handoff.enEspera) {
           botState().step = 'AWAITING_OPERATOR_ASSIGNMENT';
-          console.log(`👤 Usuario ${from} en espera de operador por error en scraper`);
+          logger.info(`👤 Usuario ${from} en espera de operador por error en scraper`);
         } else if (handoff.fueraHorario) {
           botState().step = 'MAIN_MENU';
-          console.log(`🕒 Fuera de horario de operador para ${from}`);
+          logger.info(`🕒 Fuera de horario de operador para ${from}`);
         } else {
           botState().step = 'MAIN_MENU';
         }
       } else if (optionToProcess === 'op_no_operador') {
         await d.sendMenuList(from, true);
         botState().step = 'MAIN_MENU';
-        console.log(`📋 Usuario ${from} continúa con menú principal después de error`);
+        logger.info(`📋 Usuario ${from} continúa con menú principal después de error`);
       } else if (optionToProcess === 'op_reintentar_dni') {
         const retryMsg = `📝 Ingresá nuevamente tu DNI/CUIT.\n\nPor favor, verificá que el número sea correcto.`;
         await d.sendMessageAndSave(from, retryMsg);
         botState().step = 'AWAITING_DNI';
-        console.log(`🔄 Usuario ${from} reintentando con nuevo DNI`);
+        logger.info(`🔄 Usuario ${from} reintentando con nuevo DNI`);
       } else {
-        console.warn(`⚠️ Opción no reconocida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
+        logger.warn(`⚠️ Opción no reconocida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
         const invalidMsg = '❌ Opción no válida. Por favor, elige una de las opciones disponibles.';
         await d.sendMessageAndSave(from, invalidMsg);
       }

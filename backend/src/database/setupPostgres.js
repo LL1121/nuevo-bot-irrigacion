@@ -1,4 +1,5 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
+require('../services/logService');
 const { Client } = require('pg');
 
 const quoteIdent = (value) => `"${String(value).replace(/"/g, '""')}"`;

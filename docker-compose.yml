@@ -1,68 +1,16 @@
-services:
-  # Backend API Node.js
-  backend:
-    build: ./backend
-      context: .
-      dockerfile: Dockerfile
-    container_name: irrigacion_backend
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      PORT: 3000
-      TZ: America/Argentina/Buenos_Aires
-      
-      # PostgreSQL
-      DB_CLIENT: pg
-      DB_HOST: ${DB_HOST:-db_central}
-      DB_PORT: 5432
-      DB_USER: ${DB_USER:-user_bot_irrigacion}
-      DB_PASSWORD: ${DB_PASSWORD:-l3NDuJOTLs8YFy}
-      DB_NAME: ${DB_NAME:-bot_irrigacion}
-      DB_POOL_MIN: 5
-      DB_POOL_MAX: 20
-      
-      # Meta/WhatsApp
-      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN}
-      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
-      META_APP_SECRET: ${META_APP_SECRET}
-      WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
-      
-      # JWT
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRY: 8h
-      
-      # Redis
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
-      
-      # URLs
-      BASE_URL: ${BASE_URL:-https://api-bot.irrigacionmalargue.net}
-      API_URL: ${API_URL:-https://api-bot.irrigacionmalargue.net/api}
-      WEBHOOK_URL: ${WEBHOOK_URL:-https://api-bot.irrigacionmalargue.net/webhook}
-      FRONTEND_URL: ${FRONTEND_URL:-https://api-bot.irrigacionmalargue.net}
-    volumes:
-      - backend_temp:/app/temp
-      - backend_uploads:/app/uploads
-      - backend_tokens:/app/tokens
-      - backend_logs:/app/logs
-    ports:
-      - "3000:3000"
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - irrigacion_network
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 40s
+# Stack completo: PostgreSQL, Redis, backend (API + Socket.IO), frontend (nginx + SPA).
+#
+# Uso típico:
+#   docker compose up -d --build
+#
+# Puertos en el host (por defecto):
+#   - Frontend: http://localhost:8080
+#   - Backend:  http://localhost:3003
+#
+# El build del frontend inyecta VITE_API_URL / VITE_SOCKET_URL (desde el navegador hacia el host).
+# En servidor con dominio, definí en .env p.ej. VITE_API_URL=https://api.tudominio.com
 
-  # PostgreSQL 15-alpine
+services:
   db:
     image: postgres:15-alpine
     container_name: db_central
@@ -75,7 +23,7 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./backend/scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     networks:
       - irrigacion_network
     healthcheck:
@@ -84,7 +32,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis 7-alpine
   redis:
     image: redis:7-alpine
     container_name: irrigacion_redis
@@ -99,6 +46,86 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: irrigacion_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3003
+      TZ: America/Argentina/Buenos_Aires
+
+      DB_CLIENT: pg
+      DB_HOST: ${DB_HOST:-db_central}
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-user_bot_irrigacion}
+      DB_PASSWORD: ${DB_PASSWORD:-l3NDuJOTLs8YFy}
+      DB_NAME: ${DB_NAME:-bot_irrigacion}
+      DB_POOL_MIN: 5
+      DB_POOL_MAX: 20
+
+      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
+      META_APP_SECRET: ${META_APP_SECRET}
+      WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
+
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRY: 8h
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+
+      BASE_URL: ${BASE_URL:-https://api-bot.irrigacionmalargue.net}
+      API_URL: ${API_URL:-https://api-bot.irrigacionmalargue.net/api}
+      WEBHOOK_URL: ${WEBHOOK_URL:-https://api-bot.irrigacionmalargue.net/webhook}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+    volumes:
+      - backend_temp:/app/temp
+      - backend_uploads:/app/uploads
+      - backend_tokens:/app/tokens
+      - backend_logs:/app/logs
+    ports:
+      - "${BACKEND_PORT:-3003}:3003"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - irrigacion_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3003}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL:-http://localhost:3003}
+    container_name: irrigacion_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - irrigacion_network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 networks:
   irrigacion_network:

@@ -8,7 +8,7 @@
 
 const axios = require('axios');
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3003';
 
 describe('API Endpoints', () => {
   // Skip estos tests si el servidor no está corriendo

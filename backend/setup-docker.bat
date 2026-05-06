@@ -108,8 +108,8 @@ echo ========================================
 echo.
 
 echo Informacion de acceso:
-echo   URL:     http://localhost:3000
-echo   Health:  http://localhost:3000/health
+echo   URL:     http://localhost:3003
+echo   Health:  http://localhost:3003/health
 echo   Redis:   localhost:6379
 echo.
 
@@ -125,7 +125,7 @@ echo Proximos pasos:
 echo   1. Edita .env con tus credenciales
 echo   2. Ejecuta migracion si es necesario
 echo   3. Verifica logs: docker-compose logs -f app
-echo   4. Accede a http://localhost:3000
+echo   4. Accede a http://localhost:3003
 echo.
 
 echo Para deploy en servidor: Ver DOCKER.md

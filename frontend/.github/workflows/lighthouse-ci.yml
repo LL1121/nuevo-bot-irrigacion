@@ -25,8 +25,8 @@ jobs:
       - name: Build project
         run: npm run build
         env:
-          VITE_API_URL: 'http://localhost:3000'
-          VITE_SOCKET_URL: 'http://localhost:3000'
+          VITE_API_URL: 'http://localhost:3003'
+          VITE_SOCKET_URL: 'http://localhost:3003'
       
       - name: Run Lighthouse CI
         uses: treosh/lighthouse-ci-action@v10

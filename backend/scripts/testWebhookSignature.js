@@ -2,7 +2,7 @@
 const crypto = require('crypto');
 const axios = require('axios');
 
-const BASE_URL = process.env.WEBHOOK_TEST_BASE_URL || process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.WEBHOOK_TEST_BASE_URL || process.env.BASE_URL || 'http://localhost:3003';
 const WEBHOOK_PATH = process.env.WEBHOOK_TEST_PATH || '/webhook';
 const WEBHOOK_SECRET = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
 const MODE = String(process.env.WEBHOOK_SIGNATURE_TEST_MODE || 'both').toLowerCase();

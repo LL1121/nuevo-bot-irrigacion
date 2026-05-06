@@ -3,6 +3,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const puppeteer = require('puppeteer');
 const browserPool = require('./browserPool');
+const { ACTION_FAILED } = require('../constants/userFacing');
 
 const BASE_URL_DNI = 'https://autogestion.cloud.irrigacion.gov.ar/dni';
 const BASE_URL_SERVICIO = 'https://autogestion.cloud.irrigacion.gov.ar/servicio';
@@ -260,7 +261,8 @@ async function obtenerDeudaYBoleto(dni) {
         // Último intento falló
         return {
           success: false,
-          error: error.message
+          error: error.message,
+          userMessage: ACTION_FAILED
         };
       }
     }
@@ -340,7 +342,11 @@ async function _scrapeDeudaYBoleto(dni) {
       });
       
       if (noEncontrado) {
-        return { success: false, error: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.' };
+        return {
+          success: false,
+          error: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.',
+          userMessage: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.'
+        };
       }
       
       throw new Error('No se encontraron servicios asociados al DNI');
@@ -549,7 +555,8 @@ async function obtenerSoloBoleto(dni, tipoCuota) {
         // Último intento falló
         return {
           success: false,
-          error: error.message
+          error: error.message,
+          userMessage: ACTION_FAILED
         };
       }
     }
@@ -626,7 +633,11 @@ async function _scrapeSoloBoleto(dni, tipoCuota) {
       });
       
       if (noEncontrado) {
-        return { success: false, error: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.' };
+        return {
+          success: false,
+          error: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.',
+          userMessage: 'No encontramos ese DNI/CUIT en nuestra base de datos. Por favor verifica el número.'
+        };
       }
       
       throw new Error('No se encontraron servicios asociados al DNI');
@@ -742,7 +753,8 @@ async function obtenerDeudaPadron(tipoPadron, datos, tipoOperacion = 'deuda') {
       } else {
         return {
           success: false,
-          error: error.message
+          error: error.message,
+          userMessage: ACTION_FAILED
         };
       }
     }
@@ -881,14 +893,17 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
     });
     
     if (tipoPadron === 'superficial') {
-      // Campos: código de cauce (codigo1), padrón parcial (codigo2)
-      await page.evaluate((codigoCauce, numeroPadron) => {
+      // Campos: código de cauce (codigo1), padrón parcial (codigo2) — alinear con API (4 dígitos)
+      const codigoCauce = String(datos.codigoCauce || '').trim();
+      const numeroPadron = String(datos.numeroPadron || '').trim();
+      const numeroPadronPadded = /^\d+$/.test(numeroPadron) ? numeroPadron.padStart(4, '0') : numeroPadron;
+      await page.evaluate((c1, c2) => {
         const input1 = document.querySelector('input[name="codigo1"]');
         const input2 = document.querySelector('input[name="codigo2"]');
         if (input1) {
           input1.focus();
           input1.value = '';
-          input1.value = codigoCauce;
+          input1.value = c1;
           input1.dispatchEvent(new Event('focus', { bubbles: true }));
           input1.dispatchEvent(new Event('input', { bubbles: true }));
           input1.dispatchEvent(new Event('change', { bubbles: true }));
@@ -898,26 +913,28 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
         if (input2) {
           input2.focus();
           input2.value = '';
-          input2.value = numeroPadron;
+          input2.value = c2;
           input2.dispatchEvent(new Event('focus', { bubbles: true }));
           input2.dispatchEvent(new Event('input', { bubbles: true }));
           input2.dispatchEvent(new Event('change', { bubbles: true }));
           input2.dispatchEvent(new Event('blur', { bubbles: true }));
           input2.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
         }
-      }, datos.codigoCauce, datos.numeroPadron);
-      console.log(`✅ Código de cauce ingresado: ${datos.codigoCauce}`);
-      console.log(`✅ Padrón parcial ingresado: ${datos.numeroPadron}`);
+      }, codigoCauce, numeroPadronPadded);
+      console.log(`✅ Código de cauce ingresado: ${codigoCauce}`);
+      console.log(`✅ Padrón parcial ingresado: ${numeroPadronPadded}`);
       
     } else if (tipoPadron === 'subterraneo') {
-      // Campos: código de departamento (codigo1), N° de pozo (codigo2)
-      await page.evaluate((codigoDpto, numeroPozo) => {
+      const codigoDpto = String(datos.codigoDepartamento || '').trim();
+      const numeroPozoRaw = String(datos.numeroPozo || '').trim();
+      const numeroPozo = /^\d+$/.test(numeroPozoRaw) ? numeroPozoRaw.padStart(4, '0') : numeroPozoRaw;
+      await page.evaluate((d1, d2) => {
         const input1 = document.querySelector('input[name="codigo1"]');
         const input2 = document.querySelector('input[name="codigo2"]');
         if (input1) {
           input1.focus();
           input1.value = '';
-          input1.value = codigoDpto;
+          input1.value = d1;
           input1.dispatchEvent(new Event('focus', { bubbles: true }));
           input1.dispatchEvent(new Event('input', { bubbles: true }));
           input1.dispatchEvent(new Event('change', { bubbles: true }));
@@ -927,16 +944,16 @@ async function _scrapeDeudaYBoletoPadron(tipoPadron, datos, tipoOperacion = 'deu
         if (input2) {
           input2.focus();
           input2.value = '';
-          input2.value = numeroPozo;
+          input2.value = d2;
           input2.dispatchEvent(new Event('focus', { bubbles: true }));
           input2.dispatchEvent(new Event('input', { bubbles: true }));
           input2.dispatchEvent(new Event('change', { bubbles: true }));
           input2.dispatchEvent(new Event('blur', { bubbles: true }));
           input2.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
         }
-      }, datos.codigoDepartamento, datos.numeroPozo);
-      console.log(`✅ Código de departamento ingresado: ${datos.codigoDepartamento}`);
-      console.log(`✅ N° de pozo ingresado: ${datos.numeroPozo}`);
+      }, codigoDpto, numeroPozo);
+      console.log(`✅ Código de departamento ingresado: ${codigoDpto}`);
+      console.log(`✅ N° de pozo ingresado: ${numeroPozo}`);
       
     } else if (tipoPadron === 'contaminacion') {
       // Campo: N° de contaminación (solo codigo1)
@@ -1304,7 +1321,8 @@ async function obtenerBoletoPadron(tipoPadron, datos, tipoCuota) {
       } else {
         return {
           success: false,
-          error: error.message
+          error: error.message,
+          userMessage: ACTION_FAILED
         };
       }
     }
@@ -1949,7 +1967,8 @@ async function obtenerLinkPagoBoleto(tipoPadron, datos, tipoCuota) {
     
     return {
       success: false,
-      error: error.message
+      error: error.message,
+      userMessage: ACTION_FAILED
     };
   }
 }

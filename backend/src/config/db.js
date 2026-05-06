@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { AsyncLocalStorage } = require('async_hooks');
 
 const isPostgres = true;
@@ -9,9 +9,12 @@ function validateCriticalEnvOrExit() {
   const missing = [];
   if (!String(process.env.DB_PASSWORD || '').trim()) missing.push('DB_PASSWORD');
   if (!String(process.env.JWT_SECRET || '').trim()) missing.push('JWT_SECRET');
+  if (!String(process.env.META_ACCESS_TOKEN || '').trim()) missing.push('META_ACCESS_TOKEN');
+  if (!String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim()) missing.push('WHATSAPP_PHONE_NUMBER_ID');
+  
   if (missing.length) {
-    console.error('❌ Variables de entorno obligatorias no definidas:', missing.join(', '));
-    console.error('   Configurá el archivo .env o el entorno antes de iniciar el backend.');
+    console.error('❌ Variables de entorno OBLIGATORIAS faltantes:', missing.join(', '));
+    console.error('👉 Por favor, configurá estas variables en el archivo .env antes de iniciar el sistema.');
     process.exit(1);
   }
 }
@@ -46,7 +49,7 @@ async function initializePostgres() {
   });
 
   pgPool.on('error', (err) => {
-    console.error('❌ Error no previsto en pool PostgreSQL:', err);
+    console.error('Error no previsto en pool PostgreSQL:', err);
   });
 
   const client = await pgPool.connect();
@@ -57,7 +60,7 @@ async function initializePostgres() {
   }
 
   await createPostgresSchema();
-  console.log('✅ Base de datos PostgreSQL inicializada');
+  console.log('Base de datos PostgreSQL inicializada');
   return pgPool;
 }
 

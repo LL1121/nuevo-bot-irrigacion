@@ -369,7 +369,7 @@
 
     <script>
         // Conexión Socket.io
-        const socket = io('http://localhost:3000');
+        const socket = io('http://localhost:3003');
 
         let currentChat = null;
 
@@ -397,7 +397,7 @@
         // Cargar lista de conversaciones
         async function loadChats() {
             try {
-                const response = await fetch('http://localhost:3000/api/chats');
+                const response = await fetch('http://localhost:3003/api/chats');
                 const result = await response.json();
                 
                 if (result.success) {
@@ -440,7 +440,7 @@
             
             // Cargar mensajes del chat
             try {
-                const response = await fetch(`http://localhost:3000/api/messages/${telefono}`);
+                const response = await fetch(`http://localhost:3003/api/messages/${telefono}`);
                 const result = await response.json();
                 
                 if (result.success) {
@@ -458,7 +458,7 @@
                     }
                     
                     // Marcar como leído
-                    await fetch(`http://localhost:3000/api/mark-read/${telefono}`, {
+                    await fetch(`http://localhost:3003/api/mark-read/${telefono}`, {
                         method: 'POST'
                     });
                     
@@ -512,7 +512,7 @@
             if (!mensaje || !currentChat) return;
             
             try {
-                const response = await fetch('http://localhost:3000/api/send', {
+                const response = await fetch('http://localhost:3003/api/send', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -548,7 +548,7 @@
         // Cargar estadísticas
         async function loadStats() {
             try {
-                const response = await fetch('http://localhost:3000/api/stats');
+                const response = await fetch('http://localhost:3003/api/stats');
                 const result = await response.json();
                 
                 if (result.success) {

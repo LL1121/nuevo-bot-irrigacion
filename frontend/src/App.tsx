@@ -13,7 +13,7 @@ import { toast, Toaster } from 'sonner';
 import { env } from './config/env';
 import { setupAxiosInterceptors } from './utils/axiosInterceptor';
 import { auth } from './config/auth';
-import { parseTimestamp, formatMessageTime, formatChatHeaderTime, isSessionExpired, toUTC } from './utils/dateTime';
+import { parseTimestamp, formatMessageTime, formatChatHeaderTime, isSessionExpired } from './utils/dateTime';
 import { sortAndDedupeMessages } from './utils/messageOrder';
 import { appendIncomingMessage, mergeMessageBatches } from './services/messageQueue';
 import { consumePendingByMatch, registerPendingMessage, removePendingMessage } from './services/optimisticUpdates';
@@ -1829,7 +1829,7 @@ const dedupeDisplayMessages = (msgs: ChatMessage[]) => {
               logger.debug('Socket detección de emisor', { emisor: newMsg.emisor, tipo: newMsg.tipo, incomingSent });
             }
             
-            // ✅ DEDUPLICACIÓN CONTENT-BASED:
+            // Deduplicacion basada en contenido:
             // Verificar si el mensaje ya existe usando CONTENIDO como clave, no solo ID.
             // Esto previene duplicados cuando el backend envía IDs en milisegundos cercanos.
             // Clave: phone + emisor + tipo + timestamp_segundo + texto normalizado

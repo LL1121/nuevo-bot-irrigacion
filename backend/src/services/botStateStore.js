@@ -9,9 +9,14 @@ const PROCESSED_TTL_SEC = Number(process.env.BOT_PROCESSED_MSG_TTL_SEC || 300);
 const memoryUserStates = new Map();
 const memoryProcessed = new Set();
 
+/**
+ * Si Redis no está listo, no podemos persistir en cache: usar memoria del proceso.
+ * Antes solo en test/dev; en producción sin Redis el estado nunca se guardaba y cada
+ * mensaje (p. ej. tocar una fila del menú) volvía a START → saludo + lista otra vez.
+ */
 const useMemoryFallback = () => {
   if (isRedisReady()) return false;
-  return process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development';
+  return true;
 };
 
 /**
