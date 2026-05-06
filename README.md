@@ -1,621 +1,163 @@
-# 💧 Bot WhatsApp - Irrigación Malargüe
+# Bot de Atencion por WhatsApp
 
-[![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
-[![Express](https://img.shields.io/badge/Express-4.x-blue)](https://expressjs.com/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue)](https://www.postgresql.org/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](.)
+Sistema de atencion automatizada por WhatsApp con panel de operadores en tiempo real, gestion de deudas y generacion de boletos.
 
-Sistema automatizado de atención al cliente mediante WhatsApp, con panel de operadores en tiempo real, gestión de deudas y scraping inteligente de bases de datos.
+## Caracteristicas principales
 
-**🎯 Dominio**: [chat.irrigacionmalargue.net](https://chat.irrigacionmalargue.net)
+- Bot conversacional con estados y memoria por usuario.
+- Webhook para WhatsApp Cloud API (mensajes de texto e interactivos).
+- Panel web para operadores con actualizacion en tiempo real (Socket.IO).
+- Integracion con PostgreSQL y Redis (cache opcional).
+- Flujo de deuda/boleto con API directa y fallback por scraping.
+- Logging estructurado con archivos rotativos.
 
----
+## Requisitos
 
-## 📋 Tabla de Contenidos
-
-- [Características](#características)
-- [Requisitos](#requisitos)
-- [Quick Start](#quick-start)
-- [Instalación](#instalación)
-- [Configuración](#configuración)
-- [Arquitectura](#arquitectura)
-- [Documentación](#documentación)
-- [Testing](#testing)
-- [Despliegue](#despliegue)
-- [Troubleshooting](#troubleshooting)
-- [Contribuir](#contribuir)
-
----
-
-## 🚀 Características
-
-### 🤖 Bot WhatsApp
-- ✅ Webhook para recibir mensajes de WhatsApp Cloud API
-- ✅ Interactive Messages (listas y botones dinámicos)
-- ✅ State Machine con memoria de conversaciones
-- ✅ Consulta de deudas en tiempo real
-- ✅ Deduplicación automática de mensajes
-- ✅ Soporte para números argentinos
-
-### 📊 Panel de Operadores
-- ✅ Interfaz web en tiempo real (Socket.io)
-- ✅ Vista de todas las conversaciones activas
-- ✅ Historial completo de mensajes
-- ✅ Envío de mensajes desde panel
-- ✅ Notificaciones en tiempo real
-- ✅ Estadísticas y métricas
-
-### ⚡ Performance
-- ✅ Browser pool optimizado (5 browsers)
-- ✅ 50 conexiones PostgreSQL
-- ✅ Redis para caching
-- ✅ 82% mejora vs v1.0
-
-### 🔒 Seguridad
-- ✅ JWT Authentication
-- ✅ Rate limiting
-- ✅ HTTPS/TLS con Let's Encrypt
-- ✅ Validación de webhooks
-- ✅ Secrets management
-
----
-
-## ✅ Requisitos
-
-### Desarrollo Local
 - Node.js 20+
-- npm o yarn
+- npm
 - PostgreSQL 15+
-- Redis 7+ (opcional pero recomendado)
+- Redis 7+ (opcional)
+- Docker y Docker Compose (opcional)
 
-### Producción
-- Docker & Docker Compose
-- PostgreSQL 15+ (servidor)
-- Dominio configurado (chat.irrigacionmalargue.net)
-- Certificado SSL (Let's Encrypt)
-
----
-
-## 🚀 Quick Start
-
-### Desarrollo Local
+## Inicio rapido (local)
 
 ```bash
-# 1. Clonar repositorio
-git clone <repo-url>
-cd bot-irrigacion
-
-# 2. Instalar dependencias
+# 1) Instalar dependencias
 npm install
 
-# 3. Configurar variables
+# 2) Crear archivos de entorno
 cp .env.example .env
-# Editar .env con tus credenciales
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 
-# 4. Ejecutar servidor
+# 3) Ejecutar backend
+cd backend
 npm start
 
-# 5. Ejecutar tests (opcional)
-npm test
-```
-
-El servidor estará disponible en `http://localhost:3000`
-
-### Producción con Docker
-
-```bash
-# 1. Ejecutar setup automático
-bash setup-docker.sh          # Linux/Mac
-setup-docker.bat              # Windows
-
-# O manual:
-docker-compose up -d
-```
-
-Ver [DOCKER.md](./DOCKER.md) para instrucciones detalladas.
-
----
-
-## 📦 Instalación
-
-### Desde Node.js
-
-```bash
-# Instalar dependencias
+# 4) En otra terminal, ejecutar frontend
+cd ../frontend
 npm install
-
-# Verificar instalación
-npm list
-
-# Reinstalar desde cero
-npm ci
+npm run dev
 ```
 
-### Desde Docker
+Entornos locales por defecto:
+
+- Backend: `http://localhost:3003`
+- Frontend: `http://localhost:5174`
+- API: `http://localhost:3003/api`
+
+## Webhook local con ngrok
+
+Para recibir webhooks reales de WhatsApp en local, el backend necesita una URL publica HTTPS.
+
+1. Levanta el backend en `3003`.
+2. En otra terminal, expone el puerto con ngrok:
 
 ```bash
-# Build
-docker build -t bot-irrigacion:latest .
-
-# Run
-docker run -p 3000:3000 bot-irrigacion:latest
+ngrok http 3003
 ```
 
----
-
-## ⚙️ Configuración
-
-### Variables de Entorno (.env)
+3. Copia la URL HTTPS generada (ej: `https://xxxx-xx-xx-xx-xx.ngrok-free.app`).
+4. Configura en `backend/.env`:
 
 ```env
-# ═════════════════════════════════════
-# SERVER
-# ═════════════════════════════════════
-PORT=3000
-NODE_ENV=development
-
-# ═════════════════════════════════════
-# DATABASE - PostgreSQL
-# ═════════════════════════════════════
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=tu_password
-DB_NAME=irrigacion_bot
-
-# ═════════════════════════════════════
-# REDIS
-# ═════════════════════════════════════
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# ═════════════════════════════════════
-# WhatsApp API
-# ═════════════════════════════════════
-WHATSAPP_TOKEN=tu_token_de_meta
-WHATSAPP_PHONE_ID=tu_phone_number_id
-WEBHOOK_VERIFY_TOKEN=tu_token_secreto
-
-# ═════════════════════════════════════
-# JWT
-# ═════════════════════════════════════
-JWT_SECRET=tu_jwt_secret_aqui
-
-# ═════════════════════════════════════
-# URLS
-# ═════════════════════════════════════
-BASE_URL=https://chat.irrigacionmalargue.net
-WEBHOOK_URL=https://chat.irrigacionmalargue.net/webhook
+BASE_URL=https://tu-url-ngrok
+WEBHOOK_URL=https://tu-url-ngrok/webhook
 ```
 
-Para la lista completa, ver `.env.example`
+5. Actualiza la URL del webhook en Meta/WhatsApp Developer para que apunte a esa URL.
 
----
+Nota: cada vez que reinicies ngrok cambia la URL (salvo que uses dominio reservado), por lo que hay que volver a actualizarla.
 
-## 🏗️ Arquitectura
+## Docker Compose
 
-```
-┌─────────────────────────────────────────────┐
-│         🌐 NGINX Reverse Proxy               │
-│    (SSL/TLS, Load Balancing, Cache)          │
-└────────────────┬────────────────────────────┘
-                 │
-     ┌───────────┼───────────┐
-     │           │           │
-     ▼           ▼           ▼
-  WhatsApp   Webhook API  Operators
-  Messages   Endpoints    Panel
-     │           │           │
-     └───────────┼───────────┘
-                 │
-    ┌────────────▼────────────┐
-    │   Express.js Server     │
-    │   (Node.js 20-slim)     │
-    ├─────────────────────────┤
-    │  • Bot Logic            │
-    │  • API Routes           │
-    │  • Webhooks             │
-    │  • Socket.io            │
-    └────────┬────────┬───────┘
-             │        │
-        ┌────▼──┐  ┌──▼─────┐
-        │  PostgreSQL  │  Redis     │
-        │  (50 pool)   │  (7-alpine)│
-        └──────────┘  └──────────┘
-```
-
----
-
-## 📚 Documentación
-
-| Archivo | Contenido |
-|---------|-----------|
-| [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) | 14 endpoints, autenticación, ejemplos |
-| [DOCKER.md](./DOCKER.md) | Despliegue, configuración, troubleshooting |
-| [SECURITY.md](./SECURITY.md) | Seguridad, SSL, secrets management |
-| [docs/PERFORMANCE.md](./docs/PERFORMANCE.md) | Métricas, optimizaciones, benchmarks |
-
----
-
-## 🧪 Testing
+Desde la raiz del proyecto:
 
 ```bash
-# Ejecutar todos los tests
+docker compose up -d --build
+```
+
+Puertos por defecto:
+
+- Frontend: `http://localhost:8080`
+- Backend: `http://localhost:3003`
+
+Variables relevantes de compose:
+
+- `BACKEND_PORT` (default `3003`)
+- `FRONTEND_PORT` (default `8080`)
+- `VITE_API_URL`
+- `VITE_SOCKET_URL`
+
+## Estructura del proyecto
+
+```text
+backend/
+  src/
+    controllers/
+    services/
+    routes/
+    middlewares/
+    handlers/
+  logs/
+frontend/
+  src/
+  public/
+```
+
+## Variables de entorno (resumen)
+
+Backend (`backend/.env`):
+
+- `PORT`
+- `JWT_SECRET`
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
+- `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`
+- `META_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `META_APP_SECRET`, `WEBHOOK_VERIFY_TOKEN`
+- `BASE_URL`, `FRONTEND_URL`
+
+Frontend (`frontend/.env`):
+
+- `VITE_API_URL`
+- `VITE_SOCKET_URL`
+- `VITE_REQUEST_TIMEOUT_MS`
+
+## Logs
+
+Los errores y eventos se guardan en `backend/logs`.
+
+- `backend/logs/error-YYYY-MM-DD-HH.log`
+- `backend/logs/combined-YYYY-MM-DD-HH.log`
+- `backend/logs/errors/<script>-YYYY-MM-DD-HH.log`
+
+Retencion configurable:
+
+- `SCRIPT_ERRORS_RETENTION_DAYS` (default `30`)
+
+## Testing
+
+Backend:
+
+```bash
+cd backend
 npm test
-
-# Tests específicos
-npm test -- --testNamePattern="browser"
-npm test -- --testPathIgnorePatterns=scraper
-
-# Coverage
-npm test -- --coverage
 ```
 
-**Estadísticas**:
-- 70 tests totales
-- 57/57 tests críticos pasando (100%)
-- Browser pool: 5/5 ✅
-- Cache service: 29/29 ✅
-- Message validators: 23/23 ✅
-
----
-
-## 🚀 Despliegue
-
-### Opción 1: Setup Automático (Recomendado)
+Frontend:
 
 ```bash
-# Linux/Mac
-bash setup-docker.sh
-
-# Windows
-setup-docker.bat
+cd frontend
+npm test
 ```
 
-### Opción 2: Manual
+## Despliegue
 
-1. Clonar repositorio
-2. Configurar `.env`
-3. Ejecutar: `docker-compose up -d`
-4. Verificar: `curl https://chat.irrigacionmalargue.net/health`
+1. Configurar variables de entorno para el entorno objetivo.
+2. Construir y levantar servicios (Docker Compose o proceso Node + frontend build).
+3. Verificar health checks y conectividad de webhook.
+4. Revisar logs en `backend/logs`.
 
-Ver [DOCKER.md](./DOCKER.md) para instrucciones completas.
+## Notas
 
----
-
-## 🔧 Troubleshooting
-
-### Puerto 3000 en uso
-```bash
-lsof -i :3000          # Linux/Mac
-Get-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess  # Windows
-```
-
-### PostgreSQL no conecta
-```bash
-# Verificar conexión
-psql -h localhost -U postgres -d irrigacion_bot
-
-# Ver logs
-docker-compose logs db
-```
-
-### Redis no disponible
-El bot continúa funcionando sin Redis (solo sin caching temporal).
-
----
-
-## 🤝 Contribuir
-
-Para contribuir al proyecto:
-
-1. Fork el repositorio
-2. Crear rama: `git checkout -b feature/nueva-caracteristica`
-3. Commit cambios: `git commit -m "feat: describir cambio"`
-4. Push: `git push origin feature/nueva-caracteristica`
-5. Crear Pull Request
-
-Ver [CONTRIBUTING.md](./.github/CONTRIBUTING.md) para detalles.
-
----
-
-## 📞 Soporte
-
-- 📧 Email: soporte@irrigacionmalargue.net
-- 💬 WhatsApp: Envía un mensaje al bot
-- 🐛 Issues: [GitHub Issues](../../issues)
-- 📖 Documentación: [API Docs](./API_DOCUMENTATION.md)
-
----
-
-## 📄 Licencia
-
-MIT License - Ver [LICENSE](LICENSE) para detalles
-
----
-
-**Desarrollado con ❤️ para Irrigación Malargüe**
-DB_NAME=bot_irrigacion_prod
-```
-
-### Base de Datos PostgreSQL
-
-La aplicación usa una base PostgreSQL dedicada. El esquema se crea con:
-
-```bash
-npm run setup-db
-```
-
-Ver el detalle completo de tablas y relaciones en [ESQUEMA_BD.md](ESQUEMA_BD.md).
-
-## 🎯 Uso
-
-### Desarrollo (Backend + Frontend por separado)
-
-**Terminal 1 - Backend:**
-```bash
-npm start
-```
-
-**Terminal 2 - Frontend:**
-```bash
-cd Frontend
-npm install
-npm run dev
-```
-
-- Backend: `http://localhost:3000`
-- Frontend: `http://localhost:5173`
-- API: `http://localhost:3000/api`
-- Socket.io: `ws://localhost:3000`
-
-### Producción
-
-```bash
-# Build del frontend
-cd Frontend
-npm run build
-
-# Iniciar servidor (sirve API + Frontend)
-cd ..
-npm start
-```
-
-Todo en: `http://localhost:3000`
-
-### Endpoints disponibles
-
-#### Webhook WhatsApp
-- **GET** `/webhook` - Verificación del webhook
-- **POST** `/webhook` - Recepción de mensajes
-
-#### API del Panel
-- **GET** `/api/chats` - Lista de conversaciones
-- **GET** `/api/messages/:telefono` - Mensajes de una conversación
-- **POST** `/api/send` - Enviar mensaje desde el panel
-- **POST** `/api/mark-read/:telefono` - Marcar conversación como leída
-- **GET** `/api/stats` - Estadísticas generales
-- **GET** `/api/health` - Estado del servidor
-
-### Panel de Operadores
-
-**Desarrollo:**
-```bash
-cd Frontend
-npm run dev
-# Abre: http://localhost:5173
-```
-
-**Producción:**
-```bash
-# Acceder al panel servido por el backend
-http://localhost:3000
-```
-
-## 🔧 Arquitectura
-
-```
-bot-irrigacion/
-├── Frontend/                         # Proyecto React + Vite
-│   ├── src/
-│   │   ├── config.js                # Configuración de URLs del backend
-│   │   └── ...                      # Componentes React
-│   ├── .env                         # Variables de entorno del frontend
-│   └── vite.config.js               # Configuración de Vite
-├── src/
-│   ├── index.js                      # Servidor Express + Socket.io
-│   ├── config/
-│   │   └── db.js                     # Conexión PostgreSQL y esquema
-│   ├── controllers/
-│   │   ├── webhookController.js      # Lógica del bot (state machine)
-│   │   └── apiController.js          # Controladores de API REST
-│   ├── services/
-│   │   ├── whatsappService.js        # Envío de mensajes WhatsApp
-│   │   ├── clienteService.js         # Consultas y estado de clientes
-│   │   └── mensajeService.js         # Persistencia de mensajes
-│   └── routes/
-│       ├── webhookRoutes.js          # Rutas del webhook
-│       └── apiRoutes.js              # Rutas de la API
-├── database/
-│   ├── setup.sql                     # Esquema de regantes
-│   └── schema_mensajes.sql           # Esquema de mensajes
-└── .env                              # Variables de entorno del backend
-```
-
-## 🤖 Flujo del Bot
-
-### Estado: START
-- Mensaje de bienvenida institucional
-- Envío de menú principal con 4 opciones
-
-### Estado: MAIN_MENU
-1. **📍 Ubicación y Horarios** - Información de oficinas
-2. **📋 Empadronamiento** - Requisitos para registro
-3. **🔐 Soy Regante (Login)** - Acceso con número de padrón
-4. **👤 Hablar con Operador** - Derivación a atención humana
-
-### Estado: AWAITING_PADRON
-- Validación con RegEx
-- Consulta a base de datos PostgreSQL
-- Autenticación con datos del regante
-
-### Estado: AUTH_MENU
-- **💰 Consultar deuda** - Estado de cuenta
-- **🌾 Derechos de riego** - Información de hectáreas y cultivo
-- **📅 Solicitar turno** - Registro de turno de riego
-- **👤 Contactar Operador** - Derivación
-- **🚪 Salir** - Cerrar sesión
-
-## 💾 Base de Datos
-
-### Tabla: regantes
-```sql
-- padron (VARCHAR PRIMARY KEY)
-- nombre (VARCHAR)
-- deuda (DECIMAL)
-- estado (VARCHAR)
-- hectareas (DECIMAL)
-- cultivo (VARCHAR)
-- turno (VARCHAR)
-```
-
-### Tabla: mensajes
-```sql
-- id (INT AUTO_INCREMENT PRIMARY KEY)
-- telefono (VARCHAR)
-- padron (VARCHAR NULLABLE)
-- remitente (ENUM: 'bot', 'cliente', 'operador')
-- contenido (TEXT)
-- timestamp (DATETIME)
-- leido (BOOLEAN)
-```
-
-### Tabla: conversaciones
-```sql
-- telefono (VARCHAR PRIMARY KEY)
-- nombre_cliente (VARCHAR)
-- padron (VARCHAR NULLABLE)
-- estado (ENUM: 'activa', 'cerrada')
-- ultimo_mensaje (TEXT)
-- mensajes_no_leidos (INT)
-- ultima_actividad (DATETIME)
-```
-
-## 🔄 Socket.io Events
-
-### Cliente → Servidor
-- `connection` - Cliente conectado
-- `disconnect` - Cliente desconectado
-
-### Servidor → Cliente
-- `nuevo_mensaje` - Nuevo mensaje recibido
-  ```json
-  {
-    "telefono": "5491234567890",
-    "mensaje": "Hola",
-    "remitente": "cliente",
-    "timestamp": "2024-12-20T10:30:00.000Z"
-  }
-  ```
-
-## 🐛 Solución de Problemas
-
-### Error: "Cannot connect to PostgreSQL"
-- Verificar que PostgreSQL esté corriendo
-- Revisar credenciales en `.env`
-- Ejecutar `npm run setup-db`
-
-### Error: "#131030" (WhatsApp)
-- Verificar que el número tenga formato correcto
-- El parche de Argentina convierte `549` → `54`
-
-### Mensajes duplicados
-- El sistema usa deduplicación con TTL de 5 minutos
-- Verificar que `processedMessageIds` esté funcionando
-
-### Panel no carga conversaciones
-- Verificar que Socket.io esté conectado (consola del navegador)
-- Revisar que las tablas `mensajes` y `conversaciones` existan
-- Comprobar que el endpoint `/api/chats` responda
-
-## 📝 Próximas Mejoras
-
-- [ ] Autenticación de operadores con JWT
-- [ ] Sistema de asignación de conversaciones
-- [ ] Notificaciones push en el panel
-- [ ] Exportación de historial de mensajes
-- [ ] Dashboard con métricas de atención
-- [ ] Integración con CRM externo
-
-## � Gestión de Secretos
-
-### GitHub Secrets
-
-Para CI/CD y producción, todos los secretos deben estar en GitHub Secrets:
-
-```bash
-# Listar secretos existentes
-gh secret list
-
-# Agregar un secreto
-gh secret set WHATSAPP_TOKEN
-
-# Ver documentación completa
-cat docs/GITHUB_SECRETS_SETUP.md
-```
-
-**Secretos requeridos:**
-- `WHATSAPP_TOKEN` - Token de Meta WhatsApp API
-- `WEBHOOK_APP_SECRET` - App Secret de Meta para validar webhooks
-- `JWT_SECRET` - Secreto para firmar tokens JWT
-- `DB_CLIENT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Credenciales de PostgreSQL
-- `SENTRY_DSN` (opcional) - DSN de Sentry para monitoreo
-- `REDIS_URL` (opcional) - URL de conexión a Redis
-
-### Rotación de Secretos
-
-Usa el script automatizado para rotar secretos de forma segura:
-
-```bash
-# Rotar JWT_SECRET
-node scripts/rotate_secrets.js --type=jwt
-
-# Rotar WHATSAPP_TOKEN
-node scripts/rotate_secrets.js --type=whatsapp
-
-# Rotar WEBHOOK_APP_SECRET
-node scripts/rotate_secrets.js --type=webhook
-
-# Rotar DB_PASSWORD
-node scripts/rotate_secrets.js --type=db
-
-# Rotar todos (interactive)
-node scripts/rotate_secrets.js --type=all
-```
-
-**Frecuencias recomendadas:**
-- `WHATSAPP_TOKEN`: Cada 60-90 días
-- `WEBHOOK_APP_SECRET`: Cada 90 días
-- `JWT_SECRET`: Cada 180 días (invalida todos los tokens)
-- `DB_PASSWORD`: Cada 90 días
-
-Ver procedimientos detallados en [docs/SECRET_ROTATION.md](docs/SECRET_ROTATION.md).
-
-### Seguridad
-
-- ❌ **NUNCA** commits secretos en el código
-- ❌ **NUNCA** compartas secretos por chat/email
-- ✅ Usa `.env` solo para desarrollo local
-- ✅ Usa GitHub Secrets o Vault para producción
-- ✅ Rota secretos regularmente
-- ✅ Revisa logs de audit
-
-## �📄 Licencia
-
-Proyecto desarrollado para la Jefatura de Zona de Riego - Malargüe, Mendoza.
-
----
-
-**Desarrollado con ❤️ por GitHub Copilot**
+- Turnos se encuentra temporalmente deshabilitado en el menu principal.
+- No subir claves, certificados ni archivos temporales (PDFs/keys) al repositorio.
