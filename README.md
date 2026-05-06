@@ -1,5 +1,11 @@
 # Bot WhatsApp (panel + API)
 
+[![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
+[![Express](https://img.shields.io/badge/Express-4.x-blue)](https://expressjs.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
 Monorepo con backend Node.js (Express, Socket.IO, WhatsApp Cloud API), frontend React (Vite) y stack Docker (PostgreSQL, Redis).
 
 ## Requisitos
