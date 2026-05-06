@@ -26,7 +26,7 @@ RUN apk add --no-cache \
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=3003
 ENV TZ=America/Argentina/Buenos_Aires
 
 # Crear directorio de trabajo
@@ -55,11 +55,11 @@ RUN addgroup -g 1001 -S nodejs && \
 USER nodejs
 
 # Exponer puerto
-EXPOSE 3000
+EXPOSE 3003
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+    CMD node -e "require('http').get('http://localhost:3003/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 # Comando de inicio
 CMD ["node", "src/index.js"]

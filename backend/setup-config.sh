@@ -77,7 +77,7 @@ print_success "Archivo .env creado"
 print_header "🔧 CONFIGURACIÓN DE SERVIDOR"
 
 NODE_ENV=$(read_input "Ambiente (development/production)" "production")
-PORT=$(read_input "Puerto" "3000")
+PORT=$(read_input "Puerto" "3003")
 BASE_URL=$(read_input "URL base" "https://chat.irrigacionmalargue.net")
 
 # POSTGRESQL
@@ -254,6 +254,6 @@ echo -e "\n3. Iniciar servidor:"
 echo "   npm start"
 
 echo -e "\n4. Verificar health:"
-echo "   curl http://localhost:3000/health"
+echo "   curl http://localhost:3003/health"
 
 echo -e "\n${GREEN}¡Configuración completada! 🎉${NC}\n"

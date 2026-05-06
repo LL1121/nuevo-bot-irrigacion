@@ -68,7 +68,7 @@ router.get('/health/detailed', verifyToken, async (req, res) => {
         env: process.env.NODE_ENV || 'development'
       },
       config: {
-        port: process.env.PORT || 3000,
+        port: process.env.PORT || 3003,
         databaseName: process.env.DB_NAME || 'irrigacion_bot',
         whatsappApiVersion: process.env.WHATSAPP_API_VERSION || 'v21.0',
         jwtExpiry: process.env.JWT_EXPIRY || '8h',

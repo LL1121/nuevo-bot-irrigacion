@@ -38,7 +38,7 @@ echo ═════════════════════════
 echo.
 
 set /p NODE_ENV="→ Ambiente (development/production) [production]: " || set NODE_ENV=production
-set /p PORT="→ Puerto [3000]: " || set PORT=3000
+set /p PORT="→ Puerto [3003]: " || set PORT=3003
 set /p BASE_URL="→ URL base [https://chat.irrigacionmalargue.net]: " || set BASE_URL=https://chat.irrigacionmalargue.net
 
 REM POSTGRESQL
@@ -251,7 +251,7 @@ echo    npm start
 echo.
 
 echo 4. Verificar health:
-echo    curl http://localhost:3000/health
+echo    curl http://localhost:3003/health
 echo.
 
 echo ¡Configuración completada! 🎉

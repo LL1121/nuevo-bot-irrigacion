@@ -20,7 +20,7 @@ export const decodeJWT = (token: string): JWTPayload | null => {
     
     const parts = token.split('.');
     if (parts.length !== 3) {
-      console.warn('⚠️ Token JWT inválido (no tiene 3 partes)');
+      console.warn('Token JWT invalido (no tiene 3 partes)');
       return null;
     }
 
@@ -32,7 +32,7 @@ export const decodeJWT = (token: string): JWTPayload | null => {
     
     return JSON.parse(decoded);
   } catch (error) {
-    console.error('❌ Error decodificando JWT:', error);
+    console.error('Error decodificando JWT:', error);
     return null;
   }
 };

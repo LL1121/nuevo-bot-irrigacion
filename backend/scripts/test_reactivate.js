@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3003';
 const OPERATOR_USERNAME = process.env.OPERATOR_USERNAME || 'admin';
 const OPERATOR_PASSWORD = process.env.OPERATOR_PASSWORD;
 const TARGET_PHONE = process.env.TARGET_PHONE || '5492614666411';

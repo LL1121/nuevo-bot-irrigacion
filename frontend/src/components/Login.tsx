@@ -3,6 +3,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import axios from 'axios';
 import { env } from '../config/env';
 import { auth } from '../config/auth';
+import { logger } from '../utils/logger';
 import SentryTest from './SentryTest';
 
 interface LoginProps {
@@ -35,7 +36,7 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
         username,
         password
       });
-      console.log('🔑 Respuesta login:', response.data);
+      logger.debug('Login response received', { success: response.data.success });
 
       if (response.data.success && response.data.token) {
         // Guardar el access token
@@ -44,29 +45,31 @@ export default function Login({ onLoginSuccess, theme, darkMode }: LoginProps) {
         // Guardar el refresh token (si lo proporciona el backend)
         if (response.data.refreshToken) {
           auth.setRefreshToken(response.data.refreshToken);
-          console.log('🔄 Refresh token guardado');
+          logger.debug('Refresh token stored');
         }
         
         // Guardar información del operador
         if (response.data.operador) {
-          localStorage.setItem(env.operadorKey, JSON.stringify(response.data.operador));
+          auth.setOperador(response.data.operador);
         }
         
-        console.log('✅ Login exitoso:', response.data.operador?.nombre || response.data.operador?.email, 'token:', response.data.token?.slice(0, 20) + '...');
+        logger.debug('Login success', {
+          operador: response.data.operador?.nombre || response.data.operador?.email
+        });
         onLoginSuccess();
       } else {
         setError(response.data?.message || 'Error al iniciar sesión (token no recibido)');
       }
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
-        console.error('Error de login:', err.response?.data || err);
+        logger.error(err, { phase: 'login', detail: err.response?.data });
         const backendMessage =
           err.response?.data && typeof err.response.data === 'object' && 'message' in err.response.data
             ? String((err.response.data as { message?: unknown }).message || '')
             : '';
         setError(backendMessage || 'Error al iniciar sesión. Verifica tus credenciales.');
       } else {
-        console.error('Error de login:', err);
+        logger.error(err, { phase: 'login' });
         setError('Error al iniciar sesión. Verifica tus credenciales.');
       }
     } finally {

@@ -71,7 +71,7 @@ export function parseTimestamp(value: unknown): dayjs.Dayjs {
   }
 
   // Fallback: ahora
-  console.warn('⚠️ No se pudo parsear timestamp:', value);
+  console.warn('No se pudo parsear timestamp:', value);
   return dayjs();
 }
 

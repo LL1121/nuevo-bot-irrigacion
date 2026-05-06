@@ -15,6 +15,12 @@ RUN npm ci
 # Copiar código fuente
 COPY . .
 
+# URLs que ve el navegador (host). Override con build.args en docker-compose.
+ARG VITE_API_URL=http://localhost:3003
+ARG VITE_SOCKET_URL=http://localhost:3003
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_SOCKET_URL=$VITE_SOCKET_URL
+
 # Construir la aplicación para producción
 RUN npm run build
 
@@ -22,6 +28,9 @@ RUN npm run build
 # Stage 2: Production Stage
 # ================================
 FROM nginx:alpine
+
+# wget: healthcheck del contenedor (nginx:alpine no siempre lo trae)
+RUN apk add --no-cache wget
 
 # Limpiar configuración default y copiar la nuestra
 RUN rm -f /etc/nginx/conf.d/default.conf

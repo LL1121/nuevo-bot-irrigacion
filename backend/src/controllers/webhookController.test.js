@@ -47,9 +47,11 @@ const {
     handleOpinionChoice,
     handleOpinionText,
     handleOperatorPostFollowUp,
-    userStates,
+    runBotStateSession,
   }
 } = require('./webhookController');
+
+const botStateStore = require('../services/botStateStore');
 
 const TEST_PHONE = '5491112345678';
 
@@ -178,11 +180,13 @@ describe('isLikelyValidPersonName', () => {
 describe('handleOperatorSurveyResponse', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    userStates[TEST_PHONE] = { step: 'OPERATOR_SURVEY' };
+    botStateStore._testClearAll();
   });
 
   it('envía mensaje de error si la opción no es válida', async () => {
-    await handleOperatorSurveyResponse(TEST_PHONE, 'opcion_invalida');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPERATOR_SURVEY' }, async () => {
+      await handleOperatorSurveyResponse(TEST_PHONE, 'opcion_invalida');
+    });
     expect(whatsappService.sendMessage).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('Por favor elegí una opción')
@@ -190,12 +194,13 @@ describe('handleOperatorSurveyResponse', () => {
   });
 
   it('acepta calificación válida (op_satisfaccion_3) y pregunta por opinión', async () => {
-    await handleOperatorSurveyResponse(TEST_PHONE, 'op_satisfaccion_3');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPERATOR_SURVEY' }, async () => {
+      await handleOperatorSurveyResponse(TEST_PHONE, 'op_satisfaccion_3');
+    });
     expect(clienteService.actualizarEstadoConversacion).toHaveBeenCalledWith(
       TEST_PHONE,
-      'FOLLOWUP_POST_OPERADOR'
+      'OPINION_POST_OPERADOR'
     );
-    // Debe preguntar si quiere dejar opinión
     expect(whatsappService.sendButtonReply).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('opinión'),
@@ -207,8 +212,10 @@ describe('handleOperatorSurveyResponse', () => {
   });
 
   it('acepta calificación 5 estrellas', async () => {
-    await handleOperatorSurveyResponse(TEST_PHONE, 'op_satisfaccion_5');
-    expect(clienteService.actualizarEstadoConversacion).toHaveBeenCalled();
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPERATOR_SURVEY' }, async () => {
+      await handleOperatorSurveyResponse(TEST_PHONE, 'op_satisfaccion_5');
+      expect(clienteService.actualizarEstadoConversacion).toHaveBeenCalled();
+    });
   });
 });
 
@@ -217,11 +224,13 @@ describe('handleOperatorSurveyResponse', () => {
 describe('handleOpinionChoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    userStates[TEST_PHONE] = { step: 'AWAITING_OPINION_CHOICE' };
+    botStateStore._testClearAll();
   });
 
   it('op_opinion_si: pide que escriba la opinión', async () => {
-    await handleOpinionChoice(TEST_PHONE, 'op_opinion_si');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPINION_CHOICE' }, async () => {
+      await handleOpinionChoice(TEST_PHONE, 'op_opinion_si');
+    });
     expect(whatsappService.sendMessage).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('opinión')
@@ -229,7 +238,9 @@ describe('handleOpinionChoice', () => {
   });
 
   it('op_opinion_no: pregunta si necesita más ayuda', async () => {
-    await handleOpinionChoice(TEST_PHONE, 'op_opinion_no');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPINION_CHOICE' }, async () => {
+      await handleOpinionChoice(TEST_PHONE, 'op_opinion_no');
+    });
     expect(whatsappService.sendButtonReply).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.any(String),
@@ -241,7 +252,9 @@ describe('handleOpinionChoice', () => {
   });
 
   it('opción inválida: pide elegir Sí o No', async () => {
-    await handleOpinionChoice(TEST_PHONE, 'algo_random');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPINION_CHOICE' }, async () => {
+      await handleOpinionChoice(TEST_PHONE, 'algo_random');
+    });
     expect(whatsappService.sendMessage).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('Sí')
@@ -254,16 +267,17 @@ describe('handleOpinionChoice', () => {
 describe('handleOpinionText', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    userStates[TEST_PHONE] = { step: 'AWAITING_OPINION_TEXT' };
+    botStateStore._testClearAll();
   });
 
   it('texto vacío: pide que escriba la opinión', async () => {
-    await handleOpinionText(TEST_PHONE, '   ');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPINION_TEXT' }, async () => {
+      await handleOpinionText(TEST_PHONE, '   ');
+    });
     expect(whatsappService.sendMessage).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('opinión')
     );
-    // guardarMensaje se llama desde sendMessageAndSave, pero no para guardar la opinión
     const opinionCalls = mensajeService.guardarMensaje.mock.calls.filter(
       (call) => call[0]?.cuerpo?.includes('[OPINIÓN')
     );
@@ -271,19 +285,18 @@ describe('handleOpinionText', () => {
   });
 
   it('texto válido: guarda opinión, agradece y pregunta si necesita más', async () => {
-    await handleOpinionText(TEST_PHONE, 'Excelente atención');
-    // Debe guardar la opinión como mensaje de tipo especial
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPINION_TEXT' }, async () => {
+      await handleOpinionText(TEST_PHONE, 'Excelente atención');
+    });
     const opinionCall = mensajeService.guardarMensaje.mock.calls.find(
       (call) => call[0]?.cuerpo?.includes('Excelente atención')
     );
     expect(opinionCall).toBeDefined();
     expect(opinionCall[0].telefono).toBe(TEST_PHONE);
-    // Debe agradecer
     expect(whatsappService.sendMessage).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('mejorar')
     );
-    // Debe preguntar si necesita más ayuda
     expect(whatsappService.sendButtonReply).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.any(String),
@@ -299,11 +312,13 @@ describe('handleOpinionText', () => {
 describe('handleOperatorPostFollowUp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    userStates[TEST_PHONE] = { step: 'AWAITING_OPERATOR_FOLLOWUP' };
+    botStateStore._testClearAll();
   });
 
   it('op_mas_ayuda_no: activa bot y manda despedida', async () => {
-    await handleOperatorPostFollowUp(TEST_PHONE, 'op_mas_ayuda_no');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPERATOR_FOLLOWUP' }, async () => {
+      await handleOperatorPostFollowUp(TEST_PHONE, 'op_mas_ayuda_no');
+    });
     expect(clienteService.actualizarEstadoConversacion).toHaveBeenCalledWith(
       TEST_PHONE,
       'BOT'
@@ -315,7 +330,9 @@ describe('handleOperatorPostFollowUp', () => {
   });
 
   it('opción inválida: pide elegir Sí o No', async () => {
-    await handleOperatorPostFollowUp(TEST_PHONE, 'algo_raro');
+    await runBotStateSession(TEST_PHONE, { step: 'AWAITING_OPERATOR_FOLLOWUP' }, async () => {
+      await handleOperatorPostFollowUp(TEST_PHONE, 'algo_raro');
+    });
     expect(whatsappService.sendMessage).toHaveBeenCalledWith(
       TEST_PHONE,
       expect.stringContaining('Sí')

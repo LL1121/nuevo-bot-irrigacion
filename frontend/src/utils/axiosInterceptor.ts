@@ -8,6 +8,7 @@ import { authConfig } from '../config/authConfig';
 import { auth } from '../config/auth';
 import { isTokenExpiringSoon, isTokenValid } from './jwt';
 import { env } from '../config/env';
+import { sensitiveStorage } from './sensitiveStorage';
 import { logger, captureException } from './logger';
 
 type RetryableConfig = NonNullable<AxiosError['config']> & {
@@ -77,10 +78,10 @@ const addRefreshSubscriber = (callback: (token: string) => void) => {
  */
 const refreshAccessToken = async (): Promise<string | null> => {
   try {
-    const refreshToken = localStorage.getItem(authConfig.storage.refreshToken);
+    const refreshToken = sensitiveStorage.getRefreshToken();
     
     if (!refreshToken) {
-      logger.warn('⚠️ No hay refreshToken disponible');
+      logger.warn('No hay refreshToken disponible');
       return null;
     }
 
@@ -102,10 +103,10 @@ const refreshAccessToken = async (): Promise<string | null> => {
       // Actualizar expiración si viene en la respuesta
       if (response.data?.expiresIn) {
         const expiresAt = Date.now() + (response.data.expiresIn * 1000);
-        localStorage.setItem(authConfig.storage.tokenExpiresAt, expiresAt.toString());
+        sensitiveStorage.setTokenExpiresAt(expiresAt.toString());
       }
 
-      logger.info('✅ Token refrescado correctamente');
+      logger.info('Token refrescado correctamente');
       return newToken;
     }
   } catch (error) {
@@ -145,7 +146,7 @@ export const setupAxiosInterceptors = (axiosInstance: AxiosInstance) => {
       // Si el token expira pronto, refrescarlo ahora
       if (token && isTokenExpiringSoon(token, authConfig.tokens.refreshThresholdMs)) {
         if (env.enableLogging) {
-          console.log('🔄 Token expira pronto, refrescando...');
+          logger.debug('Token expira pronto, refrescando...');
         }
         
         if (!isRefreshing) {

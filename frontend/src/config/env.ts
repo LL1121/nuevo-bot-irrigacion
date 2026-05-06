@@ -5,8 +5,8 @@
 
 export const env = {
   // API & Socket
-  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:3000',
-  socketUrl: import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000',
+  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:3003',
+  socketUrl: import.meta.env.VITE_SOCKET_URL || 'http://localhost:3003',
 
   // Auth
   tokenKey: import.meta.env.VITE_TOKEN_KEY || 'token',
@@ -42,15 +42,4 @@ if (env.socketUrl.endsWith('/')) {
   env.socketUrl = env.socketUrl.slice(0, -1);
 }
 
-// Log config en desarrollo
-if (env.isDevelopment && env.enableLogging) {
-  console.log('📋 Configuración cargada:', {
-    apiUrl: env.apiUrl,
-    socketUrl: env.socketUrl,
-    enableSentry: env.enableSentry,
-    sessionTimeoutMs: env.sessionTimeoutMs,
-    messageCacheMaxChats: env.messageCacheMaxChats,
-    messageCacheMaxMessagesPerChat: env.messageCacheMaxMessagesPerChat,
-    messageCacheTtlMs: env.messageCacheTtlMs
-  });
-}
+// Evitar logs ruidosos de configuracion en consola de frontend.

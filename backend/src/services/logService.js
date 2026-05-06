@@ -1,4 +1,5 @@
 const winston = require('winston');
+const DailyRotateFile = require('winston-daily-rotate-file');
 const path = require('path');
 const fs = require('fs');
 
@@ -12,50 +13,42 @@ const logsDir = path.join(__dirname, '../../logs');
 if (!fs.existsSync(logsDir)) {
   fs.mkdirSync(logsDir, { recursive: true });
 }
+const scriptErrorsDir = path.join(logsDir, 'errors');
+if (!fs.existsSync(scriptErrorsDir)) {
+  fs.mkdirSync(scriptErrorsDir, { recursive: true });
+}
+const SCRIPT_ERRORS_RETENTION_DAYS = Number(process.env.SCRIPT_ERRORS_RETENTION_DAYS || 30);
+let lastScriptErrorsCleanup = 0;
 
 /**
  * Configuración de transports (salidas) de Winston
  */
 const transports = [
   // ERROR: Solo errores en archivo separado
-  new winston.transports.File({
-    filename: path.join(logsDir, 'error.log'),
+  new DailyRotateFile({
+    filename: path.join(logsDir, 'error-%DATE%.log'),
+    datePattern: 'YYYY-MM-DD-HH',
     level: 'error',
     format: winston.format.combine(
       winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
       winston.format.json()
     ),
-    maxsize: 5242880, // 5MB
-    maxFiles: 30 // 30 días
+    maxSize: '5m',
+    maxFiles: '30d'
   }),
 
   // COMBINADO: Todos los niveles en un archivo principal
-  new winston.transports.File({
-    filename: path.join(logsDir, 'combined.log'),
+  new DailyRotateFile({
+    filename: path.join(logsDir, 'combined-%DATE%.log'),
+    datePattern: 'YYYY-MM-DD-HH',
     format: winston.format.combine(
       winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
       winston.format.json()
     ),
-    maxsize: 5242880, // 5MB
-    maxFiles: 60 // 60 días
+    maxSize: '5m',
+    maxFiles: '60d'
   }),
 
-  // CONSOLE: Salida a terminal (solo en desarrollo)
-  ...(process.env.NODE_ENV !== 'production' ? [
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        winston.format.colorize(),
-        winston.format.printf(({ timestamp, level, message, ...metadata }) => {
-          let meta = '';
-          if (Object.keys(metadata).length > 0) {
-            meta = ` ${JSON.stringify(metadata)}`;
-          }
-          return `${timestamp} [${level}]: ${message}${meta}`;
-        })
-      )
-    })
-  ] : [])
 ];
 
 /**
@@ -110,6 +103,83 @@ const logBuffer = {
   }
 };
 
+const appendScriptError = (scriptName, message, metadata = {}) => {
+  try {
+    const nowMs = Date.now();
+    if (nowMs - lastScriptErrorsCleanup > 60 * 60 * 1000) {
+      lastScriptErrorsCleanup = nowMs;
+      const keepMs = Math.max(1, SCRIPT_ERRORS_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
+      fs.readdir(scriptErrorsDir, (err, files) => {
+        if (err || !Array.isArray(files)) return;
+        files.forEach((fileName) => {
+          const filePath = path.join(scriptErrorsDir, fileName);
+          fs.stat(filePath, (statErr, stat) => {
+            if (statErr || !stat.isFile()) return;
+            if (nowMs - stat.mtimeMs > keepMs) {
+              fs.unlink(filePath, () => {});
+            }
+          });
+        });
+      });
+    }
+
+    const safeName = String(scriptName || 'unknown')
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .slice(0, 100);
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const target = path.join(scriptErrorsDir, `${safeName}-${yyyy}-${mm}-${dd}-${hh}.log`);
+    const line = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'error',
+      message,
+      ...metadata
+    }) + '\n';
+    fs.appendFile(target, line, () => {});
+  } catch (_) {
+    // ignore file append failures
+  }
+};
+
+const extractCallerScriptFromStack = (stack = '') => {
+  const lines = String(stack || '').split('\n');
+  for (const raw of lines) {
+    const line = raw.trim();
+    const match = line.match(/\((.*?):\d+:\d+\)$/) || line.match(/at (.*?):\d+:\d+$/);
+    if (!match) continue;
+    const filePath = match[1];
+    if (!filePath || filePath.includes('logService.js') || filePath.includes('node:internal')) continue;
+    return path.basename(filePath, path.extname(filePath));
+  }
+  return 'unknown';
+};
+
+let consoleErrorPatched = false;
+const patchConsoleErrorToFile = () => {
+  if (consoleErrorPatched) return;
+  consoleErrorPatched = true;
+  const originalError = console.error.bind(console);
+  console.error = (...args) => {
+    try {
+      const rendered = args.map((a) => {
+        if (a instanceof Error) return `${a.message}\n${a.stack || ''}`.trim();
+        if (typeof a === 'string') return a;
+        try { return JSON.stringify(a); } catch { return String(a); }
+      }).join(' ');
+      const stack = new Error().stack || '';
+      const script = extractCallerScriptFromStack(stack);
+      appendScriptError(script, rendered);
+      logger.error(rendered, { script });
+    } catch (_) {
+      // fallback to original only if logger path fails unexpectedly
+      originalError(...args);
+    }
+  };
+};
+
 // Flush remaining logs on exit
 process.on('exit', () => {
   logBuffer.flush();
@@ -121,6 +191,7 @@ process.on('exit', () => {
  * @param {object} metadata - Datos adicionales (usuario, telefono, etc)
  */
 const error = (message, metadata = {}) => {
+  appendScriptError(metadata.script || 'app', message, metadata);
   logBuffer.add('error', message, metadata);
 };
 
@@ -221,6 +292,8 @@ const getLogger = () => {
   return logger;
 };
 
+patchConsoleErrorToFile();
+
 module.exports = {
   error,
   warn,
@@ -230,5 +303,6 @@ module.exports = {
   audit,
   performance,
   exception,
-  getLogger
+  getLogger,
+  patchConsoleErrorToFile
 };

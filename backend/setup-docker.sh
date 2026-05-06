@@ -97,7 +97,7 @@ echo -e "${GREEN}✓ Contenedores levantados${NC}"
 echo -e "\n${YELLOW}✓ Esperando que el servicio esté listo...${NC}"
 
 for i in {1..30}; do
-    if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+    if curl -s http://localhost:3003/health > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Servicio está activo${NC}"
         break
     fi
@@ -118,8 +118,8 @@ echo -e "${GREEN}✓ Setup completado exitosamente${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
 echo -e "${YELLOW}Información de acceso:${NC}"
-echo -e "  URL:     http://localhost:3000"
-echo -e "  Health:  http://localhost:3000/health"
+echo -e "  URL:     http://localhost:3003"
+echo -e "  Health:  http://localhost:3003/health"
 echo -e "  Redis:   localhost:6379"
 
 echo -e "\n${YELLOW}Comandos útiles:${NC}"
@@ -133,7 +133,7 @@ echo -e "\n${YELLOW}Próximos pasos:${NC}"
 echo -e "  1. Edita .env con tus credenciales (base de datos, WhatsApp, etc)"
 echo -e "  2. Ejecuta la migración de BD si es necesario: node migrate-db.js"
 echo -e "  3. Verifica logs: docker-compose logs -f app"
-echo -e "  4. Accede a la aplicación en http://localhost:3000"
+echo -e "  4. Accede a la aplicación en http://localhost:3003"
 
 echo -e "\n${BLUE}Para deploy en servidor:${NC}"
 echo -e "  Ver: ${YELLOW}DOCKER.md${NC}"

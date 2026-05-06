@@ -2,7 +2,7 @@
 const crypto = require('crypto');
 const autocannon = require('autocannon');
 
-const baseUrl = process.env.LOAD_BASE_URL || 'http://localhost:3000';
+const baseUrl = process.env.LOAD_BASE_URL || 'http://localhost:3003';
 const secret = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
 const connections = Number(process.env.LOAD_CONNECTIONS || 50);
 const duration = Number(process.env.LOAD_DURATION || 20);

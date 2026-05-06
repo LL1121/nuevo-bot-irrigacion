@@ -9,7 +9,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3003';
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -320,7 +320,7 @@ axios.get(`${BASE_URL}/health`)
     main();
   })
   .catch(() => {
-    log('❌ Error: Servidor no está corriendo en http://localhost:3000', colors.red);
+    log('❌ Error: Servidor no está corriendo en http://localhost:3003', colors.red);
     log('   Ejecuta: node src/server.js', colors.yellow);
     process.exit(1);
   });

@@ -1,5 +1,6 @@
 const whatsappService = require('../services/whatsappService');
 const mensajeService = require('../services/mensajeService');
+const clienteService = require('../services/clienteService');
 const { getPool } = require('../config/db');
 
 /**
@@ -69,11 +70,29 @@ const getWindowStatus = async (req, res) => {
 const reactivate = async (req, res) => {
   try {
     const { phone } = req.params;
-    const {
-      templateName = 'hello_world',
-      languageCode = templateName === 'hello_world' ? 'en_US' : 'es',
-      components
-    } = req.body || {};
+    const rawTemplateName = String(req.body?.templateName || '').trim();
+    const templateName = rawTemplateName || 'hello_world';
+
+    const rawLanguageCode = String(req.body?.languageCode || '').trim();
+    const languageCode = rawLanguageCode || (templateName === 'hello_world' ? 'en_US' : 'es');
+
+    const rawComponents = Array.isArray(req.body?.components) ? req.body.components : [];
+    const components = rawComponents
+      .filter((component) => component && typeof component === 'object' && String(component.type || '').trim())
+      .map((component) => {
+        if (!Array.isArray(component.parameters)) return component;
+        const parameters = component.parameters
+          .filter((param) => param && typeof param === 'object')
+          .map((param) => {
+            const normalized = { ...param };
+            if (typeof normalized.name === 'string') {
+              normalized.name = normalized.name.trim();
+            }
+            return normalized;
+          })
+          .filter((param) => !(param.name !== undefined && String(param.name || '').trim() === ''));
+        return { ...component, parameters };
+      });
 
     // Enviar plantilla por WhatsApp
     const sendResult = await whatsappService.sendTemplate(
@@ -91,6 +110,10 @@ const reactivate = async (req, res) => {
       url_archivo: null,
       emisor: 'bot'
     });
+
+    // La reactivación se utiliza para continuidad con operador, no con bot automático.
+    await clienteService.cambiarEstadoBot(phone, false, 'OPERATOR_REACTIVATION_TEMPLATE');
+    await clienteService.actualizarEstadoConversacion(phone, 'HUMANO');
 
     return res.status(201).json({
       success: true,

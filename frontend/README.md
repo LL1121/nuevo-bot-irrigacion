@@ -142,34 +142,6 @@ npm run release:check:full   # Gate completa (lint + tests + build)
 
 ---
 
-## 🌍 Variables de Entorno
-
-### Producción (`.env.production`)
-
-```env
-VITE_API_URL=https://whatsapp.irrigacionmalargue.net
-VITE_SOCKET_URL=https://whatsapp.irrigacionmalargue.net
-VITE_TOKEN_KEY=token
-VITE_OPERADOR_KEY=operador
-VITE_JWT_EXPIRY_MS=3600000
-VITE_ENABLE_LOGGING=false
-VITE_ENABLE_SENTRY=true
-VITE_SENTRY_DSN=your-sentry-dsn
-```
-
-### Desarrollo (`.env.local`)
-
-```env
-VITE_API_URL=http://localhost:3000
-VITE_SOCKET_URL=http://localhost:3000
-VITE_ENABLE_LOGGING=true
-VITE_ENABLE_SENTRY=false
-```
-
-Ver [.env.example](.env.example) para todas las variables disponibles.
-
----
-
 ## 📚 Documentación
 
 - **[Guía de Despliegue](docs/DEPLOYMENT.md)** - Cómo desplegar en producción
@@ -307,33 +279,9 @@ npm run test -- --watch
 
 ---
 
-## 🤝 Contribuir
-
-¡Las contribuciones son bienvenidas! Por favor lee [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) para detalles sobre el proceso de contribución.
-
-### Pasos básicos:
-
-1. Fork el proyecto
-2. Crea una rama feature (`git checkout -b feature/nueva-funcionalidad`)
-3. Commit tus cambios (`git commit -m 'Agregar nueva funcionalidad'`)
-4. Push a la rama (`git push origin feature/nueva-funcionalidad`)
-5. Abre un Pull Request
-
----
-
 ## 📄 Licencia
 
 Este proyecto está bajo la Licencia MIT - ver [LICENSE](LICENSE) para detalles.
-
----
-
-## 👥 Equipo
-
-Desarrollado por el equipo de Irrigación Malargüe.
-
-- **Contacto**: info@irrigacionmalargue.net
-- **Website**: https://whatsapp.irrigacionmalargue.net
-- **Soporte**: Crear issue en GitHub
 
 ---
 
@@ -345,7 +293,3 @@ Desarrollado por el equipo de Irrigación Malargüe.
 - [React Docs](https://react.dev)
 - [Vite Docs](https://vitejs.dev)
 - [Tailwind CSS](https://tailwindcss.com)
-
----
-
-**Hecho con ❤️ para Irrigación Malargüe**

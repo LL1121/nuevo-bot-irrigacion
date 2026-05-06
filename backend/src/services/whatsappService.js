@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const axios = require('axios');
 const axiosRetry = require('axios-retry').default;
 const { isNetworkOrIdempotentRequestError } = require('axios-retry');
@@ -56,7 +56,6 @@ const sendMessage = async (to, text) => {
     };
 
     const response = await axiosClient.post(url, data, config);
-    console.log(`✅ Mensaje enviado a ${to} - ID: ${response.data?.messages?.[0]?.id || 'N/A'}`);
     return response.data;
   }, `sendMessage to ${to}`);
 };
@@ -77,12 +76,39 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
   return withWhatsAppRetry(async () => {
     const url = `${WHATSAPP_API_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
+    const sanitizeComponents = (rawComponents) => {
+      if (!Array.isArray(rawComponents)) return undefined;
+
+      const cleaned = rawComponents
+        .filter((component) => component && typeof component === 'object' && String(component.type || '').trim())
+        .map((component) => {
+          const normalized = { ...component };
+
+          if (Array.isArray(normalized.parameters)) {
+            normalized.parameters = normalized.parameters
+              .filter((param) => param && typeof param === 'object')
+              .map((param) => {
+                const next = { ...param };
+                if ('name' in next && String(next.name || '').trim() === '') {
+                  delete next.name;
+                }
+                return next;
+              });
+          }
+
+          return normalized;
+        });
+
+      return cleaned.length ? cleaned : undefined;
+    };
+
     const templatePayload = {
       name: templateName,
       language: { code: languageCode }
     };
-    if (components && Array.isArray(components) && components.length > 0) {
-      templatePayload.components = components;
+    const safeComponents = sanitizeComponents(components);
+    if (safeComponents) {
+      templatePayload.components = safeComponents;
     }
 
     const data = {
@@ -100,7 +126,6 @@ const sendTemplate = async (to, templateName, languageCode = 'en_US', components
     };
 
     const response = await axiosClient.post(url, data, config);
-    console.log('✅ Template enviado correctamente:', response.data);
     return response.data;
   }, `sendTemplate ${templateName} to ${to}`);
 };
@@ -120,7 +145,7 @@ const getMediaInfo = async (mediaId) => {
     const response = await axiosClient.get(url, config);
     return response.data; // { url, mime_type, ... }
   } catch (error) {
-    console.error('❌ Error obteniendo media info:', error.response?.data || error.message);
+    console.error('Error obteniendo media info:', error.response?.data || error.message);
     throw error;
   }
 };
@@ -166,7 +191,7 @@ const downloadMedia = async (mediaId) => {
     // Retornar URL relativa
     return `/uploads/${filename}`;
   } catch (error) {
-    console.error('❌ Error descargando media:', error.response?.data || error.message);
+    console.error('Error descargando media:', error.response?.data || error.message);
     throw error;
   }
 };
@@ -187,7 +212,7 @@ const fetchMediaStream = async (mediaUrl) => {
     const response = await axiosClient.get(mediaUrl, config);
     return { stream: response.data, contentType: response.headers['content-type'] || 'application/octet-stream' };
   } catch (error) {
-    console.error('❌ Error descargando media:', error.response?.data || error.message);
+    console.error('Error descargando media:', error.response?.data || error.message);
     throw error;
   }
 };
@@ -229,7 +254,7 @@ const sendInteractiveList = async (to, headerText, bodyText, buttonText, section
       };
     } else {
       if (normalizedHeaderImageUrl && !canUseImageHeader) {
-        console.warn('⚠️ MENU_HEADER_IMAGE_URL no es pública/HTTPS. Enviando header de texto.');
+        console.warn('MENU_HEADER_IMAGE_URL no es publica/HTTPS. Enviando header de texto.');
       }
       header = {
         type: 'text',
@@ -262,10 +287,9 @@ const sendInteractiveList = async (to, headerText, bodyText, buttonText, section
     };
 
     const response = await axiosClient.post(url, data, config);
-    console.log('✅ Lista interactiva enviada correctamente:', response.data);
     return response.data;
   } catch (error) {
-    console.error('❌ Error enviando lista interactiva:', error.response?.data || error.message);
+    console.error('Error enviando lista interactiva:', error.response?.data || error.message);
     throw error;
   }
 };

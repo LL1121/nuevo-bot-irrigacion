@@ -32,14 +32,14 @@ module.exports = {
       // Environment variables por environment
       env: {
         NODE_ENV: 'production',
-        PORT: 3000,
+        PORT: 3003,
         MAX_BROWSERS: '3',
         DB_CONNECTION_LIMIT: '50'
       },
       
       env_development: {
         NODE_ENV: 'development',
-        PORT: 3000,
+        PORT: 3003,
         MAX_BROWSERS: '2',
         DB_CONNECTION_LIMIT: '10'
       },

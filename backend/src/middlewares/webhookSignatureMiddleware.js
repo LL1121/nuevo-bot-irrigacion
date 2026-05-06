@@ -55,7 +55,7 @@ function verifyMetaWebhook(req, res, next) {
   const secret = process.env.WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET;
 
   if (!secret) {
-    console.error('❌ Webhook secret no configurado');
+    console.error('Webhook secret no configurado');
     return res.status(503).json({
       success: false,
       error: 'Webhook signature verification is not configured'
@@ -71,7 +71,7 @@ function verifyMetaWebhook(req, res, next) {
 
   // Evitamos usar req.body serializado para no romper la firma por cambios de formato.
   if (typeof req.rawBody !== 'string' || !req.rawBody.length) {
-    console.error('❌ rawBody no disponible para verificar firma webhook');
+    console.error('rawBody no disponible para verificar firma webhook');
     return res.status(400).json({
       success: false,
       error: 'Missing raw body for signature verification'
@@ -83,14 +83,13 @@ function verifyMetaWebhook(req, res, next) {
   const isValid = verifyWebhookSignature(rawBody, signature, secret);
 
   if (!isValid) {
-    console.error('❌ Firma de webhook inválida');
+    console.error('Firma de webhook invalida');
     return res.status(403).json({
       success: false,
       error: 'Invalid signature'
     });
   }
 
-  console.log('✅ Firma de webhook verificada');
   next();
 }
 

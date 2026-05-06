@@ -34,7 +34,7 @@ const swaggerSpec = {
       description: 'Staging (v2)',
     },
     {
-      url: 'http://localhost:3000/v2',
+      url: 'http://localhost:3003/v2',
       description: 'Development',
     },
   ],

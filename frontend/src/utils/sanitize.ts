@@ -64,6 +64,18 @@ export const sanitizeMessage = (message: string): string => {
 };
 
 /**
+ * Convierte markdown liviano (*negrita*, _cursiva_, ~tachado~) a HTML seguro
+ * para usar con dangerouslySetInnerHTML (tras escape de HTML crudo).
+ */
+export const formatChatMarkdownToSafeHtml = (text: string): string => {
+  const base = escapeHtml(sanitizeString(text, 16000));
+  return base
+    .replace(/\*([^*]+)\*/g, '<strong>$1</strong>')
+    .replace(/_([^_]+)_/g, '<em>$1</em>')
+    .replace(/~([^~]+)~/g, '<del>$1</del>');
+};
+
+/**
  * Validate input format and return error message if invalid
  */
 export const validateInput = (
@@ -108,5 +120,6 @@ export default {
   sanitizeEmail,
   sanitizeUsername,
   sanitizeMessage,
+  formatChatMarkdownToSafeHtml,
   validateInput
 };

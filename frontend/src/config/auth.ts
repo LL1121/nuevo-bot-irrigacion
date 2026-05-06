@@ -4,6 +4,8 @@
  */
 
 import { authConfig } from './authConfig';
+import { sensitiveStorage } from '../utils/sensitiveStorage';
+import { logger } from '../utils/logger';
 
 export type OperadorInfo = {
   id?: string | number;
@@ -26,35 +28,35 @@ export const auth = {
    * Obtener token del localStorage
    */
   getToken: (): string | null => {
-    return localStorage.getItem(authConfig.storage.token);
+    return sensitiveStorage.getAccessToken();
   },
 
   /**
-   * Guardar token en localStorage
+   * Guardar token (capa sensitiveStorage; migración futura: cookie HttpOnly)
    */
   setToken: (token: string): void => {
-    localStorage.setItem(authConfig.storage.token, token);
+    sensitiveStorage.setAccessToken(token);
   },
 
   /**
    * Obtener refresh token
    */
   getRefreshToken: (): string | null => {
-    return localStorage.getItem(authConfig.storage.refreshToken);
+    return sensitiveStorage.getRefreshToken();
   },
 
   /**
    * Guardar refresh token
    */
   setRefreshToken: (token: string): void => {
-    localStorage.setItem(authConfig.storage.refreshToken, token);
+    sensitiveStorage.setRefreshToken(token);
   },
 
   /**
    * Obtener información del operador
    */
   getOperador: (): OperadorInfo | null => {
-    const stored = localStorage.getItem('operador');
+    const stored = sensitiveStorage.getOperadorJson();
     return stored ? (JSON.parse(stored) as OperadorInfo) : null;
   },
 
@@ -62,34 +64,22 @@ export const auth = {
    * Guardar información del operador
    */
   setOperador: (operador: OperadorInfo): void => {
-    localStorage.setItem('operador', JSON.stringify(operador));
+    sensitiveStorage.setOperadorJson(JSON.stringify(operador));
   },
 
   /**
    * Limpiar sesión (logout) - completo
    */
   clearSession: (): void => {
-    // Remover tokens
-    localStorage.removeItem(authConfig.storage.token);
-    localStorage.removeItem(authConfig.storage.refreshToken);
-    localStorage.removeItem(authConfig.storage.tokenExpiresAt);
-    localStorage.removeItem('operador');
-    
-    // Limpiar caché de mensajes
-    Object.keys(localStorage).forEach(key => {
-      if (key.startsWith('messages_')) {
-        localStorage.removeItem(key);
-      }
-    });
-    
-    console.log('🗑️ Sesión limpiada completamente');
+    sensitiveStorage.clearAuthSession();
+    sensitiveStorage.clearMessageCacheEntries();
+    logger.info('Sesión de operador limpiada (tokens y caché de mensajes)');
   },
 
   /**
    * Verificar si está autenticado
    */
   isAuthenticated: (): boolean => {
-    const token = localStorage.getItem(authConfig.storage.token);
-    return !!token;
+    return !!sensitiveStorage.getAccessToken();
   }
 };

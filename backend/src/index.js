@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const express = require('express');
 const compression = require('compression');
 const jwt = require('jsonwebtoken');
@@ -8,9 +8,9 @@ if (process.env.SENTRY_DSN) {
   try {
     Sentry = require('@sentry/node');
     Sentry.init({ dsn: process.env.SENTRY_DSN });
-    console.log('✅ Sentry initialised');
+    logger.info('Sentry initialized');
   } catch (err) {
-    console.warn('⚠️ Could not initialize Sentry:', err.message);
+    logger.warn('Could not initialize Sentry:', err.message);
   }
 }
 const http = require('http');
@@ -25,6 +25,7 @@ const swaggerUi = require('swagger-ui-express');
 const { initializeDB } = require('./config/db');
 const { ipMiddleware } = require('./middlewares/ipMiddleware');
 const requestLogger = require('./middlewares/requestLoggerMiddleware');
+const { errorHandler } = require('./middlewares/errorHandler');
 const swaggerSpec = require('./config/swaggerConfig');
 const { initRedis } = require('./services/cacheService');
 const logger = require('./services/logService');
@@ -32,7 +33,7 @@ const logger = require('./services/logService');
 const app = express();
 const server = http.createServer(app);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3003;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const JWT_SECRET = process.env.JWT_SECRET;
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 30000);
@@ -161,14 +162,11 @@ const bootstrap = async () => {
     }
 
     // Inicializar Redis en paralelo (no bloqueante)
-    const redisPromise = initRedis().catch(() => {
-      console.log('⚠️ Redis no disponible - continuando sin cache');
-    });
+    const redisPromise = initRedis().catch(() => {});
 
     // Inicializar base de datos (crítico)
     logger.info('Inicializando Base de Datos...');
     await initializeDB();
-    console.log('✅ Base de datos inicializada correctamente');
 
     // Esperar Redis solo si no tardó más de 1 segundo
     await Promise.race([
@@ -177,19 +175,12 @@ const bootstrap = async () => {
     ]);
 
     // Cargar rutas después de que DB exista
-    console.log('📄 Cargando rutas...');
     const webhookRoutes = require('./routes/webhookRoutes');
-    console.log('✅ Rutas de webhook cargadas');
     const apiRoutes = require('./routes/apiRoutes');
-    console.log('✅ Rutas de API cargadas');
     const auditRoutes = require('./routes/auditRoutes');
-    console.log('✅ Rutas de auditoría cargadas');
     const healthRoutes = require('./routes/healthRoutes');
-    console.log('✅ Rutas de health cargadas');
     const cacheTestRoutes = require('./routes/cacheTestRoutes');
-    console.log('✅ Rutas de cache test cargadas');
     const paymentBridgeRoutes = require('./routes/paymentBridgeRoutes');
-    console.log('✅ Rutas de pasarela de pagos cargadas');
 
   // Routes API
   // Apply rate limiting: general API limiter
@@ -229,6 +220,8 @@ const bootstrap = async () => {
     }
   });
 
+  app.use(errorHandler);
+
   // Socket.io - Manejo de conexiones
   io.use((socket, next) => {
     try {
@@ -252,57 +245,34 @@ const bootstrap = async () => {
   });
 
   io.on('connection', (socket) => {
-    console.log('👤 Cliente conectado:', socket.id);
-
-    socket.on('disconnect', () => {
-      console.log('👋 Cliente desconectado:', socket.id);
-    });
-
     socket.on('operador_online', (data) => {
-      console.log('🟢 Operador online:', data);
       socket.broadcast.emit('operador_disponible', data);
     });
   });
 
   // Start server
   server.listen(PORT, async () => {
-    const publicBaseUrl = (
-      process.env.BASE_URL
-      || process.env.PUBLIC_BASE_URL
-      || process.env.BACKEND_URL
-      || `http://localhost:${PORT}`
-    ).replace(/\/$/, '');
-
-    logger.info(`Servidor iniciado en puerto ${PORT}`, {
-      webhook: `${publicBaseUrl}/webhook`,
-      api: `${publicBaseUrl}/api`,
-      docs: `${publicBaseUrl}/api-docs`
-    });
-    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-    console.log(`📱 Webhook URL: ${publicBaseUrl}/webhook`);
-    console.log(`🔌 Socket.io activo en puerto ${PORT}`);
-    console.log(`🌐 API REST: ${publicBaseUrl}/api`);
-    console.log(`📚 Documentación: ${publicBaseUrl}/api-docs`);
-    console.log('✅ Sistema de scraping listo');
+    logger.info(`Servidor iniciado en puerto ${PORT}`);
+    logger.info(`Servidor corriendo en puerto ${PORT}`);
   });
   
   // Graceful shutdown: detener backups y cerrar conexiones
   process.on('SIGINT', () => {
     logger.warn('Recibida señal SIGINT - Shutdown graceful');
-    console.log('\n\n🛑 Iniciando shutdown graceful...');
+    logger.info('\n\nIniciando shutdown graceful...');
     server.close(() => {
       logger.info('Servidor cerrado correctamente');
-      console.log('✅ Servidor cerrado correctamente');
+      logger.info('Servidor cerrado correctamente');
       process.exit(0);
     });
   });
 
   process.on('SIGTERM', () => {
     logger.warn('Recibida señal SIGTERM - Shutdown graceful');
-    console.log('\n\n🛑 Iniciando shutdown graceful...');
+    logger.info('\n\nIniciando shutdown graceful...');
     server.close(() => {
       logger.info('Servidor cerrado correctamente');
-      console.log('✅ Servidor cerrado correctamente');
+      logger.info('Servidor cerrado correctamente');
       process.exit(0);
     });
   });
@@ -310,12 +280,12 @@ const bootstrap = async () => {
   // Capturar excepciones no manejadas
   process.on('uncaughtException', (error) => {
     logger.exception(error, { type: 'uncaughtException' });
-    console.error('❌ Excepción no capturada:', error);
+    logger.error('Excepcion no capturada:', error);
   });
 
   } catch (error) {
     logger.error('Error durante bootstrap', { error: error.message });
-    console.error('❌ Error durante startup:', error);
+    logger.error('Error durante startup:', error);
     process.exit(1);
   }
 };

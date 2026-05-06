@@ -49,20 +49,18 @@ const initRedis = async (options = {}) => {
       
       // Agregar handler permanente
       redisClient.on('error', (error) => {
-        console.warn('⚠️ Error en Redis (runtime):', error.message);
+        console.warn('Error en Redis (runtime):', error.message);
       });
       
-      console.log(`✅ Redis inicializado en ${host}:${port}`);
+      console.log(`Redis inicializado en ${host}:${port}`);
     } catch (err) {
       // Conexión falló
       redisClient.removeListener('error', errorHandler);
       redisClient = null;
-      console.warn(`⚠️ No se pudo conectar a Redis en ${host}:${port}`);
-      console.warn('💡 Para activar: docker run -d -p 6379:6379 redis:latest');
-      console.warn('⚠️ Continuando sin cache (modo degradado)');
+      console.warn(`No se pudo conectar a Redis en ${host}:${port}. Continuando sin cache.`);
     }
   } catch (error) {
-    console.warn('⚠️ Error inicializando Redis:', error.message);
+    console.warn('Error inicializando Redis:', error.message);
     redisClient = null;
   }
 };
@@ -73,11 +71,14 @@ const initRedis = async (options = {}) => {
  */
 const getRedis = () => {
   if (!redisClient) {
-    console.warn('⚠️ Redis no inicializado');
+    console.warn('Redis no inicializado');
     return null;
   }
   return redisClient;
 };
+
+/** @returns {boolean} */
+const isRedisReady = () => Boolean(redisClient && redisClient.isReady);
 
 /**
  * Guardar valor en cache con TTL (time to live)
@@ -97,10 +98,9 @@ const cacheSet = async (key, value, ttl = 3600) => {
       await redisClient.set(key, serialized);
     }
 
-    console.log(`💾 Cache SET: ${key} (TTL: ${ttl}s)`);
     return true;
   } catch (error) {
-    console.warn('⚠️ Error en cacheSet:', error.message);
+    console.warn('Error en cacheSet:', error.message);
     return false;
   }
 };
@@ -117,10 +117,9 @@ const cacheGet = async (key) => {
     const value = await redisClient.get(key);
     if (!value) return null;
 
-    console.log(`📖 Cache HIT: ${key}`);
     return JSON.parse(value);
   } catch (error) {
-    console.warn('⚠️ Error en cacheGet:', error.message);
+    console.warn('Error en cacheGet:', error.message);
     return null;
   }
 };
@@ -135,10 +134,10 @@ const cacheDel = async (key) => {
     if (!redisClient || !redisClient.isReady) return false;
 
     await redisClient.del(key);
-    console.log(`🗑️  Cache DELETE: ${key}`);
+    console.log(`Cache DELETE: ${key}`);
     return true;
   } catch (error) {
-    console.warn('⚠️ Error en cacheDel:', error.message);
+    console.warn('Error en cacheDel:', error.message);
     return false;
   }
 };
@@ -152,10 +151,10 @@ const cacheFlush = async () => {
     if (!redisClient || !redisClient.isReady) return false;
 
     await redisClient.flushAll();
-    console.log('🧹 Cache FLUSHED - Todo limpio');
+    console.log('Cache FLUSHED - Todo limpio');
     return true;
   } catch (error) {
-    console.warn('⚠️ Error en cacheFlush:', error.message);
+    console.warn('Error en cacheFlush:', error.message);
     return false;
   }
 };
@@ -172,7 +171,7 @@ const cacheExists = async (key) => {
     const exists = await redisClient.exists(key);
     return exists === 1;
   } catch (error) {
-    console.warn('⚠️ Error en cacheExists:', error.message);
+    console.warn('Error en cacheExists:', error.message);
     return false;
   }
 };
@@ -188,7 +187,7 @@ const cacheTTL = async (key) => {
 
     return await redisClient.ttl(key);
   } catch (error) {
-    console.warn('⚠️ Error en cacheTTL:', error.message);
+    console.warn('Error en cacheTTL:', error.message);
     return -2;
   }
 };
@@ -206,12 +205,10 @@ const cacheAside = async (key, loader, ttl = 3600) => {
     // Intentar obtener del cache
     let data = await cacheGet(key);
     if (data) {
-      console.log(`⚡ Cache-aside HIT: ${key}`);
       return data;
     }
 
     // No existe en cache - cargar de BD
-    console.log(`⚡ Cache-aside MISS: ${key} - Cargando de BD...`);
     data = await loader();
 
     // Guardar en cache para próxima vez
@@ -221,7 +218,7 @@ const cacheAside = async (key, loader, ttl = 3600) => {
 
     return data;
   } catch (error) {
-    console.warn('⚠️ Error en cacheAside:', error.message);
+    console.warn('Error en cacheAside:', error.message);
     return await loader(); // Fallback a BD si falla cache
   }
 };
@@ -229,6 +226,7 @@ const cacheAside = async (key, loader, ttl = 3600) => {
 module.exports = {
   initRedis,
   getRedis,
+  isRedisReady,
   cacheSet,
   cacheGet,
   cacheDel,

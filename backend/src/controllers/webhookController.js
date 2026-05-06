@@ -8,10 +8,15 @@ const clienteService = require('../services/clienteService');
 const { compressPdfForFrontend } = require('../services/pdfCompressionService');
 const fs = require('fs');
 const path = require('path');
+const botStateStore = require('../services/botStateStore');
+const { botState, tryBotState, replaceBotStateRoot, runBotStateSession } = require('../services/botStateContext');
+const { ACTION_FAILED } = require('../constants/userFacing');
+const logger = require('../services/logService');
 
 const BOLETOS_PUBLIC_DIR = path.join(__dirname, '../../public/uploads/boletos');
 const BOLETOS_RETENTION_HOURS = Number(process.env.BOLETOS_RETENTION_HOURS || 24);
 const BOLETOS_PREVIEW_PDFSETTINGS = process.env.BOLETOS_PREVIEW_PDFSETTINGS || 'ebook';
+const WEBHOOK_DEBUG = process.env.WEBHOOK_DEBUG === 'true';
 const TURNOS_CONTACTO_INSPECCION_DEFAULT = process.env.TURNOS_CONTACTO_INSPECCION || 'inspeccioncanadacolorada@gmail.com';
 const TURNOS_CONTACTOS_POR_INSPECCION = {
   'canada colorada': process.env.TURNOS_CONTACTO_INSPECCION_CANADA_COLORADA || TURNOS_CONTACTO_INSPECCION_DEFAULT,
@@ -126,15 +131,15 @@ const extractLikelyNameFromInput = (value = '') => {
 };
 
 const getServiceErrorMessage = (payload, fallbackMessage = '') => {
-  if (!payload) return fallbackMessage;
+  if (!payload) return fallbackMessage || ACTION_FAILED;
 
   const userMessage = normalizeSingleLine(payload.userMessage || '');
   if (userMessage) return userMessage;
 
-  const message = normalizeSingleLine(payload.message || payload.error || '');
-  if (message) return `❌ ${message}`;
+  const message = normalizeSingleLine(payload.message || '');
+  if (message) return message;
 
-  return fallbackMessage;
+  return fallbackMessage || ACTION_FAILED;
 };
 
 const isUnavailableValue = (value = '') => {
@@ -185,7 +190,10 @@ const buildBoletoPdfFileName = ({ tipoBoleto = 'boleto', nombrePersona = 'Usuari
 };
 
 const resolveNombrePersona = async (from) => {
-  const fromState = formatPersonName(userStates[from]?.nombreCliente || '');
+  const inRequest = tryBotState();
+  const fromRedis = inRequest ? null : await botStateStore.getUserState(from);
+  const stateSnap = inRequest || fromRedis || {};
+  const fromState = formatPersonName(stateSnap.nombreCliente || '');
   if (isLikelyValidPersonName(fromState)) return fromState;
 
   try {
@@ -278,14 +286,11 @@ const LOCALIDADES_PROMPT = [
   { id: 'rio_tunyuan_inferior', title: 'Río Tunuyán Inferior', description: 'Subdelegación Río Tunuyán Inferior' }
 ];
 
-// Memoria temporal para estados de usuarios
-const userStates = {};
-
-// Memoria para deduplicación de mensajes
-const processedMessageIds = new Set();
-
 // Bloqueo temporal de opciones deshabilitadas del menú principal
 const TEMP_DISABLED_MENU_OPTIONS = new Set([
+  'turnos',
+  '3',
+  'option_3',
   'ubicacion',
   'vencimientos',
   'empadronamiento',
@@ -295,6 +300,39 @@ const TEMP_DISABLED_MENU_OPTIONS = new Set([
   '4',
   'option_4'
 ]);
+
+/** Filas del menú principal (lista interactiva). Si el usuario está en otro paso y toca de nuevo la lista, hay que re-enrutar acá. */
+const MAIN_MENU_ROW_IDS = new Set([
+  'deuda',
+  'boleto',
+  'turnos',
+  'operador',
+  'ubicacion',
+  'empadronamiento',
+  'vencimientos',
+  'perforacion',
+  'renuncia',
+  'iniciar_perforacion'
+]);
+
+/**
+ * Normaliza id de fila, títulos de WhatsApp o códigos legacy (1/option_1, etc.).
+ */
+const resolveMainMenuKey = (raw) => {
+  const s = String(raw || '').toLowerCase().trim();
+  if (!s) return '';
+  if (['deuda', '1', 'option_1'].includes(s) || s.includes('solicitar deuda')) return 'deuda';
+  if (['boleto', '2', 'option_2'].includes(s) || s.includes('pago anual') || s.includes('bimestral')) return 'boleto';
+  if (['turnos', '3', 'option_3'].includes(s) || s.includes('consultar turnos')) return 'turnos';
+  if (['operador', '4', 'option_4'].includes(s) || s.includes('hablar con operador')) return 'operador';
+  if (s === 'ubicacion' || s.includes('ubicación')) return 'ubicacion';
+  if (s === 'empadronamiento' || s.includes('empadronamiento')) return 'empadronamiento';
+  if (s === 'vencimientos' || s.includes('vencimientos')) return 'vencimientos';
+  if (s === 'iniciar_perforacion') return 'iniciar_perforacion';
+  if (s === 'perforacion' || s.includes('perforación')) return 'perforacion';
+  if (s === 'renuncia' || s.includes('renuncia')) return 'renuncia';
+  return s;
+};
 
 const emitToTenantRoom = async (phone, eventName, payload) => {
   if (!global.io) return;
@@ -363,7 +401,7 @@ const sendSubdelegacionPrompt = async (from) => {
 const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = '') => {
   const selection = await clienteService.resolverSubdelegacionDesdeEntrada(optionToProcess || messageBody);
 
-  if (!selection?.id) {
+  if (!selection?.id && !selection?.nombre) {
     await sendMessageAndSave(
       from,
       'No pude identificar la subdelegación. Elegí una opción de la lista.'
@@ -378,9 +416,9 @@ const handleSubdelegacionChoice = async (from, optionToProcess, messageBody = ''
     return;
   }
 
-  userStates[from].subdelegacion = subdelegacion.nombre;
-  userStates[from].subdelegacionId = subdelegacion.id;
-  userStates[from].step = 'MAIN_MENU';
+  botState().subdelegacion = subdelegacion.nombre;
+  botState().subdelegacionId = subdelegacion.id;
+  botState().step = 'MAIN_MENU';
 
   await sendMessageAndSave(
     from,
@@ -515,8 +553,15 @@ const verifyWebhook = (req, res) => {
 const receiveMessage = async (req, res) => {
   try {
     const body = req.body;
-
-    console.log('📩 Webhook recibido:', JSON.stringify(body, null, 2));
+    if (WEBHOOK_DEBUG) {
+      const msg = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      console.log('Webhook recibido', {
+        object: body?.object || null,
+        messageId: msg?.id || null,
+        type: msg?.type || null,
+        from: msg?.from || null
+      });
+    }
 
     // Verificar que el body tenga la estructura esperada
     if (body.object) {
@@ -529,21 +574,15 @@ const receiveMessage = async (req, res) => {
         const message = body.entry[0].changes[0].value.messages[0];
         const messageId = message.id;
         
-        // DEDUPLICACIÓN: Verificar si ya procesamos este mensaje
-        if (processedMessageIds.has(messageId)) {
-          console.log('🔄 Mensaje duplicado ignorado:', messageId);
+        if (await botStateStore.isMessageProcessed(messageId)) {
+          if (WEBHOOK_DEBUG) {
+            console.log('Mensaje duplicado ignorado', { messageId });
+          }
           return res.sendStatus(200);
         }
-        
-        // Registrar el mensaje como procesado
-        processedMessageIds.add(messageId);
-        
-        // Limpieza automática: Eliminar el ID después de 5 minutos
-        setTimeout(() => {
-          processedMessageIds.delete(messageId);
-          console.log('🗑️ ID de mensaje eliminado de caché:', messageId);
-        }, 5 * 60 * 1000); // 5 minutos
-        
+
+        await botStateStore.markMessageProcessed(messageId);
+
         const from = message.from;
         
         // ============================================
@@ -575,6 +614,11 @@ const receiveMessage = async (req, res) => {
         
         if (message.type === 'text') {
           messageBody = message.text?.body?.trim() || '';
+        } else if (message.type === 'button') {
+          // Respuesta a templates de tipo botón (quick reply CTA).
+          const buttonText = message.button?.text || message.button?.payload || '';
+          messageBody = String(buttonText).trim();
+          message._optionId = message.button?.payload || messageBody;
         } else if (message.type === 'interactive') {
           // Puede ser list_reply o button_reply
           let selectedOptionId = '';
@@ -603,7 +647,6 @@ const receiveMessage = async (req, res) => {
           tipoMensaje = 'document';
         }
 
-        console.log(`💬 Mensaje de ${from}: ${messageBody} (tipo: ${tipoMensaje})`);
 
         // Guardar mensaje del usuario en segundo plano (sin bloquear)
         const persistIncoming = async () => {
@@ -651,7 +694,7 @@ const receiveMessage = async (req, res) => {
         const botActivo = await clienteService.esBotActivo(from);
         
         if (!botActivo) {
-          console.log(`⏸️ Bot pausado para ${from} - Mensaje guardado, sin respuesta automática`);
+          console.log(`Bot pausado para ${from} - mensaje guardado sin respuesta automatica`);
           // No enviar respuesta automática
           return res.sendStatus(200);
         }
@@ -660,11 +703,12 @@ const receiveMessage = async (req, res) => {
         const TWELVE_HOURS = 12 * 60 * 60 * 1000; // 12 horas en milisegundos
         const now = Date.now();
         
-        if (!userStates[from]) {
-          // Usuario nuevo
+        let sessionState = await botStateStore.getUserState(from);
+
+        if (!sessionState) {
           const nombreDetectado = cliente?.nombre_whatsapp || pushName;
 
-          userStates[from] = {
+          sessionState = {
             step: 'START',
             padron: null,
             nombreCliente: isLikelyValidPersonName(nombreDetectado) ? formatPersonName(nombreDetectado) : '',
@@ -672,278 +716,73 @@ const receiveMessage = async (req, res) => {
             subdelegacion: cliente?.subdelegacion || null,
             lastMessageTime: now,
             namePromptSent: false,
-            needsNamePrompt: !Boolean(cliente?.nombre_validado)
+            needsNamePrompt: !isLikelyValidPersonName(nombreDetectado)
           };
         } else {
-          // Usuario existente: verificar tiempo de inactividad
-          const timeSinceLastMessage = now - (userStates[from].lastMessageTime || 0);
+          const timeSinceLastMessage = now - (sessionState.lastMessageTime || 0);
 
           if (timeSinceLastMessage > TWELVE_HOURS) {
-            // Pasaron más de 12 horas: saludar de nuevo pero mantener datos del cliente
-            console.log(`⏰ Han pasado ${Math.round(timeSinceLastMessage / (60 * 60 * 1000))} horas desde el último mensaje de ${from}`);
-            userStates[from].step = 'START';
-            userStates[from].shouldGreet = true;
+            console.log(`Pasaron ${Math.round(timeSinceLastMessage / (60 * 60 * 1000))} horas desde el ultimo mensaje de ${from}`);
+            sessionState.step = 'START';
+            sessionState.shouldGreet = true;
           }
 
-          // Actualizar el timestamp del último mensaje
-          userStates[from].lastMessageTime = now;
+          sessionState.lastMessageTime = now;
 
-          if (!Boolean(cliente?.nombre_validado) && userStates[from].step !== 'AWAITING_USER_NAME') {
-            userStates[from].step = 'START';
-            userStates[from].needsNamePrompt = true;
-            userStates[from].namePromptSent = false;
+          const hasValidNameInState = isLikelyValidPersonName(sessionState.nombreCliente || '');
+          const hasStructuredReply =
+            tipoMensaje === 'interactive' ||
+            tipoMensaje === 'button' ||
+            Boolean(String(message._optionId || '').trim());
+          // No forzar de nuevo el flujo de nombre si el usuario está eligiendo ítem de lista/botón
+          if (
+            !Boolean(cliente?.nombre_validado) &&
+            !hasValidNameInState &&
+            sessionState.step !== 'AWAITING_USER_NAME' &&
+            !hasStructuredReply
+          ) {
+            sessionState.step = 'START';
+            sessionState.needsNamePrompt = true;
+            sessionState.namePromptSent = false;
           }
         }
 
         const estadoConversacion = String(cliente?.estado_conversacion || 'BOT').toUpperCase();
         if (estadoConversacion === 'ESPERA_OPERADOR') {
-          userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+          sessionState.step = 'AWAITING_OPERATOR_ASSIGNMENT';
         } else if (estadoConversacion === 'ENCUESTA_POST_OPERADOR') {
-          userStates[from].step = 'AWAITING_OPERATOR_SURVEY';
+          sessionState.step = 'AWAITING_OPERATOR_SURVEY';
+        } else if (estadoConversacion === 'OPINION_POST_OPERADOR') {
+          sessionState.step = 'AWAITING_OPINION_CHOICE';
+        } else if (estadoConversacion === 'OPINION_POST_OPERADOR_TEXTO') {
+          sessionState.step = 'AWAITING_OPINION_TEXT';
         } else if (estadoConversacion === 'FOLLOWUP_POST_OPERADOR') {
-          userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
+          sessionState.step = 'AWAITING_OPERATOR_FOLLOWUP';
         }
 
-        // Procesar mensaje según el estado actual
         const optionId = message._optionId || messageBody;
 
-        // Anti-loop: ignorar webhooks sin input util (evita reenviar menú por eventos vacíos)
         if (!String(optionId || '').trim() && !String(messageBody || '').trim()) {
-          console.log(`🔇 Evento sin contenido útil para ${from}: se ignora para evitar loop de menú`);
+          console.log(`Evento sin contenido util para ${from}: se ignora para evitar loop de menu`);
+          await botStateStore.setUserState(from, sessionState);
           return res.sendStatus(200);
         }
 
-        await handleUserMessage(from, messageBody, optionId);
+        await runBotStateSession(from, sessionState, async () => {
+          await handleUserMessage(from, messageBody, optionId);
+        });
       }
 
       // Siempre responder con 200 OK
       res.sendStatus(200);
     } else {
-      console.log('⚠️ Evento no reconocido');
+      console.log('Evento no reconocido');
       res.sendStatus(404);
     }
   } catch (error) {
-    console.error('❌ Error procesando webhook:', error);
+    console.error('Error procesando webhook:', error);
     // Responder 200 para evitar reintentos infinitos de Meta
     res.sendStatus(200);
-  }
-};
-
-/**
- * Maneja la lógica del flujo conversacional
- */
-const handleUserMessage = async (from, messageBody, optionId = null) => {
-  const currentState = userStates[from].step;
-  const optionToProcess = optionId || messageBody;
-
-  console.log(`🔄 Estado actual de ${from}: ${currentState}`);
-
-  // ============================================
-  // MANEJO DE BOTONES GLOBALES
-  // ============================================
-  
-  // Botón: Descargar Boleto
-  if (messageBody === 'btn_descargar_boleto') {
-    await handleDescargarBoleto(from);
-    return;
-  }
-  
-  // Botón: Cambiar DNI
-  if (messageBody === 'btn_cambiar_dni') {
-    const changeDniMsg = '📝 Entendido. Por favor escribí el nuevo DNI o CUIT a consultar (sin puntos ni guiones).';
-    await sendMessageAndSave(from, changeDniMsg);
-    userStates[from].step = 'AWAITING_DNI';
-    console.log(`🔄 Usuario ${from} solicita cambiar DNI`);
-    return;
-  }
-
-  switch (currentState) {
-    case 'START':
-    default:
-      // Enviar bienvenida + menú (personalizado si es cliente conocido o si pasaron 12 horas)
-      const shouldGreet = userStates[from].shouldGreet || userStates[from].step === 'START';
-      if (shouldGreet) {
-        await sendWelcomeMessage(from, userStates[from].nombreCliente, userStates[from].esClienteNuevo);
-        userStates[from].shouldGreet = false; // Resetear el flag
-      }
-      if (userStates[from].needsNamePrompt && !userStates[from].namePromptSent) {
-        userStates[from].namePromptSent = true;
-        userStates[from].step = 'AWAITING_USER_NAME';
-        break;
-      }
-      if (!userStates[from].subdelegacion) {
-        await sendSubdelegacionPrompt(from);
-        userStates[from].step = 'AWAITING_SUBDELEGACION';
-        break;
-      }
-      await sendMenuList(from, false); // false = es la primera vez
-      userStates[from].step = 'MAIN_MENU';
-      break;
-
-    case 'MAIN_MENU':
-      await handleMainMenu(from, optionToProcess);
-      break;
-
-    case 'AWAITING_DNI':
-      await handleDniInput(from, messageBody);
-      break;
-
-    case 'AWAITING_SUBDELEGACION':
-      await handleSubdelegacionChoice(from, optionToProcess, messageBody);
-      break;
-
-    case 'AWAITING_DNI_BOLETO':
-      await handleDniInputBoleto(from, messageBody);
-      break;
-
-    case 'AWAITING_MODO_CONSULTA':
-      await handleModoConsulta(from, optionToProcess);
-      break;
-
-    case 'AWAITING_DNI_CHOICE':
-      await handleDniChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PADRON_GLOBAL_CHOICE':
-      await handlePadronGlobalChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PADRON_CHOICE':
-      await handlePadronChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_TIPO_PADRON':
-      await handleTipoPadron(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PADRON_SUPERFICIAL':
-      await handlePadronSuperficial(from, messageBody);
-      break;
-
-    case 'AWAITING_PADRON_SUBTERRANEO':
-      await handlePadronSubterraneo(from, messageBody);
-      break;
-
-    case 'AWAITING_PADRON_CONTAMINACION':
-      await handlePadronContaminacion(from, messageBody);
-      break;
-
-    case 'AWAITING_USER_NAME':
-      await handleUserNameInput(from, messageBody);
-      break;
-
-    case 'AWAITING_TIPO_CUOTA':
-      await handleTipoCuota(from, optionToProcess);
-      break;
-
-    case 'AWAITING_TIPO_CUOTA_PADRON':
-      await handleTipoCuotaPadron(from, optionToProcess);
-      break;
-
-    case 'AWAITING_BOLETO_POST_DEUDA':
-      await handlePostDeudaBoletoChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PAGO_DEUDA':
-      await handlePagoDeudaChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PAGO_BOLETO':
-      await handlePagoBoletoChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PERFORACION_HELP':
-      await handlePerforacionHelpChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_OPCION_BOLETO_PADRON':
-      await handleOpcionBoletoPadron(from, optionToProcess);
-      break;
-
-    case 'AWAITING_PADRON':
-      await handlePadronInput(from, messageBody);
-      break;
-
-    case 'AWAITING_TURNO_METHOD':
-      await handleTurnoMethodChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_TURNO_TITULAR_CHOICE':
-      await handleTurnoTitularChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_TURNO_TITULAR':
-      await handleTurnoTitularInput(from, messageBody);
-      break;
-
-    case 'AWAITING_TURNO_TITULAR_API_OPTION':
-      await handleTurnoTitularApiOptionInput(from, messageBody);
-      break;
-
-    case 'AWAITING_TURNO_CCPP_CHOICE':
-      await handleTurnoCCPPChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_TURNO_CCPP':
-      await handleTurnoCCPPInput(from, messageBody);
-      break;
-
-    case 'AUTH_MENU':
-      await handleAuthMenu(from, messageBody);
-      break;
-
-    case 'AWAITING_OPERATOR_CHOICE':
-      // Handle operator choice buttons
-      console.log(`🔵 Opción recibida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
-      if (optionToProcess === 'op_si_operador') {
-        // User wants to talk with operator
-        const handoff = await intentarDerivarOperador(from, 'SCRAPER_ERROR_OPERATOR_CHOICE');
-        if (handoff.enEspera) {
-          userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
-          console.log(`👤 Usuario ${from} en espera de operador por error en scraper`);
-        } else if (handoff.fueraHorario) {
-          userStates[from].step = 'MAIN_MENU';
-          console.log(`🕒 Fuera de horario de operador para ${from}`);
-        } else {
-          userStates[from].step = 'MAIN_MENU';
-        }
-      } else if (optionToProcess === 'op_no_operador') {
-        // User wants to do another transaction
-        await sendMenuList(from, true);
-        userStates[from].step = 'MAIN_MENU';
-        console.log(`📋 Usuario ${from} continúa con menú principal después de error`);
-      } else if (optionToProcess === 'op_reintentar_dni') {
-        // User wants to retry with a different DNI
-        const retryMsg = `📝 Ingresá nuevamente tu DNI/CUIT.\n\nPor favor, verificá que el número sea correcto.`;
-        await sendMessageAndSave(from, retryMsg);
-        userStates[from].step = 'AWAITING_DNI';
-        console.log(`🔄 Usuario ${from} reintentando con nuevo DNI`);
-      } else {
-        console.warn(`⚠️ Opción no reconocida en AWAITING_OPERATOR_CHOICE: "${optionToProcess}"`);
-        const invalidMsg = '❌ Opción no válida. Por favor, elige una de las opciones disponibles.';
-        await sendMessageAndSave(from, invalidMsg);
-      }
-      break;
-
-    case 'AWAITING_OPERATOR_ASSIGNMENT':
-      await handleOperatorWaitingInput(from, messageBody, optionToProcess);
-      break;
-
-    case 'AWAITING_OPERATOR_SURVEY':
-      await handleOperatorSurveyResponse(from, optionToProcess);
-      break;
-
-    case 'AWAITING_OPINION_CHOICE':
-      await handleOpinionChoice(from, optionToProcess);
-      break;
-
-    case 'AWAITING_OPINION_TEXT':
-      await handleOpinionText(from, messageBody);
-      break;
-
-    case 'AWAITING_OPERATOR_FOLLOWUP':
-      await handleOperatorPostFollowUp(from, optionToProcess);
-      break;
   }
 };
 
@@ -953,10 +792,25 @@ const handleUserMessage = async (from, messageBody, optionId = null) => {
  * @param {string} nombreCliente - Nombre del cliente (si existe)
  * @param {boolean} esClienteNuevo - Si es cliente nuevo o existente
  */
-const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = true) => {
+const buildStartContext = (state = {}) => {
+  const normalizedName = formatPersonName(state.nombreCliente || '');
+  const hasName = isLikelyValidPersonName(normalizedName);
+
+  return {
+    hasName,
+    firstName: hasName ? normalizedName.split(' ')[0] : '',
+    shouldGreet: Boolean(state.shouldGreet) || state.step === 'START',
+    // Si hay nombre usable, nunca forzar nuevamente el pedido de nombre.
+    needsNamePrompt: !hasName,
+    needsSubdelegacionPrompt: !Boolean(state.subdelegacion),
+    isNewClient: Boolean(state.esClienteNuevo)
+  };
+};
+
+const sendWelcomeMessage = async (from, context = {}) => {
   let welcomeMessage = '';
-  
-  if (esClienteNuevo) {
+
+  if (!context.hasName || context.isNewClient) {
     // Saludo genérico para clientes nuevos
     welcomeMessage = `👋 ¡Bienvenido/a!
 
@@ -965,12 +819,11 @@ const sendWelcomeMessage = async (from, nombreCliente = '', esClienteNuevo = tru
   Para comenzar, ¿cómo es su nombre?`;
   } else {
     // Saludo personalizado para clientes conocidos
-    const nombre = nombreCliente ? nombreCliente.split(' ')[0] : 'amigo'; // Usar solo el primer nombre
+    const nombre = context.firstName || 'vecino/a';
     welcomeMessage = `👋 ¡Hola ${nombre}! ¿En qué puedo ayudarte hoy?`;
   }
   
   await sendMessageAndSave(from, welcomeMessage);
-  console.log(`👋 Mensaje de bienvenida enviado a ${from}`);
 };
 
 const handleUserNameInput = async (from, messageBody) => {
@@ -980,33 +833,33 @@ const handleUserNameInput = async (from, messageBody) => {
     if (!isLikelyValidPersonName(nombre)) {
       const invalidNameMsg = '⚠️ Ese nombre no parece válido.\n\nPor favor escribí tu nombre real (mínimo 2 letras).\nEjemplo: Maria Gomez';
       await sendMessageAndSave(from, invalidNameMsg);
-      userStates[from].step = 'AWAITING_USER_NAME';
-      userStates[from].namePromptSent = true;
+      botState().step = 'AWAITING_USER_NAME';
+      botState().namePromptSent = true;
       return;
     }
 
     await clienteService.actualizarNombreWhatsapp(from, nombre, true);
-    userStates[from].nombreCliente = nombre;
-    userStates[from].esClienteNuevo = false;
-    userStates[from].step = 'START';
-    userStates[from].namePromptSent = false;
-    userStates[from].needsNamePrompt = false;
+    botState().nombreCliente = nombre;
+    botState().esClienteNuevo = false;
+    botState().step = 'START';
+    botState().namePromptSent = false;
+    botState().needsNamePrompt = false;
 
     const primerNombre = nombre.split(' ')[0];
     await sendMessageAndSave(from, `Un gusto *${primerNombre}*! ¿A qué subdelegación corresponde su terreno?`);
 
-    if (!userStates[from].subdelegacion) {
+    if (!botState().subdelegacion) {
       await sendSubdelegacionPrompt(from);
-      userStates[from].step = 'AWAITING_SUBDELEGACION';
+      botState().step = 'AWAITING_SUBDELEGACION';
       return;
     }
 
     await sendMenuList(from, false);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   } catch (error) {
     console.error('❌ Error en handleUserNameInput:', error);
     await sendMessageAndSave(from, '❌ Ocurrió un error al guardar tu nombre. Intentá nuevamente.');
-    userStates[from].step = 'AWAITING_USER_NAME';
+    botState().step = 'AWAITING_USER_NAME';
   }
 };
 
@@ -1030,11 +883,6 @@ const sendMenuList = async (from, isFollowUp = false) => {
           title: '📄 Pago Anual o Bimestral',
           description: 'Obtener boleto y pagar online'
         },
-        { 
-          id: 'turnos', 
-          title: '🗓️ Consultar Turnos',
-          description: 'Información sobre turnos disponibles'
-        }
       ]
     },
     {
@@ -1050,7 +898,7 @@ const sendMenuList = async (from, isFollowUp = false) => {
   ];
 
   // Cambiar el mensaje según si es seguimiento o primera vez
-  const header = 'Atención al Ciudadano';
+  const header = 'Atención al usuario';
   const body = isFollowUp ? '¿Desea realizar otro trámite?' : '¿Qué trámite desea realizar hoy?';
   const headerImageUrl = process.env.MENU_HEADER_IMAGE_URL || null;
   
@@ -1092,7 +940,6 @@ const sendMenuList = async (from, isFollowUp = false) => {
     });
   }
   
-  console.log(`📋 Lista de menú enviada a ${from} (ID: ${mensajeGuardado.id})`);
 };
 
 const sendButtonReplyAndSave = async (from, body, buttons) => {
@@ -1161,19 +1008,19 @@ const sendInteractiveButtonsAndSave = async (from, body, buttons) => {
  * Maneja las opciones del menú principal
  */
 const handleMainMenu = async (from, option) => {
-  const normalizedOption = String(option || '').toLowerCase().trim();
+  const menuKey = resolveMainMenuKey(option);
 
-  if (TEMP_DISABLED_MENU_OPTIONS.has(normalizedOption)) {
+  if (TEMP_DISABLED_MENU_OPTIONS.has(menuKey)) {
     await sendMessageAndSave(
       from,
       '🔒 Esta opción quedó deshabilitada temporalmente. Por favor elegí una de las opciones disponibles del menú actual.'
     );
     await sendMenuList(from, true);
-    console.log(`🔒 Opción temporalmente deshabilitada: ${normalizedOption} | usuario=${from}`);
+    console.log(`🔒 Opción temporalmente deshabilitada: ${menuKey} | usuario=${from}`);
     return;
   }
 
-  switch (option) {
+  switch (menuKey) {
     case '1':
     case 'option_1':
     case 'deuda':
@@ -1197,13 +1044,13 @@ const handleMainMenu = async (from, option) => {
       ]);
 
       if (lastTitularDB) {
-        userStates[from].lastTitular = lastTitularDB;
+        botState().lastTitular = lastTitularDB;
       }
       if (lastCCPPDB) {
-        userStates[from].lastCCPP = lastCCPPDB;
+        botState().lastCCPP = lastCCPPDB;
       }
 
-      const hasMemory = Boolean(userStates[from].lastTitular || userStates[from].lastCCPP);
+      const hasMemory = Boolean(botState().lastTitular || botState().lastCCPP);
       // Ofrecer opciones de búsqueda de turno
       const turnosIntro = `🗓️ *Consulta de Turnos*\n\n¿Cómo desea buscar su turno?${hasMemory ? '\n\n💾 También podés escribir *mismo* para reutilizar tu última búsqueda.' : ''}\n\n_📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       await sendMessageAndSave(from, turnosIntro);
@@ -1218,7 +1065,7 @@ const handleMainMenu = async (from, option) => {
         ]
       );
 
-      userStates[from].step = 'AWAITING_TURNO_METHOD';
+      botState().step = 'AWAITING_TURNO_METHOD';
       console.log(`🗓️ Opciones de búsqueda de turno enviadas a ${from}`);
       break;
     }
@@ -1403,10 +1250,10 @@ Por favor contactá a un operador para más información.`;
     case 'operador': {
       const handoff = await intentarDerivarOperador(from, 'MAIN_MENU_OPERATOR');
       if (handoff.enEspera) {
-        userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+        botState().step = 'AWAITING_OPERATOR_ASSIGNMENT';
         console.log(`👤 Usuario ${from} en espera de operador`);
       } else {
-        userStates[from].step = 'MAIN_MENU';
+        botState().step = 'MAIN_MENU';
         console.log(`🕒 Fuera de horario de operador para ${from}`);
       }
       break;
@@ -1420,7 +1267,7 @@ Por favor contactá a un operador para más información.`;
     default:
       // Opción no válida, reenviar solo la lista
       await sendMenuList(from, true);
-      console.log(`⚠️ Opción inválida de ${from}, reenviando menú`);
+      console.log(`⚠️ Opción inválida de ${from} (raw=${String(option)}, menuKey=${menuKey}), reenviando menú`);
       break;
   }
 };
@@ -1434,7 +1281,7 @@ const handlePadronInput = async (from, messageBody) => {
   // Permitir volver al menú
   if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
   
@@ -1469,8 +1316,8 @@ const handlePadronInput = async (from, messageBody) => {
     }
 
     // Guardar el padrón y los datos del regante
-    userStates[from].padron = padron;
-    userStates[from].data = reganteData;
+    botState().padron = padron;
+    botState().data = reganteData;
 
     const buttons = [
       {
@@ -1508,7 +1355,7 @@ Seleccioná una opción:`;
       );
     }, 500);
 
-    userStates[from].step = 'AUTH_MENU';
+    botState().step = 'AUTH_MENU';
     console.log(`✅ Usuario ${from} autenticado con padrón ${padron}`);
   } catch (error) {
     console.error('❌ Error consultando base de datos:', error);
@@ -1523,8 +1370,8 @@ Seleccioná una opción:`;
  * Maneja las opciones del menú autenticado
  */
 const handleAuthMenu = async (from, option) => {
-  const padron = userStates[from].padron;
-  const reganteData = userStates[from].data;
+  const padron = botState().padron;
+  const reganteData = botState().data;
 
   switch (option) {
     case '1':
@@ -1584,10 +1431,10 @@ Te confirmaremos el turno por este medio 24hs antes.`;
       {
         const handoff = await intentarDerivarOperador(from, 'AUTH_MENU_OPERATOR');
         if (handoff.enEspera) {
-          userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+          botState().step = 'AWAITING_OPERATOR_ASSIGNMENT';
           console.log(`👤 Contacto con operador en espera para ${from}`);
         } else {
-          userStates[from].step = 'MAIN_MENU';
+          botState().step = 'MAIN_MENU';
           console.log(`🕒 Fuera de horario de operador para ${from}`);
         }
       }
@@ -1602,7 +1449,7 @@ Gracias por usar el sistema de Irrigación Malargüe.
 ¡Hasta pronto!`;
       
       await sendMessageAndSave(from, goodbyeText);
-      userStates[from] = { step: 'START', padron: null, lastMessageTime: Date.now() };
+      replaceBotStateRoot({ step: 'START', padron: null, lastMessageTime: Date.now() });
       console.log(`👋 Usuario ${from} salió del sistema`);
       break;
 
@@ -1631,14 +1478,10 @@ _📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await sendButtonReplyAndSave(
-      from,
-      'Elegí una opción:',
-      buttons
-    );
+    await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
 
-    userStates[from].step = 'AWAITING_MODO_CONSULTA';
-    userStates[from].operacion = 'deuda';
+    botState().step = 'AWAITING_MODO_CONSULTA';
+    botState().operacion = 'deuda';
     console.log(`📝 Esperando elección de modo (DNI vs Servicio) para deuda de ${from}`);
     
   } catch (error) {
@@ -1671,8 +1514,8 @@ _📌 En cualquier momento, escribí *SALIR* para volver al menú principal._`;
       buttons
     );
 
-    userStates[from].step = 'AWAITING_MODO_CONSULTA';
-    userStates[from].operacion = 'boleto';
+    botState().step = 'AWAITING_MODO_CONSULTA';
+    botState().operacion = 'boleto';
     console.log(`📝 Esperando elección de modo (DNI vs Servicio) para boleto de ${from}`);
     
   } catch (error) {
@@ -1693,7 +1536,7 @@ const handleDniInput = async (from, messageBody) => {
     // Permitir volver al menú
     if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
@@ -1733,7 +1576,7 @@ const handleDniInputBoleto = async (from, messageBody) => {
     // Permitir volver al menú
     if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
@@ -1766,8 +1609,8 @@ const handleDniInputBoleto = async (from, messageBody) => {
     );
     
     // Guardar DNI en estado temporal
-    userStates[from].tempDni = dni;
-    userStates[from].step = 'AWAITING_TIPO_CUOTA';
+    botState().tempDni = dni;
+    botState().step = 'AWAITING_TIPO_CUOTA';
     
   } catch (error) {
     console.error('❌ Error en handleDniInputBoleto:', error);
@@ -1785,12 +1628,12 @@ const handleTipoCuota = async (from, option) => {
     // Permitir volver al menú
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
-      delete userStates[from].tempDni;
+      botState().step = 'MAIN_MENU';
+      delete botState().tempDni;
       return;
     }
     
-    const dni = userStates[from].tempDni;
+    const dni = botState().tempDni;
     
     if (!dni) {
       const errorMsg = '❌ Ocurrió un error. Por favor intenta nuevamente.';
@@ -1862,7 +1705,7 @@ const handleTipoCuota = async (from, option) => {
     await ejecutarScraperBoleto(from, dni, tipoCuota);
 
     // Limpiar DNI temporal (el estado final lo maneja ejecutarScraperBoletoPadron)
-    delete userStates[from].tempDni;
+    delete botState().tempDni;
     
   } catch (error) {
     console.error('❌ Error en handleTipoCuota:', error);
@@ -1880,14 +1723,14 @@ const handleTipoCuotaPadron = async (from, option) => {
     // Permitir volver al menú
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
-      delete userStates[from].tempPadron;
-      delete userStates[from].tempTipoPadron;
+      botState().step = 'MAIN_MENU';
+      delete botState().tempPadron;
+      delete botState().tempTipoPadron;
       return;
     }
     
-    const padronData = userStates[from].tempPadron;
-    const tipoPadron = userStates[from].tempTipoPadron;
+    const padronData = botState().tempPadron;
+    const tipoPadron = botState().tempTipoPadron;
     
     if (!padronData || !tipoPadron) {
       const errorMsg = '❌ Ocurrió un error. Por favor intenta nuevamente.';
@@ -1976,7 +1819,7 @@ const handleDescargarBoleto = async (from) => {
     const fs = require('fs');
     
     // Recuperar pdfPath del estado
-    const pdfPath = userStates[from]?.tempPdf;
+    const pdfPath = botState()?.tempPdf;
     
     if (!pdfPath) {
       const noPdfMsg = '⚠️ No hay ningún boleto disponible.\n\nPor favor realiza una nueva consulta de deuda.';
@@ -1991,7 +1834,7 @@ const handleDescargarBoleto = async (from) => {
       await sendMessageAndSave(from, expiredMsg);
       
       // Limpiar estado
-      delete userStates[from].tempPdf;
+      delete botState().tempPdf;
       
       await sendMenuList(from, true);
       return;
@@ -2047,7 +1890,7 @@ const handleDescargarBoleto = async (from) => {
     
     // Eliminar archivo temporal
     fs.unlinkSync(pdfPath);
-    delete userStates[from].tempPdf;
+    delete botState().tempPdf;
     console.log(`🗑️ PDF eliminado: ${pdfPath}`);
     
     const successMsg = '✅ Boleto enviado correctamente.\n\n¿Necesitas algo más?';
@@ -2069,7 +1912,7 @@ const handlePostDeudaBoletoChoice = async (from, option) => {
   try {
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
 
@@ -2093,15 +1936,15 @@ const handlePostDeudaBoletoChoice = async (from, option) => {
       buttons
     );
 
-    if (userStates[from].tempPadron && userStates[from].tempTipoPadron) {
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
-    } else if (userStates[from].tempDni) {
-      userStates[from].step = 'AWAITING_TIPO_CUOTA';
+    if (botState().tempPadron && botState().tempTipoPadron) {
+      botState().step = 'AWAITING_TIPO_CUOTA_PADRON';
+    } else if (botState().tempDni) {
+      botState().step = 'AWAITING_TIPO_CUOTA';
     } else {
       const errorMsg = '❌ Ocurrió un error. Por favor intenta nuevamente.';
       await sendMessageAndSave(from, errorMsg);
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
     }
   } catch (error) {
     console.error('❌ Error en handlePostDeudaBoletoChoice:', error);
@@ -2130,6 +1973,110 @@ const parsePadronFromHyphen = (padron) => {
   };
 };
 
+const buildDniPadronSelectionRows = (opciones = [], page = 0, pageSize = 6, withSearch = false, withClearSearch = false) => {
+  const safePage = Math.max(0, page);
+  const start = safePage * pageSize;
+  const slice = opciones.slice(start, start + pageSize);
+
+  const rows = slice.map((opt, idx) => {
+    const absoluteIndex = start + idx;
+    const serviceType = String(opt.tipoServicio || '').toUpperCase();
+    const serviceBadge = serviceType ? `${serviceType} ` : '';
+    return {
+      id: `dni_padron_${absoluteIndex}`,
+      title: `${serviceBadge}${opt.padron}`,
+      description: String(opt.descripcion || 'Sin descripción').slice(0, 70)
+    };
+  });
+
+  if (safePage > 0) {
+    rows.push({ id: 'dni_page_prev', title: '⬅️ Ver anteriores', description: 'Mostrar servicios previos' });
+  }
+  if (start + pageSize < opciones.length) {
+    rows.push({ id: 'dni_page_next', title: '➡️ Ver más', description: 'Mostrar más servicios' });
+  }
+  if (withSearch) {
+    rows.push({ id: 'dni_search', title: '🔎 Buscar servicio', description: 'Buscar por código o nombre' });
+  }
+  if (withClearSearch) {
+    rows.push({ id: 'dni_search_clear', title: '🧹 Limpiar búsqueda', description: 'Volver al listado completo' });
+  }
+  rows.push({ id: 'dni_cancel', title: '↩️ Volver al menú', description: 'Cancelar esta búsqueda' });
+
+  return rows;
+};
+
+const sendDniPadronSelectionPrompt = async (from) => {
+  const selection = botState()?.dniPadronSelection;
+  const opciones = Array.isArray(selection?.filteredOpciones) && selection.filteredOpciones.length > 0
+    ? selection.filteredOpciones
+    : (selection?.opciones || []);
+  const page = selection?.page || 0;
+  const isFiltered = Array.isArray(selection?.filteredOpciones) && selection.filteredOpciones.length > 0;
+
+  if (!opciones.length) {
+    await sendMessageAndSave(from, 'ℹ️ No encontramos servicios para seleccionar.');
+    await sendMenuList(from, true);
+    botState().step = 'MAIN_MENU';
+    delete botState().dniPadronSelection;
+    return;
+  }
+
+  const pageSize = 6;
+  const totalPages = Math.max(1, Math.ceil(opciones.length / pageSize));
+  const rows = buildDniPadronSelectionRows(
+    opciones,
+    page,
+    pageSize,
+    totalPages > 2 && !isFiltered,
+    isFiltered
+  );
+
+  const sections = [{
+    title: 'Servicios',
+    rows
+  }];
+
+  const body = isFiltered
+    ? `Resultados de búsqueda: *${opciones.length}* servicio(s).\nSeleccioná el padrón a consultar.\n\nPágina *${page + 1}* de *${totalPages}*.`
+    : `Encontramos *${opciones.length}* servicios para ese DNI/CUIT.\nSeleccioná el padrón a consultar.\n\nPágina *${page + 1}* de *${totalPages}*.`;
+
+  await whatsappService.sendInteractiveList(
+    from,
+    'Selección de servicio',
+    body,
+    'Elegir padrón',
+    sections
+  );
+
+  const menuData = {
+    type: 'interactive_list',
+    header: 'Selección de servicio',
+    body,
+    buttonText: 'Elegir padrón',
+    sections
+  };
+
+  const mensajeGuardado = await mensajeService.guardarMensaje({
+    telefono: from,
+    tipo: 'interactive',
+    cuerpo: JSON.stringify(menuData),
+    emisor: 'bot',
+    url_archivo: null
+  });
+
+  if (global.io) {
+    global.io.emit('nuevo_mensaje', {
+      id: mensajeGuardado.id,
+      telefono: from,
+      mensaje: JSON.stringify(menuData),
+      emisor: 'bot',
+      tipo: 'interactive',
+      timestamp: mensajeGuardado.fecha
+    });
+  }
+};
+
 const obtenerPadronDesdeDni = async (dni) => {
   console.log(`🧭 [FLOW] Traduciendo DNI/CUIT a padrón vía API: ${dni}`);
   const traduccion = await debtApiService.traducirDniAPadron(dni);
@@ -2137,21 +2084,16 @@ const obtenerPadronDesdeDni = async (dni) => {
   if (!traduccion.success) {
     return {
       success: false,
-      userMessage: traduccion.message || 'No se encontraron padrones para este DNI.'
+      userMessage: traduccion.userMessage || traduccion.message || ACTION_FAILED
     };
   }
 
   if (traduccion.multiple) {
-    const opciones = (traduccion.opciones || []).slice(0, 10);
-    const listado = opciones
-      .map((opt, idx) => `${idx + 1}. ${opt.padron} - ${opt.descripcion}`)
-      .join('\n');
-
     return {
-      success: false,
-      userMessage:
-        `ℹ️ Encontramos más de un servicio para ese DNI:\n\n${listado}\n\n` +
-        `Para continuar, por favor consultá por *Servicio* (padrón) desde el menú.`
+      success: true,
+      multiple: true,
+      opciones: traduccion.opciones || [],
+      total: traduccion.total || (traduccion.opciones || []).length
     };
   }
 
@@ -2159,7 +2101,7 @@ const obtenerPadronDesdeDni = async (dni) => {
   if (!parsed) {
     return {
       success: false,
-      userMessage: '❌ No se pudo interpretar el padrón devuelto para este DNI.'
+      userMessage: ACTION_FAILED
     };
   }
 
@@ -2178,7 +2120,19 @@ const ejecutarScraper = async (from, dni) => {
     if (!traduccion.success) {
       await sendMessageAndSave(from, `⚠️ ${traduccion.userMessage}`);
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
+      return;
+    }
+
+    if (traduccion.multiple) {
+      botState().dniPadronSelection = {
+        dni,
+        opciones: traduccion.opciones || [],
+        page: 0,
+        operacion: 'deuda'
+      };
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      await sendDniPadronSelectionPrompt(from);
       return;
     }
 
@@ -2189,12 +2143,11 @@ const ejecutarScraper = async (from, dni) => {
     };
 
     await ejecutarScraperPadron(from, clienteMock, traduccion.tipoPadron, 'deuda');
-    userStates[from].tempDni = dni;
+    botState().tempDni = dni;
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraper:', error);
-    const errorMsg = '❌ Ocurrió un error al consultar la deuda. Por favor intenta más tarde.';
-    await sendMessageAndSave(from, errorMsg);
+    await sendMessageAndSave(from, ACTION_FAILED);
     await sendMenuList(from, true);
   }
 };
@@ -2212,6 +2165,19 @@ const ejecutarScraperBoleto = async (from, dni, tipoCuota) => {
       return;
     }
 
+    if (traduccion.multiple) {
+      botState().dniPadronSelection = {
+        dni,
+        opciones: traduccion.opciones || [],
+        page: 0,
+        operacion: 'boleto',
+        tipoCuota
+      };
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      await sendDniPadronSelectionPrompt(from);
+      return;
+    }
+
     console.log(`✅ [FLOW] DNI ${dni} traducido a padrón ${traduccion.padronDisplay} para boleto`);
     await ejecutarScraperBoletoPadron(from, traduccion.padronTexto, traduccion.tipoPadron, tipoCuota);
     
@@ -2220,6 +2186,161 @@ const ejecutarScraperBoleto = async (from, dni, tipoCuota) => {
     const errorMsg = '❌ Ocurrió un error al generar el boleto. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
+  }
+};
+
+const normalizeModoConsultaOption = (option = '') => {
+  const normalized = normalizeSingleLine(option).toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'modo_dni' || normalized.includes('por dni')) return 'modo_dni';
+  if (normalized === 'modo_padron' || normalized.includes('por servicio')) return 'modo_padron';
+  if (normalized === 'volver_menu' || normalized.includes('volver')) return 'volver_menu';
+  return normalized;
+};
+
+const handleDniPadronSelectionChoice = async (from, option) => {
+  try {
+    const selection = botState()?.dniPadronSelection;
+    const opcionesActuales = Array.isArray(selection?.filteredOpciones) && selection.filteredOpciones.length > 0
+      ? selection.filteredOpciones
+      : selection?.opciones;
+
+    if (!selection || !Array.isArray(opcionesActuales) || opcionesActuales.length === 0) {
+      await sendMenuList(from, true);
+      botState().step = 'MAIN_MENU';
+      return;
+    }
+
+    if (option === 'dni_cancel' || option === 'volver_menu') {
+      delete botState().dniPadronSelection;
+      await sendMenuList(from, true);
+      botState().step = 'MAIN_MENU';
+      return;
+    }
+
+    if (option === 'dni_page_next') {
+      const pageSize = 6;
+      const maxPage = Math.max(0, Math.ceil(opcionesActuales.length / pageSize) - 1);
+      selection.page = Math.min(maxPage, (selection.page || 0) + 1);
+      await sendDniPadronSelectionPrompt(from);
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    if (option === 'dni_page_prev') {
+      selection.page = Math.max(0, (selection.page || 0) - 1);
+      await sendDniPadronSelectionPrompt(from);
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    if (option === 'dni_search') {
+      await sendMessageAndSave(from, '🔎 Escribí el código o nombre del servicio a buscar.\n\nEjemplo: *C00100732* o *RIO DIAMANTE*.\n\n_Para cancelar, escribí SALIR._');
+      botState().step = 'AWAITING_DNI_PADRON_SEARCH';
+      return;
+    }
+
+    if (option === 'dni_search_clear') {
+      delete selection.filteredOpciones;
+      selection.page = 0;
+      await sendDniPadronSelectionPrompt(from);
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    if (!String(option || '').startsWith('dni_padron_')) {
+      await sendMessageAndSave(from, '❌ Opción no válida. Elegí una opción de la lista.');
+      await sendDniPadronSelectionPrompt(from);
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    const index = Number(String(option).replace('dni_padron_', ''));
+    const chosen = Number.isInteger(index) ? opcionesActuales[index] : null;
+    if (!chosen?.padron) {
+      await sendMessageAndSave(from, '❌ No pude identificar ese padrón. Probá de nuevo.');
+      await sendDniPadronSelectionPrompt(from);
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    const parsed = parsePadronFromHyphen(chosen.padron);
+    if (!parsed) {
+      await sendMessageAndSave(from, '❌ Ese padrón no tiene formato válido para esta consulta.');
+      await sendDniPadronSelectionPrompt(from);
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    const operacion = selection.operacion || 'deuda';
+    const tipoCuota = selection.tipoCuota || null;
+    const dni = selection.dni || '';
+    delete botState().dniPadronSelection;
+
+    if (operacion === 'boleto') {
+      await sendMessageAndSave(from, `✅ Servicio seleccionado: *${parsed.padronDisplay}*`);
+      await ejecutarScraperBoletoPadron(from, parsed.padronTexto, 'superficial', tipoCuota || 'anual');
+      return;
+    }
+
+    const clienteMock = { padron_superficial: parsed.padronTexto };
+    if (dni) botState().tempDni = dni;
+    await sendMessageAndSave(from, `✅ Servicio seleccionado: *${parsed.padronDisplay}*`);
+    await ejecutarScraperPadron(from, clienteMock, 'superficial', 'deuda');
+  } catch (error) {
+    console.error('❌ Error en handleDniPadronSelectionChoice:', error);
+    const optionValue = String(option || '');
+    if (optionValue === 'dni_page_next' || optionValue === 'dni_page_prev') {
+      await sendMessageAndSave(from, '⚠️ No pude cargar la siguiente página de servicios. Probá nuevamente.');
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      return;
+    }
+
+    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar la opción seleccionada.');
+    await sendMenuList(from, true);
+    botState().step = 'MAIN_MENU';
+  }
+};
+
+const handleDniPadronSearchInput = async (from, messageBody) => {
+  try {
+    const selection = botState()?.dniPadronSelection;
+    if (!selection || !Array.isArray(selection.opciones) || selection.opciones.length === 0) {
+      await sendMenuList(from, true);
+      botState().step = 'MAIN_MENU';
+      return;
+    }
+
+    const term = normalizeSingleLine(messageBody).toLowerCase();
+    if (!term || term === 'salir' || term === 'cancelar' || term === 'volver' || term === 'menu') {
+      botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+      await sendDniPadronSelectionPrompt(from);
+      return;
+    }
+
+    const filtered = selection.opciones.filter((opt) => {
+      const code = normalizeSingleLine(opt?.codigo || '').toLowerCase();
+      const desc = normalizeSingleLine(opt?.descripcion || '').toLowerCase();
+      const padron = normalizeSingleLine(opt?.padron || '').toLowerCase();
+      return code.includes(term) || desc.includes(term) || padron.includes(term);
+    });
+
+    if (!filtered.length) {
+      await sendMessageAndSave(from, 'ℹ️ No encontramos resultados para esa búsqueda. Probá con otro término.');
+      await sendMessageAndSave(from, '🔎 Escribí otro código o nombre, o escribí SALIR para volver al listado completo.');
+      botState().step = 'AWAITING_DNI_PADRON_SEARCH';
+      return;
+    }
+
+    selection.filteredOpciones = filtered;
+    selection.page = 0;
+    botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+    await sendDniPadronSelectionPrompt(from);
+  } catch (error) {
+    console.error('❌ Error en handleDniPadronSearchInput:', error);
+    await sendMessageAndSave(from, '❌ Ocurrió un error al procesar la búsqueda.');
+    botState().step = 'AWAITING_DNI_PADRON_SELECTION';
+    await sendDniPadronSelectionPrompt(from);
   }
 };
 
@@ -2255,7 +2376,6 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
       });
     }
     
-    console.log(`✅ Mensaje enviado y guardado: ${telefono} (ID: ${mensajeGuardado.id})`);
     return true;
   } catch (error) {
     console.error('❌ Error en sendMessageAndSave:', error);
@@ -2263,9 +2383,7 @@ const sendMessageAndSave = async (telefono, mensaje, tipo = 'text') => {
   }
 };
 
-const buildActionFailedMessage = (actionLabel) => {
-  return `❌ No se pudo ${actionLabel} en este momento.\n\nPor favor intentá nuevamente en unos minutos.`;
-};
+const buildActionFailedMessage = (_actionLabel) => ACTION_FAILED;
 
 const buildTurnoLookupFailedMessage = (inputLabel, detail = '') => {
   const detailLine = detail ? `${detail}\n\n` : '';
@@ -2331,12 +2449,19 @@ const buildTurnoResponse = ({ data = {}, titularFallback = 'No disponible', ccpp
  * Manejar selección de método de consulta (DNI vs Padrón)
  */
 const handleModoConsulta = async (from, option) => {
+  if (botState().modoConsultaLocked) {
+    console.log(`🔒 Ignorando selección duplicada de modo para ${from}`);
+    return;
+  }
+
+  botState().modoConsultaLocked = true;
   try {
-    const operacion = userStates[from].operacion || 'deuda';
+    option = normalizeModoConsultaOption(option);
+    const operacion = botState().operacion || 'deuda';
 
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
@@ -2356,16 +2481,16 @@ const handleModoConsulta = async (from, option) => {
         ];
 
         await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
-        userStates[from].ultimoDni = ultimoDni;
-        userStates[from].step = 'AWAITING_DNI_CHOICE';
+        botState().ultimoDni = ultimoDni;
+        botState().step = 'AWAITING_DNI_CHOICE';
       } else {
         const msg = '🆔 *Ingresá tu número de DNI/CUIT* (sin puntos ni espacios)\n\nEj: 12345678\n\n_📝 Para volver al menú, escribí *SALIR*._';
         await sendMessageAndSave(from, msg);
 
         if (operacion === 'boleto') {
-          userStates[from].step = 'AWAITING_DNI_BOLETO';
+          botState().step = 'AWAITING_DNI_BOLETO';
         } else {
-          userStates[from].step = 'AWAITING_DNI';
+          botState().step = 'AWAITING_DNI';
         }
       }
       console.log(`📝 Flujo DNI iniciado para ${operacion} de ${from}`);
@@ -2376,7 +2501,7 @@ const handleModoConsulta = async (from, option) => {
       const padronSubterraneo = cliente?.padron_subterraneo || '';
       const padronContaminacion = cliente?.padron_contaminacion || '';
 
-      userStates[from].padronesGuardados = {
+      botState().padronesGuardados = {
         superficial: padronSuperficial,
         subterraneo: padronSubterraneo,
         contaminacion: padronContaminacion
@@ -2401,7 +2526,7 @@ const handleModoConsulta = async (from, option) => {
         ];
 
         await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
-        userStates[from].step = 'AWAITING_PADRON_GLOBAL_CHOICE';
+        botState().step = 'AWAITING_PADRON_GLOBAL_CHOICE';
       } else {
         const msg = '📋 *Seleccioná el tipo de servicio:*';
         await sendMessageAndSave(from, msg);
@@ -2413,42 +2538,55 @@ const handleModoConsulta = async (from, option) => {
         ];
 
         await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
-        userStates[from].step = 'AWAITING_TIPO_PADRON';
+        botState().step = 'AWAITING_TIPO_PADRON';
       }
 
       console.log(`📝 Flujo padrón invertido iniciado para ${operacion} de ${from}`);
+    } else {
+      const k = resolveMainMenuKey(option);
+      if (k && MAIN_MENU_ROW_IDS.has(k)) {
+        botState().step = 'MAIN_MENU';
+        await handleMainMenu(from, k);
+        return;
+      }
+      await sendMessageAndSave(
+        from,
+        '⚠️ Elegí *Por DNI* o *Por Servicio* con los botones del mensaje anterior.\n\nSi querés otro trámite, escribí *SALIR* y abrí de nuevo el menú principal.'
+      );
     }
   } catch (error) {
     console.error('❌ Error en handleModoConsulta:', error);
     const errorMsg = '❌ Ocurrió un error. Por favor intenta de nuevo.';
     await sendMessageAndSave(from, errorMsg);
+  } finally {
+    botState().modoConsultaLocked = false;
   }
 };
 
 const handleDniChoice = async (from, option) => {
   try {
-    const operacion = userStates[from].operacion || 'deuda';
+    const operacion = botState().operacion || 'deuda';
 
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
-      delete userStates[from].ultimoDni;
+      botState().step = 'MAIN_MENU';
+      delete botState().ultimoDni;
       return;
     }
 
     if (option === 'usar_ultimo_dni') {
-      const dni = userStates[from].ultimoDni;
+      const dni = botState().ultimoDni;
 
       if (!dni) {
         await sendMessageAndSave(from, '❌ No encontramos un DNI previo para reutilizar.');
         await sendMenuList(from, true);
-        userStates[from].step = 'MAIN_MENU';
+        botState().step = 'MAIN_MENU';
         return;
       }
 
       if (operacion === 'boleto') {
         await sendMessageAndSave(from, `✅ Usando DNI guardado: *${dni}*`);
-        userStates[from].tempDni = dni;
+        botState().tempDni = dni;
         const preguntaMsg = `📄 *Seleccioná el tipo de boleto que querés generar:*`;
         await sendMessageAndSave(from, preguntaMsg);
 
@@ -2459,7 +2597,7 @@ const handleDniChoice = async (from, option) => {
         ];
 
         await sendButtonReplyAndSave(from, 'Elegí el tipo de cuota:', buttons);
-        userStates[from].step = 'AWAITING_TIPO_CUOTA';
+        botState().step = 'AWAITING_TIPO_CUOTA';
       } else {
         await sendMessageAndSave(from, `✅ Usando DNI guardado: *${dni}*`);
         const searchingMsg = `🔍 Consultando deuda para el DNI *${dni}*...\n\n⏳ Aguarda unos segundos mientras procesamos la solicitud.`;
@@ -2467,7 +2605,7 @@ const handleDniChoice = async (from, option) => {
         await ejecutarScraper(from, dni);
       }
 
-      delete userStates[from].ultimoDni;
+      delete botState().ultimoDni;
       return;
     }
 
@@ -2476,9 +2614,9 @@ const handleDniChoice = async (from, option) => {
       await sendMessageAndSave(from, msg);
 
       if (operacion === 'boleto') {
-        userStates[from].step = 'AWAITING_DNI_BOLETO';
+        botState().step = 'AWAITING_DNI_BOLETO';
       } else {
-        userStates[from].step = 'AWAITING_DNI';
+        botState().step = 'AWAITING_DNI';
       }
       return;
     }
@@ -2488,14 +2626,14 @@ const handleDniChoice = async (from, option) => {
     console.error('❌ Error en handleDniChoice:', error);
     await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intentá nuevamente.');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
 const handlePadronGlobalChoice = async (from, option) => {
   try {
-    const operacion = userStates[from].operacion || 'deuda';
-    const guardados = userStates[from].padronesGuardados || {};
+    const operacion = botState().operacion || 'deuda';
+    const guardados = botState().padronesGuardados || {};
     const disponibles = [
       { tipo: 'superficial', valor: guardados.superficial },
       { tipo: 'subterraneo', valor: guardados.subterraneo },
@@ -2504,8 +2642,8 @@ const handlePadronGlobalChoice = async (from, option) => {
 
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
-      delete userStates[from].padronesGuardados;
+      botState().step = 'MAIN_MENU';
+      delete botState().padronesGuardados;
       return;
     }
 
@@ -2520,13 +2658,13 @@ const handlePadronGlobalChoice = async (from, option) => {
       ];
 
       await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
-      userStates[from].step = 'AWAITING_TIPO_PADRON';
+      botState().step = 'AWAITING_TIPO_PADRON';
       return;
     }
 
     const ejecutarConPadronGuardado = async (tipoPadron, padronValor) => {
-      userStates[from].tempTipoPadron = tipoPadron;
-      userStates[from].tempPadron = padronValor;
+      botState().tempTipoPadron = tipoPadron;
+      botState().tempPadron = padronValor;
 
       if (operacion === 'boleto') {
         const preguntaMsg = `📄 *Seleccioná el tipo de boleto que querés generar:*`;
@@ -2539,7 +2677,7 @@ const handlePadronGlobalChoice = async (from, option) => {
         ];
 
         await sendButtonReplyAndSave(from, 'Elegí el tipo de cuota:', buttons);
-        userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+        botState().step = 'AWAITING_TIPO_CUOTA_PADRON';
       } else {
         const clienteMock = {
           padron_superficial: tipoPadron === 'superficial' ? padronValor : '',
@@ -2549,14 +2687,14 @@ const handlePadronGlobalChoice = async (from, option) => {
         await ejecutarScraperPadron(from, clienteMock, tipoPadron, 'deuda');
       }
 
-      delete userStates[from].padronesGuardados;
+      delete botState().padronesGuardados;
     };
 
     if (option === 'usar_padron_guardado') {
       if (!disponibles.length) {
         await sendMessageAndSave(from, 'ℹ️ No encontramos padrones guardados para usar.');
         await sendMenuList(from, true);
-        userStates[from].step = 'MAIN_MENU';
+        botState().step = 'MAIN_MENU';
         return;
       }
 
@@ -2574,7 +2712,7 @@ const handlePadronGlobalChoice = async (from, option) => {
       if (guardados.contaminacion) buttons.push({ id: 'usar_guardado_contaminacion', title: '🛢️ C) Contaminación' });
 
       await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons.slice(0, 3));
-      userStates[from].step = 'AWAITING_PADRON_GLOBAL_CHOICE';
+      botState().step = 'AWAITING_PADRON_GLOBAL_CHOICE';
       return;
     }
 
@@ -2598,7 +2736,7 @@ const handlePadronGlobalChoice = async (from, option) => {
     console.error('❌ Error en handlePadronGlobalChoice:', error);
     await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intentá nuevamente.');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -2607,7 +2745,7 @@ const handlePadronGlobalChoice = async (from, option) => {
  */
 const handleTipoPadron = async (from, option) => {
   try {
-    const operacion = userStates[from].operacion || 'deuda';
+    const operacion = botState().operacion || 'deuda';
     let tipoSeleccionado = '';
     
     if (option === 'tipo_padron_a') {
@@ -2625,23 +2763,23 @@ const handleTipoPadron = async (from, option) => {
       return;
     }
 
-    userStates[from].tempTipoPadron = tipoSeleccionado;
+    botState().tempTipoPadron = tipoSeleccionado;
 
     if (tipoSeleccionado === 'superficial') {
       const msg = '🌾 *A - Superficial*\n\nIngresá: *Código de cauce* y *Padrón parcial*\n\n_Formato: código de cauce (espacio) padrón parcial_\n\nEj: 8234 1710\n\n_📝 Para volver al menú, escribí *SALIR*._';
       await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_PADRON_SUPERFICIAL';
+      botState().step = 'AWAITING_PADRON_SUPERFICIAL';
     } else if (tipoSeleccionado === 'subterraneo') {
       const msg = '💧 *B - Subterráneo*\n\nIngresá: *Código Departamento* y *N° de Pozo*\n\n_Formato: código departamento (espacio) número de pozo_\n\nEj: 10 5\n\n_📝 Para volver al menú, escribí *SALIR*._';
       await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_PADRON_SUBTERRANEO';
+      botState().step = 'AWAITING_PADRON_SUBTERRANEO';
     } else {
       const msg = '🛢️ *C - Contaminación*\n\nIngresá solo el *N° de Contaminación* (campo izquierdo)\n\nEj: 12345\n\n_📝 Para volver al menú, escribí *SALIR*._';
       await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_PADRON_CONTAMINACION';
+      botState().step = 'AWAITING_PADRON_CONTAMINACION';
     }
     
-    console.log(`📝 Esperando datos de padrón tipo ${userStates[from].tempTipoPadron} de ${from}`);
+    console.log(`📝 Esperando datos de padrón tipo ${botState().tempTipoPadron} de ${from}`);
   } catch (error) {
     console.error('❌ Error en handleTipoPadron:', error);
     const errorMsg = '❌ Ocurrió un error. Por favor intenta de nuevo.';
@@ -2651,21 +2789,21 @@ const handleTipoPadron = async (from, option) => {
 
 const handlePadronChoice = async (from, option) => {
   try {
-    const operacion = userStates[from].operacion || 'deuda';
-    const tipoPadron = userStates[from].tempTipoPadron;
-    const ultimoPadron = userStates[from].ultimoPadron;
+    const operacion = botState().operacion || 'deuda';
+    const tipoPadron = botState().tempTipoPadron;
+    const ultimoPadron = botState().ultimoPadron;
 
     if (option === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
-      delete userStates[from].ultimoPadron;
+      botState().step = 'MAIN_MENU';
+      delete botState().ultimoPadron;
       return;
     }
 
     if (!tipoPadron) {
       await sendMessageAndSave(from, '❌ No se encontró el tipo de servicio. Intentá nuevamente.');
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
 
@@ -2673,15 +2811,15 @@ const handlePadronChoice = async (from, option) => {
       if (tipoPadron === 'superficial') {
         const msg = '🌾 *A - Superficial*\n\nIngresá: *Código de cauce* y *Padrón parcial*\n\n_Formato: código de cauce (espacio) padrón parcial_\n\nEj: 8234 1710\n\n_📝 Para volver al menú, escribí *SALIR*._';
         await sendMessageAndSave(from, msg);
-        userStates[from].step = 'AWAITING_PADRON_SUPERFICIAL';
+        botState().step = 'AWAITING_PADRON_SUPERFICIAL';
       } else if (tipoPadron === 'subterraneo') {
         const msg = '💧 *B - Subterráneo*\n\nIngresá: *Código Departamento* y *N° de Pozo*\n\n_Formato: código departamento (espacio) número de pozo_\n\nEj: 10 5\n\n_📝 Para volver al menú, escribí *SALIR*._';
         await sendMessageAndSave(from, msg);
-        userStates[from].step = 'AWAITING_PADRON_SUBTERRANEO';
+        botState().step = 'AWAITING_PADRON_SUBTERRANEO';
       } else {
         const msg = '🛢️ *C - Contaminación*\n\nIngresá solo el *N° de Contaminación* (campo izquierdo)\n\nEj: 12345\n\n_📝 Para volver al menú, escribí *SALIR*._';
         await sendMessageAndSave(from, msg);
-        userStates[from].step = 'AWAITING_PADRON_CONTAMINACION';
+        botState().step = 'AWAITING_PADRON_CONTAMINACION';
       }
       return;
     }
@@ -2690,12 +2828,12 @@ const handlePadronChoice = async (from, option) => {
       if (!ultimoPadron) {
         await sendMessageAndSave(from, '❌ No hay un padrón guardado para este servicio.');
         await sendMenuList(from, true);
-        userStates[from].step = 'MAIN_MENU';
+        botState().step = 'MAIN_MENU';
         return;
       }
 
       if (operacion === 'boleto') {
-        userStates[from].tempPadron = ultimoPadron;
+        botState().tempPadron = ultimoPadron;
 
         const preguntaMsg = `📄 *Seleccioná el tipo de boleto que querés generar:*`;
         await sendMessageAndSave(from, preguntaMsg);
@@ -2707,13 +2845,13 @@ const handlePadronChoice = async (from, option) => {
         ];
 
         await sendButtonReplyAndSave(from, 'Elegí el tipo de cuota:', buttons);
-        userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+        botState().step = 'AWAITING_TIPO_CUOTA_PADRON';
       } else {
         const cliente = await clienteService.obtenerCliente(from);
         await ejecutarScraperPadron(from, cliente, tipoPadron, 'deuda');
       }
 
-      delete userStates[from].ultimoPadron;
+      delete botState().ultimoPadron;
       return;
     }
 
@@ -2722,7 +2860,7 @@ const handlePadronChoice = async (from, option) => {
     console.error('❌ Error en handlePadronChoice:', error);
     await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intentá nuevamente.');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -2736,11 +2874,11 @@ const handlePadronSuperficial = async (from, messageBody) => {
     // Permitir volver al menú
     if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
-    const operacion = userStates[from].operacion || 'deuda';
+    const operacion = botState().operacion || 'deuda';
     const partes = messageBody.trim().split(/\s+/);
     
     if (partes.length !== 2) {
@@ -2763,7 +2901,7 @@ const handlePadronSuperficial = async (from, messageBody) => {
       await ejecutarScraperPadron(from, cliente, 'superficial', 'deuda');
       
     } else if (operacion === 'boleto') {
-      userStates[from].tempPadron = `${codigoCauce} ${numeroPadron}`;
+      botState().tempPadron = `${codigoCauce} ${numeroPadron}`;
       
       // Preguntar tipo de cuota
       const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
@@ -2776,7 +2914,7 @@ const handlePadronSuperficial = async (from, messageBody) => {
       ];
       
       await sendButtonReplyAndSave(from, preguntaMsg, buttons);
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+      botState().step = 'AWAITING_TIPO_CUOTA_PADRON';
     }
   } catch (error) {
     console.error('❌ Error en handlePadronSuperficial:', error);
@@ -2796,11 +2934,11 @@ const handlePadronSubterraneo = async (from, messageBody) => {
     // Permitir volver al menú
     if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
-    const operacion = userStates[from].operacion || 'deuda';
+    const operacion = botState().operacion || 'deuda';
     const partes = messageBody.trim().split(/\s+/);
     
     if (partes.length !== 2) {
@@ -2818,7 +2956,7 @@ const handlePadronSubterraneo = async (from, messageBody) => {
     
     // Ejecutar la operación
     if (operacion === 'boleto') {
-      userStates[from].tempPadron = `${codigoDepartamento} ${numeroPozo}`;
+      botState().tempPadron = `${codigoDepartamento} ${numeroPozo}`;
       
       // Preguntar tipo de cuota
       const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
@@ -2836,7 +2974,7 @@ const handlePadronSubterraneo = async (from, messageBody) => {
         buttons
       );
       
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+      botState().step = 'AWAITING_TIPO_CUOTA_PADRON';
     } else {
       // Operación: deuda - consultar con el padrón guardado
       const cliente = await clienteService.obtenerCliente(from);
@@ -2860,11 +2998,11 @@ const handlePadronContaminacion = async (from, messageBody) => {
     // Permitir volver al menú
     if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
-    const operacion = userStates[from].operacion || 'deuda';
+    const operacion = botState().operacion || 'deuda';
     const numeroContaminacion = messageBody.trim();
     
     if (!numeroContaminacion || numeroContaminacion.length === 0) {
@@ -2879,7 +3017,7 @@ const handlePadronContaminacion = async (from, messageBody) => {
     
     // Ejecutar la operación
     if (operacion === 'boleto') {
-      userStates[from].tempPadron = numeroContaminacion;
+      botState().tempPadron = numeroContaminacion;
       
       // Preguntar tipo de cuota
       const preguntaMsg = `📄 *Selecciona el tipo de boleto que deseas generar:*`;
@@ -2897,7 +3035,7 @@ const handlePadronContaminacion = async (from, messageBody) => {
         buttons
       );
       
-      userStates[from].step = 'AWAITING_TIPO_CUOTA_PADRON';
+      botState().step = 'AWAITING_TIPO_CUOTA_PADRON';
     } else {
       // Operación: deuda - consultar con el padrón guardado
       const cliente = await clienteService.obtenerCliente(from);
@@ -2920,7 +3058,7 @@ const handleOpcionBoletoPadron = async (from, option) => {
       const msg = '✅ Gracias por tu consulta.';
       await sendMessageAndSave(from, msg);
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
@@ -2936,8 +3074,8 @@ const handleOpcionBoletoPadron = async (from, option) => {
       return;
     }
     
-    const padronData = userStates[from].tempPadron;
-    const tipoPadron = userStates[from].tempTipoPadron;
+    const padronData = botState().tempPadron;
+    const tipoPadron = botState().tempTipoPadron;
     
     if (!padronData || !tipoPadron) {
       const errorMsg = '❌ Ocurrió un error. Por favor intenta nuevamente.';
@@ -2949,9 +3087,9 @@ const handleOpcionBoletoPadron = async (from, option) => {
     // Ejecutar scraper de boleto
     await ejecutarScraperBoletoPadron(from, padronData, tipoPadron, tipoCuota);
     
-    userStates[from].step = 'MAIN_MENU';
-    delete userStates[from].tempPadron;
-    delete userStates[from].tempTipoPadron;
+    botState().step = 'MAIN_MENU';
+    delete botState().tempPadron;
+    delete botState().tempTipoPadron;
     
   } catch (error) {
     console.error('❌ Error en handleOpcionBoletoPadron:', error);
@@ -3015,18 +3153,18 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
         getServiceErrorMessage(resultado, buildActionFailedMessage('consultar la deuda del servicio'))
       );
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       return;
     }
     
     // Guardar PDF en estado para poder descargarlo
     if (resultado.absolutePdfPath) {
-      userStates[from].tempPdf = resultado.absolutePdfPath;
+      botState().tempPdf = resultado.absolutePdfPath;
     }
 
     // Guardar padrón para posible generación de boleto
-    userStates[from].tempPadron = padronRaw;
-    userStates[from].tempTipoPadron = tipoPadron;
+    botState().tempPadron = padronRaw;
+    botState().tempTipoPadron = tipoPadron;
     
     // Formatear mensaje de deuda
     const datos = resultado.data;
@@ -3049,7 +3187,7 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Ofrecer pagar deuda o volver
-    const opcionesMsg = `💳 *¿Querés pagar tu deuda online?*`;
+    const opcionesMsg = `💳 *Pago de deuda online*\n\n¿Desea continuar con el pago ahora?`;
     await sendMessageAndSave(from, opcionesMsg);
     
     // Pequeña pausa antes de enviar botones
@@ -3060,15 +3198,15 @@ const ejecutarScraperPadron = async (from, cliente, tipoPadron, tipoOperacion = 
       { id: 'volver_menu', title: '↩️ Volver' }
     ];
 
-    await sendButtonReplyAndSave(from, 'Elige una opción:', buttons);
-    userStates[from].step = 'AWAITING_PAGO_DEUDA';
+    await sendButtonReplyAndSave(from, 'Seleccione una opción:', buttons);
+    botState().step = 'AWAITING_PAGO_DEUDA';
     
   } catch (error) {
     console.error('❌ Error en ejecutarScraperPadron:', error);
     const errorMsg = '❌ Ocurrió un error al consultar la deuda. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -3171,7 +3309,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         
       } catch (uploadError) {
         console.error('❌ Error al subir PDF a WhatsApp:', uploadError);
-        await sendMessageAndSave(from, '❌ Error al enviar el boleto. Por favor intenta más tarde.');
+        await sendMessageAndSave(from, ACTION_FAILED);
         await sendMenuList(from, true);
         return;
       }
@@ -3180,7 +3318,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Ofrecer pagar boleto
-      const pagarMsg = `📄 *Boleto generado correctamente*`;
+      const pagarMsg = `📄 *Boleto generado correctamente*\n\nPuede continuar con el pago desde el siguiente paso.`;
       await sendMessageAndSave(from, pagarMsg);
       
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -3190,8 +3328,8 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         { id: 'volver_menu', title: '🚪 Salir' }
       ];
       
-      await sendButtonReplyAndSave(from, '¿Desea pagar el boleto?', buttons);
-      userStates[from].step = 'AWAITING_PAGO_BOLETO';
+      await sendButtonReplyAndSave(from, '¿Desea pagar el boleto ahora?', buttons);
+      botState().step = 'AWAITING_PAGO_BOLETO';
 
       const periBole = resultado?.data?.periBole;
       const numeBole = resultado?.data?.numeBole;
@@ -3199,7 +3337,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
         process.env.BASE_URL
         || process.env.PUBLIC_BASE_URL
         || process.env.BACKEND_URL
-        || `http://localhost:${process.env.PORT || 3000}`
+        || `http://localhost:${process.env.PORT || 3003}`
       ).replace(/\/$/, '');
       const redirectLink = (periBole && numeBole)
         ? `${appBaseUrl}/pagar-boleto/${periBole}/${numeBole}`
@@ -3211,7 +3349,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
       });
       
       // Guardar datos para el pago
-      userStates[from].tempBoletoPago = {
+      botState().tempBoletoPago = {
         tipoPadron,
         tipoCuota,
         datos: datosParaScrap,
@@ -3221,7 +3359,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     } else {
       await sendMessageAndSave(from, '⚠️ No se pudo descargar el boleto.');
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
     }
     
   } catch (error) {
@@ -3229,7 +3367,7 @@ const ejecutarScraperBoletoPadron = async (from, padronData, tipoPadron, tipoCuo
     const errorMsg = '❌ Ocurrió un error al generar el boleto. Por favor intenta más tarde.';
     await sendMessageAndSave(from, errorMsg);
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -3240,8 +3378,8 @@ const handlePagoDeudaChoice = async (from, optionToProcess) => {
   try {
     if (optionToProcess === 'pagar_deuda') {
       // Construir link de pago
-      const tipoPadron = userStates[from].tempTipoPadron;
-      const padronData = userStates[from].tempPadron;
+      const tipoPadron = botState().tempTipoPadron;
+      const padronData = botState().tempPadron;
       
       let letra = '';
       let codigo1 = '';
@@ -3267,35 +3405,37 @@ const handlePagoDeudaChoice = async (from, optionToProcess) => {
         ? `https://autogestion.cloud.irrigacion.gov.ar/cuenta-corriente/${letra}/${codigo1}`
         : `https://autogestion.cloud.irrigacion.gov.ar/cuenta-corriente/${letra}/${codigo1}/${codigo2}`;
       
-      const instruccionesMsg = 
-        `💳 *Link de pago de deuda*\n\n` +
-        `Podés pagar tu deuda online ingresando al siguiente link:\n\n` +
+      const instruccionesMsg =
+        `┏━━━━━━━━━━━━━━━━━━━━━━┓\n` +
+        `┃   💳 PAGO DE DEUDA    ┃\n` +
+        `┗━━━━━━━━━━━━━━━━━━━━━━┛\n\n` +
+        `Puede abonar su deuda online desde el siguiente enlace:\n\n` +
         `🔗 ${linkPago}\n\n` +
-        `*Instrucciones:*\n` +
-        `1️⃣ Ingresá al link\n` +
-        `2️⃣ Seleccioná la/s cuota/s que querés pagar\n` +
-        `3️⃣ Presioná *"Generar Boleto"*\n` +
-        `4️⃣ Confirmá la operación\n` +
-        `5️⃣ Imprimí y pagá en Pago Fácil, Rapipago o sucursal; también podés usar *"Pagar"* para transferencia\n\n` +
-        `_💡 Recordá: Si pagás el total de la deuda, tenés 50% de descuento en intereses._`;
+        `*Pasos sugeridos:*\n` +
+        `1) Ingrese al enlace.\n` +
+        `2) Seleccione la/s cuota/s a pagar.\n` +
+        `3) Presione *"Generar Boleto"*.\n` +
+        `4) Confirme la operación.\n` +
+        `5) Puede pagar en Pago Fácil, Rapipago, sucursal o transferencia.\n\n` +
+        `_Si abona el total de la deuda, se aplica 50% de descuento en intereses._`;
       
       await sendMessageAndSave(from, instruccionesMsg);
       
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       
     } else if (optionToProcess === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
     }
     
   } catch (error) {
     console.error('❌ Error en handlePagoDeudaChoice:', error);
     await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intenta más tarde.');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -3306,12 +3446,12 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
   try {
     if (optionToProcess === 'pagar_boleto') {
       // Obtener datos guardados
-      const boletoPago = userStates[from].tempBoletoPago;
+      const boletoPago = botState().tempBoletoPago;
       
       if (!boletoPago) {
         await sendMessageAndSave(from, '❌ No se encontraron datos del boleto. Por favor intenta nuevamente.');
         await sendMenuList(from, true);
-        userStates[from].step = 'MAIN_MENU';
+        botState().step = 'MAIN_MENU';
         return;
       }
       
@@ -3333,7 +3473,7 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
             getServiceErrorMessage(resultado, buildActionFailedMessage('obtener el enlace de pago del boleto'))
           );
           await sendMenuList(from, true);
-          userStates[from].step = 'MAIN_MENU';
+          botState().step = 'MAIN_MENU';
           return;
         }
 
@@ -3362,21 +3502,21 @@ const handlePagoBoletoChoice = async (from, optionToProcess) => {
       ];
       
       await sendButtonReplyAndSave(from, 'Elegí una opción:', buttons);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
       
       // Limpiar datos temporales
-      delete userStates[from].tempBoletoPago;
+      delete botState().tempBoletoPago;
       
     } else if (optionToProcess === 'volver_menu') {
       await sendMenuList(from, true);
-      userStates[from].step = 'MAIN_MENU';
+      botState().step = 'MAIN_MENU';
     }
     
   } catch (error) {
     console.error('❌ Error en handlePagoBoletoChoice:', error);
     await sendMessageAndSave(from, buildActionFailedMessage('procesar el pago del boleto'));
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -3408,7 +3548,7 @@ Para más información y requisitos, visitá:
     ];
 
     await sendButtonReplyAndSave(from, '¿Necesitás mas ayuda?', buttons);
-    userStates[from].step = 'AWAITING_PERFORACION_HELP';
+    botState().step = 'AWAITING_PERFORACION_HELP';
     
     console.log(`🔧 Info de perforación de subterránea enviada a ${from}`);
   } catch (error) {
@@ -3421,17 +3561,17 @@ const handlePerforacionHelpChoice = async (from, optionToProcess) => {
   try {
     if (optionToProcess === 'perforacion_ayuda_si') {
       const handoff = await intentarDerivarOperador(from, 'PERFORACION_HELP');
-      userStates[from].step = handoff.enEspera ? 'AWAITING_OPERATOR_ASSIGNMENT' : 'MAIN_MENU';
+      botState().step = handoff.enEspera ? 'AWAITING_OPERATOR_ASSIGNMENT' : 'MAIN_MENU';
       return;
     }
 
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   } catch (error) {
     console.error('❌ Error en handlePerforacionHelpChoice:', error);
     await sendMessageAndSave(from, '❌ Ocurrió un error. Por favor intenta más tarde.');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
   }
 };
 
@@ -3448,13 +3588,13 @@ const handleOperatorWaitingInput = async (from, messageBody = '', optionToProces
     });
     await sendMessageAndSave(from, '✅ Cancelamos la espera para hablar con operador.');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
   const waitingReminder = '🕒 Tu solicitud sigue en espera. En cuanto un operador la tome, te vamos a avisar por acá.\n\nSi preferís volver al bot, escribí *SALIR*.';
   await sendMessageAndSave(from, waitingReminder);
-  userStates[from].step = 'AWAITING_OPERATOR_ASSIGNMENT';
+  botState().step = 'AWAITING_OPERATOR_ASSIGNMENT';
 };
 
 const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
@@ -3471,7 +3611,10 @@ const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
     return;
   }
 
-  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
+  const score = Number((optionToProcess || '').split('_').pop());
+  botState().operatorSurveyScore = Number.isFinite(score) ? score : null;
+
+  await clienteService.actualizarEstadoConversacion(from, 'OPINION_POST_OPERADOR');
 
   await sendMessageAndSave(from, '¡Gracias por tu respuesta! 🙌');
   await sendButtonReplyAndSave(from, '¿Querés dejarnos alguna opinión?', [
@@ -3479,22 +3622,35 @@ const handleOperatorSurveyResponse = async (from, optionToProcess = '') => {
     { id: 'op_opinion_no', title: '❌ No' }
   ]);
 
-  userStates[from].step = 'AWAITING_OPINION_CHOICE';
+  botState().step = 'AWAITING_OPINION_CHOICE';
 };
 
 const handleOpinionChoice = async (from, optionToProcess = '') => {
   if (optionToProcess === 'op_opinion_si') {
+    await clienteService.actualizarEstadoConversacion(from, 'OPINION_POST_OPERADOR_TEXTO');
     await sendMessageAndSave(from, '✍️ Escribí tu opinión y la registramos:');
-    userStates[from].step = 'AWAITING_OPINION_TEXT';
+    botState().step = 'AWAITING_OPINION_TEXT';
     return;
   }
 
   if (optionToProcess === 'op_opinion_no') {
+    const score = botState().operatorSurveyScore;
+    if (score) {
+      await mensajeService.guardarMensaje({
+        telefono: from,
+        tipo: 'text',
+        cuerpo: `[ENCUESTA OPERADOR] Calificación: ${score} estrella(s) | Opinión: (sin opinión)`,
+        emisor: 'usuario',
+        url_archivo: null
+      });
+      delete botState().operatorSurveyScore;
+    }
+    await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
     await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
       { id: 'op_mas_ayuda_si', title: '✅ Sí' },
       { id: 'op_mas_ayuda_no', title: '❌ No' }
     ]);
-    userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
+    botState().step = 'AWAITING_OPERATOR_FOLLOWUP';
     return;
   }
 
@@ -3508,35 +3664,42 @@ const handleOpinionText = async (from, messageBody = '') => {
     return;
   }
 
+  const score = botState().operatorSurveyScore;
+  const surveySummary = score
+    ? `[ENCUESTA OPERADOR] Calificación: ${score} estrella(s) | Opinión: ${opinion}`
+    : `[OPINIÓN DEL CLIENTE]: ${opinion}`;
+
   await mensajeService.guardarMensaje({
     telefono: from,
     tipo: 'text',
-    cuerpo: `[OPINIÓN DEL CLIENTE]: ${opinion}`,
-    emisor: 'bot',
+    cuerpo: surveySummary,
+    emisor: 'usuario',
     url_archivo: null
   });
 
+  delete botState().operatorSurveyScore;
+  await clienteService.actualizarEstadoConversacion(from, 'FOLLOWUP_POST_OPERADOR');
   await sendMessageAndSave(from, '¡Gracias por su opinión! La misma nos ayuda a mejorar continuamente. 🙏');
   await sendButtonReplyAndSave(from, '¿Necesitás ayuda en algo más?', [
     { id: 'op_mas_ayuda_si', title: '✅ Sí' },
     { id: 'op_mas_ayuda_no', title: '❌ No' }
   ]);
-  userStates[from].step = 'AWAITING_OPERATOR_FOLLOWUP';
+  botState().step = 'AWAITING_OPERATOR_FOLLOWUP';
 };
 
 const handleOperatorPostFollowUp = async (from, optionToProcess = '') => {
   if (optionToProcess === 'op_mas_ayuda_si') {
     await clienteService.actualizarEstadoConversacion(from, 'BOT');
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
   if (optionToProcess === 'op_mas_ayuda_no') {
     await clienteService.actualizarEstadoConversacion(from, 'BOT');
     await sendMessageAndSave(from, 'Perfecto. Gracias por comunicarte con nosotros. ¡Que tengas un gran día! 👋');
-    userStates[from].step = 'START';
-    userStates[from].shouldGreet = true;
+    botState().step = 'START';
+    botState().shouldGreet = true;
     return;
   }
 
@@ -3648,7 +3811,7 @@ const handleTurnoTitularChoice = async (from, option) => {
   const normalized = (option || '').toString().trim().toLowerCase();
 
   if (normalized === 'usar_ultimo_titular') {
-    const lastTitular = userStates[from].lastTitular;
+    const lastTitular = botState().lastTitular;
     await sendMessageAndSave(from, `🔎 Buscando turno con: *${lastTitular}*...`);
 
     const result = await buscarTurnoPorTitularApiFirst(lastTitular);
@@ -3656,8 +3819,8 @@ const handleTurnoTitularChoice = async (from, option) => {
 
     if (result.multiple) {
       const opciones = (result.opciones || []).slice(0, 10);
-      userStates[from].turnoTitularOpciones = opciones;
-      userStates[from].turnoTitularBusqueda = result.titularBusqueda || lastTitular;
+      botState().turnoTitularOpciones = opciones;
+      botState().turnoTitularBusqueda = result.titularBusqueda || lastTitular;
 
       const listado = opciones
         .map((item, index) => {
@@ -3671,14 +3834,14 @@ const handleTurnoTitularChoice = async (from, option) => {
         from,
         `📋 Encontramos varios resultados para *${lastTitular}*:\n\n${listado}\n\nRespondé con el número de opción (1-${opciones.length}) o escribí *volver*.`
       );
-      userStates[from].step = 'AWAITING_TURNO_TITULAR_API_OPTION';
+      botState().step = 'AWAITING_TURNO_TITULAR_API_OPTION';
       return;
     }
     
     if (!result.success) {
       const errorMsg = buildTurnoLookupFailedMessage('el titular', getServiceErrorMessage(result, 'No encontramos turnos para ese titular.'));
       await sendMessageAndSave(from, errorMsg);
-      userStates[from].step = 'AWAITING_TURNO_TITULAR';
+      botState().step = 'AWAITING_TURNO_TITULAR';
       return;
     }
     
@@ -3686,11 +3849,11 @@ const handleTurnoTitularChoice = async (from, option) => {
     if (!hasUsableTurnoData(data)) {
       const noDataMsg = buildTurnoLookupFailedMessage('el titular', 'No encontramos datos de turno para ese titular.');
       await sendMessageAndSave(from, noDataMsg);
-      userStates[from].step = 'AWAITING_TURNO_TITULAR';
+      botState().step = 'AWAITING_TURNO_TITULAR';
       return;
     }
 
-    userStates[from].lastTurnoMode = 'titular';
+    botState().lastTurnoMode = 'titular';
     const response = buildTurnoResponse({
       data,
       titularFallback: lastTitular,
@@ -3700,7 +3863,7 @@ const handleTurnoTitularChoice = async (from, option) => {
     
     await sendMessageAndSave(from, response);
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
@@ -3713,13 +3876,13 @@ Ej: *GONZALEZ JUAN*
 
 _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
     await sendMessageAndSave(from, msg);
-    userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    botState().step = 'AWAITING_TURNO_TITULAR';
     return;
   }
 
   if (normalized === 'volver' || normalized === 'menu') {
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
@@ -3733,7 +3896,7 @@ const handleTurnoCCPPChoice = async (from, option) => {
   const normalized = (option || '').toString().trim().toLowerCase();
 
   if (normalized === 'usar_ultimo_ccpp') {
-    const lastCCPP = userStates[from].lastCCPP;
+    const lastCCPP = botState().lastCCPP;
     await sendMessageAndSave(from, `🔎 Buscando turno con: *${lastCCPP}*...`);
     
     // Intentar API primero
@@ -3756,7 +3919,7 @@ const handleTurnoCCPPChoice = async (from, option) => {
     if (!result.success) {
       const errorMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.', getServiceErrorMessage(result, 'No encontramos turnos para ese servicio.'));
       await sendMessageAndSave(from, errorMsg);
-      userStates[from].step = 'AWAITING_TURNO_CCPP';
+      botState().step = 'AWAITING_TURNO_CCPP';
       return;
     }
     
@@ -3764,11 +3927,11 @@ const handleTurnoCCPPChoice = async (from, option) => {
     if (!hasUsableTurnoData(data)) {
       const noDataMsg = buildTurnoLookupFailedMessage('el C.C.-P.P.', 'No encontramos datos de turno para ese servicio.');
       await sendMessageAndSave(from, noDataMsg);
-      userStates[from].step = 'AWAITING_TURNO_CCPP';
+      botState().step = 'AWAITING_TURNO_CCPP';
       return;
     }
 
-    userStates[from].lastTurnoMode = 'ccpp';
+    botState().lastTurnoMode = 'ccpp';
     const response = buildTurnoResponse({
       data,
       titularFallback: 'No disponible',
@@ -3778,7 +3941,7 @@ const handleTurnoCCPPChoice = async (from, option) => {
     
     await sendMessageAndSave(from, response);
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
@@ -3791,13 +3954,13 @@ Ej: *8234-1*
 
 _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
     await sendMessageAndSave(from, msg);
-    userStates[from].step = 'AWAITING_TURNO_CCPP';
+    botState().step = 'AWAITING_TURNO_CCPP';
     return;
   }
 
   if (normalized === 'volver' || normalized === 'menu') {
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
@@ -3816,9 +3979,9 @@ const handleTurnoMethodChoice = async (from, option) => {
       clienteService.obtenerUltimoCCPP(from)
     ]);
 
-    const lastTitular = lastTitularDB || userStates[from].lastTitular;
-    const lastCCPP = lastCCPPDB || userStates[from].lastCCPP;
-    const lastMode = userStates[from].lastTurnoMode;
+    const lastTitular = lastTitularDB || botState().lastTitular;
+    const lastCCPP = lastCCPPDB || botState().lastCCPP;
+    const lastMode = botState().lastTurnoMode;
     console.log('🧠 [MEMORIA][TURNOS] Estado de memoria cargado', {
       telefono: from,
       lastMode: lastMode || 'sin modo',
@@ -3827,27 +3990,27 @@ const handleTurnoMethodChoice = async (from, option) => {
     });
 
     if (lastMode === 'titular' && lastTitular) {
-      userStates[from].lastTitular = lastTitular;
+      botState().lastTitular = lastTitular;
       await handleTurnoTitularChoice(from, 'usar_ultimo_titular');
       return;
     }
 
     if (lastMode === 'ccpp' && lastCCPP) {
-      userStates[from].lastCCPP = lastCCPP;
+      botState().lastCCPP = lastCCPP;
       await handleTurnoCCPPChoice(from, 'usar_ultimo_ccpp');
       return;
     }
 
     if (lastTitular) {
-      userStates[from].lastTitular = lastTitular;
-      userStates[from].lastTurnoMode = 'titular';
+      botState().lastTitular = lastTitular;
+      botState().lastTurnoMode = 'titular';
       await handleTurnoTitularChoice(from, 'usar_ultimo_titular');
       return;
     }
 
     if (lastCCPP) {
-      userStates[from].lastCCPP = lastCCPP;
-      userStates[from].lastTurnoMode = 'ccpp';
+      botState().lastCCPP = lastCCPP;
+      botState().lastTurnoMode = 'ccpp';
       await handleTurnoCCPPChoice(from, 'usar_ultimo_ccpp');
       return;
     }
@@ -3857,10 +4020,10 @@ const handleTurnoMethodChoice = async (from, option) => {
   }
 
   if (normalized === 'turno_titular') {
-    userStates[from].lastTurnoMode = 'titular';
+    botState().lastTurnoMode = 'titular';
     // Cargar último titular desde BD
     const lastTitularDB = await clienteService.obtenerUltimoTitular(from);
-    const lastTitular = lastTitularDB || userStates[from].lastTitular;
+    const lastTitular = lastTitularDB || botState().lastTitular;
     
     if (lastTitular) {
       // Ofrecer usar el último titular
@@ -3881,8 +4044,8 @@ const handleTurnoMethodChoice = async (from, option) => {
         ]
       );
       
-      userStates[from].step = 'AWAITING_TURNO_TITULAR_CHOICE';
-      userStates[from].lastTitular = lastTitular; // Guardar en memoria también
+      botState().step = 'AWAITING_TURNO_TITULAR_CHOICE';
+      botState().lastTitular = lastTitular; // Guardar en memoria también
     } else {
       const msg = `👤 *Búsqueda por Titular*
 
@@ -3892,16 +4055,16 @@ Ej: *GONZALEZ JUAN*
 
 _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
       await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_TURNO_TITULAR';
+      botState().step = 'AWAITING_TURNO_TITULAR';
     }
     return;
   }
 
   if (normalized === 'turno_ccpp') {
-    userStates[from].lastTurnoMode = 'ccpp';
+    botState().lastTurnoMode = 'ccpp';
     // Cargar último C.C.-P.P. desde BD
     const lastCCPPDB = await clienteService.obtenerUltimoCCPP(from);
-    const lastCCPP = lastCCPPDB || userStates[from].lastCCPP;
+    const lastCCPP = lastCCPPDB || botState().lastCCPP;
     
     if (lastCCPP) {
       const msg = `🔢 *Búsqueda por Servicio*
@@ -3921,8 +4084,8 @@ _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
         ]
       );
       
-      userStates[from].step = 'AWAITING_TURNO_CCPP_CHOICE';
-      userStates[from].lastCCPP = lastCCPP; // Guardar en memoria también
+      botState().step = 'AWAITING_TURNO_CCPP_CHOICE';
+      botState().lastCCPP = lastCCPP; // Guardar en memoria también
     } else {
       const msg = `🔢 *Búsqueda por Servicio*
 
@@ -3939,14 +4102,14 @@ Ingresá tu número de servicio:
 
 _📌 Para cancelar esta búsqueda, escribí *SALIR*_`;
       await sendMessageAndSave(from, msg);
-      userStates[from].step = 'AWAITING_TURNO_CCPP';
+      botState().step = 'AWAITING_TURNO_CCPP';
     }
     return;
   }
 
   if (normalized === 'volver' || normalized === 'menu') {
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
@@ -3976,12 +4139,12 @@ const handleTurnoTitularInput = async (from, messageBody) => {
 
   if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
   // Guardar en memoria y BD
-  userStates[from].lastTitular = raw;
+  botState().lastTitular = raw;
   await clienteService.guardarUltimoTitular(from, raw);
 
   await sendMessageAndSave(from, '🔎 Buscando turno, un momento por favor...');
@@ -3991,8 +4154,8 @@ const handleTurnoTitularInput = async (from, messageBody) => {
 
   if (result.multiple) {
     const opciones = (result.opciones || []).slice(0, 10);
-    userStates[from].turnoTitularOpciones = opciones;
-    userStates[from].turnoTitularBusqueda = result.titularBusqueda || raw;
+    botState().turnoTitularOpciones = opciones;
+    botState().turnoTitularBusqueda = result.titularBusqueda || raw;
 
     const listado = opciones
       .map((item, index) => {
@@ -4006,7 +4169,7 @@ const handleTurnoTitularInput = async (from, messageBody) => {
       from,
       `📋 Encontramos varios resultados para *${raw}*:\n\n${listado}\n\nRespondé con el número de opción (1-${opciones.length}) o escribí *volver*.`
     );
-    userStates[from].step = 'AWAITING_TURNO_TITULAR_API_OPTION';
+    botState().step = 'AWAITING_TURNO_TITULAR_API_OPTION';
     return;
   }
 
@@ -4023,7 +4186,7 @@ const handleTurnoTitularInput = async (from, messageBody) => {
     return;
   }
 
-  userStates[from].lastTurnoMode = 'titular';
+  botState().lastTurnoMode = 'titular';
   const response = buildTurnoResponse({
     data,
     titularFallback: raw,
@@ -4033,7 +4196,7 @@ const handleTurnoTitularInput = async (from, messageBody) => {
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);
-  userStates[from].step = 'MAIN_MENU';
+  botState().step = 'MAIN_MENU';
 };
 
 const handleTurnoTitularApiOptionInput = async (from, messageBody) => {
@@ -4041,19 +4204,19 @@ const handleTurnoTitularApiOptionInput = async (from, messageBody) => {
   const lower = raw.toLowerCase();
 
   if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
-    delete userStates[from].turnoTitularOpciones;
-    delete userStates[from].turnoTitularBusqueda;
+    delete botState().turnoTitularOpciones;
+    delete botState().turnoTitularBusqueda;
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
-  const opciones = userStates[from].turnoTitularOpciones || [];
-  const titularBusqueda = userStates[from].turnoTitularBusqueda || userStates[from].lastTitular || '';
+  const opciones = botState().turnoTitularOpciones || [];
+  const titularBusqueda = botState().turnoTitularBusqueda || botState().lastTitular || '';
 
   if (!opciones.length) {
     await sendMessageAndSave(from, '❌ No hay opciones pendientes para seleccionar. Volvé a buscar por titular.');
-    userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    botState().step = 'AWAITING_TURNO_TITULAR';
     return;
   }
 
@@ -4070,7 +4233,7 @@ const handleTurnoTitularApiOptionInput = async (from, messageBody) => {
   if (!result.success) {
     const errorMsg = buildTurnoLookupFailedMessage('el titular', getServiceErrorMessage(result, 'No encontramos turnos para ese titular.'));
     await sendMessageAndSave(from, errorMsg);
-    userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    botState().step = 'AWAITING_TURNO_TITULAR';
     return;
   }
 
@@ -4078,13 +4241,13 @@ const handleTurnoTitularApiOptionInput = async (from, messageBody) => {
   if (!hasUsableTurnoData(data)) {
     const noDataMsg = buildTurnoLookupFailedMessage('el titular', 'No encontramos datos de turno para ese titular.');
     await sendMessageAndSave(from, noDataMsg);
-    userStates[from].step = 'AWAITING_TURNO_TITULAR';
+    botState().step = 'AWAITING_TURNO_TITULAR';
     return;
   }
 
-  userStates[from].lastTurnoMode = 'titular';
+  botState().lastTurnoMode = 'titular';
   if (data.ccpp) {
-    userStates[from].lastCCPP = data.ccpp;
+    botState().lastCCPP = data.ccpp;
     await clienteService.guardarUltimoCCPP(from, data.ccpp);
   }
 
@@ -4095,12 +4258,12 @@ const handleTurnoTitularApiOptionInput = async (from, messageBody) => {
     includeHijuela: true
   });
 
-  delete userStates[from].turnoTitularOpciones;
-  delete userStates[from].turnoTitularBusqueda;
+  delete botState().turnoTitularOpciones;
+  delete botState().turnoTitularBusqueda;
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);
-  userStates[from].step = 'MAIN_MENU';
+  botState().step = 'MAIN_MENU';
 };
 
 /**
@@ -4117,7 +4280,7 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
 
   if (lower === 'volver' || lower === 'menu' || lower === 'salir' || lower === 'cancelar') {
     await sendMenuList(from, true);
-    userStates[from].step = 'MAIN_MENU';
+    botState().step = 'MAIN_MENU';
     return;
   }
 
@@ -4159,7 +4322,7 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
   }
 
   // Guardar en memoria y BD
-  userStates[from].lastCCPP = normalized;
+  botState().lastCCPP = normalized;
   await clienteService.guardarUltimoCCPP(from, normalized);
 
   await sendMessageAndSave(from, `🔎 Buscando turno para C.C.-P.P. ${normalized}...`);
@@ -4194,7 +4357,7 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
     return;
   }
 
-  userStates[from].lastTurnoMode = 'ccpp';
+  botState().lastTurnoMode = 'ccpp';
   const response = buildTurnoResponse({
     data,
     titularFallback: 'No disponible',
@@ -4204,8 +4367,61 @@ const handleTurnoCCPPInput = async (from, messageBody) => {
 
   await sendMessageAndSave(from, response);
   await sendMenuList(from, true);
-  userStates[from].step = 'MAIN_MENU';
+  botState().step = 'MAIN_MENU';
 };
+
+const handleUserMessageFlow = require('../handlers/botStates/handleUserMessageFlow');
+const { registerWebhookDeps } = require('../handlers/botStates/webhookDeps');
+
+const handleUserMessage = handleUserMessageFlow;
+
+registerWebhookDeps({
+  buildStartContext,
+  formatPersonName,
+  sendWelcomeMessage,
+  sendSubdelegacionPrompt,
+  sendMenuList,
+  sendMessageAndSave,
+  handleDescargarBoleto,
+  handleMainMenu,
+  handleDniInput,
+  handleSubdelegacionChoice,
+  handleDniInputBoleto,
+  handleModoConsulta,
+  handleDniChoice,
+  handlePadronGlobalChoice,
+  handlePadronChoice,
+  handleDniPadronSelectionChoice,
+  handleDniPadronSearchInput,
+  handleTipoPadron,
+  handlePadronSuperficial,
+  handlePadronSubterraneo,
+  handlePadronContaminacion,
+  handleUserNameInput,
+  handleTipoCuota,
+  handleTipoCuotaPadron,
+  handlePostDeudaBoletoChoice,
+  handlePagoDeudaChoice,
+  handlePagoBoletoChoice,
+  handlePerforacionHelpChoice,
+  handleOpcionBoletoPadron,
+  handlePadronInput,
+  handleTurnoMethodChoice,
+  handleTurnoTitularChoice,
+  handleTurnoTitularInput,
+  handleTurnoTitularApiOptionInput,
+  handleTurnoCCPPChoice,
+  handleTurnoCCPPInput,
+  handleAuthMenu,
+  intentarDerivarOperador,
+  handleOperatorWaitingInput,
+  handleOperatorSurveyResponse,
+  handleOpinionChoice,
+  handleOpinionText,
+  handleOperatorPostFollowUp,
+  resolveMainMenuKey,
+  mainMenuRowIds: MAIN_MENU_ROW_IDS
+});
 
 module.exports = {
   verifyWebhook,
@@ -4220,6 +4436,6 @@ module.exports = {
     handleOpinionChoice,
     handleOpinionText,
     handleOperatorPostFollowUp,
-    userStates,
+    runBotStateSession
   }
 };

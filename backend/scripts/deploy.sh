@@ -160,7 +160,7 @@ if [ ! -f .env ]; then
     # Crear archivo .env
     cat > .env << EOF
 NODE_ENV=production
-PORT=3000
+PORT=3003
 HOSTNAME=0.0.0.0
 
 DB_CLIENT=pg
@@ -257,7 +257,7 @@ fi
 log "Realizando verificaciones finales..."
 
 # Verificar Backend
-if curl -s http://localhost:3000/health > /dev/null; then
+if curl -s http://localhost:3003/health > /dev/null; then
     success "Backend respondiendo correctamente"
 else
     warning "Backend no responde aún (puede estar inicializando)"
@@ -283,7 +283,7 @@ echo ""
 echo "🔗 URLs:"
 echo "   • Frontend: https://chat.irrigacionmalargue.net"
 echo "   • API: https://chat.irrigacionmalargue.net/api"
-echo "   • Health Check: http://localhost:3000/health"
+echo "   • Health Check: http://localhost:3003/health"
 echo ""
 
 echo "📋 Comandos útiles:"

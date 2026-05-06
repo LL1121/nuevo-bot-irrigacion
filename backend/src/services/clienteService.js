@@ -72,7 +72,6 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
         [nombre, fotoPerfil, telefono]
       );
       
-      console.log(`👤 Cliente existente: ${telefono} - ${nombre}`);
       // Retornar cliente actualizado
       const updatedClient = await get(
         'SELECT * FROM clientes WHERE telefono = ?',
@@ -87,7 +86,6 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
       [telefono, nombre, fotoPerfil]
     );
 
-    console.log(`✨ Nuevo cliente registrado: ${telefono} - ${nombre}`);
 
     // Retornar el cliente recién creado
     const newClient = await get(
@@ -97,7 +95,7 @@ const obtenerOCrearCliente = async (telefono, nombre = 'Sin Nombre', fotoPerfil 
 
     return newClient;
   } catch (error) {
-    console.error('❌ Error en obtenerOCrearCliente:', error);
+    console.error('Error en obtenerOCrearCliente:', error);
     throw error;
   }
 };
