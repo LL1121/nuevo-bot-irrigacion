@@ -1,0 +1,134 @@
+const whatsappService = require('../services/whatsappService');
+const mensajeService = require('../services/mensajeService');
+const clienteService = require('../services/clienteService');
+const { getPool } = require('../config/db');
+
+/**
+ * Obtiene el estado de la ventana de 24h para un chat
+ * GET /api/chats/:phone/window-status
+ */
+const getWindowStatus = async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const pool = getPool();
+
+    // Buscar el último mensaje del usuario (emisor='usuario')
+    const [rows] = await pool.execute(
+      `SELECT fecha 
+       FROM mensajes 
+       WHERE cliente_telefono = ? AND emisor = 'usuario' 
+       ORDER BY fecha DESC 
+       LIMIT 1`,
+      [phone]
+    );
+
+    if (rows.length === 0) {
+      return res.json({
+        success: true,
+        phone,
+        hasMessages: false,
+        inWindow: false,
+        message: 'No hay mensajes del usuario'
+      });
+    }
+
+    const lastUserMessageDate = new Date(rows[0].fecha);
+    const now = new Date();
+    const diffMs = now.getTime() - lastUserMessageDate.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+    const windowLimit = 24;
+    const inWindow = diffHours < windowLimit;
+    const hoursRemaining = inWindow ? Math.max(0, windowLimit - diffHours) : 0;
+
+    return res.json({
+      success: true,
+      phone,
+      hasMessages: true,
+      inWindow,
+      lastUserMessageDate: lastUserMessageDate.toISOString(),
+      hoursElapsed: Math.round(diffHours * 100) / 100,
+      hoursRemaining: Math.round(hoursRemaining * 100) / 100,
+      windowLimitHours: windowLimit,
+      message: inWindow 
+        ? `Dentro de ventana. ${Math.round(hoursRemaining)} horas restantes.`
+        : `Fuera de ventana. Hace ${Math.round(diffHours)} horas del último mensaje.`
+    });
+  } catch (error) {
+    console.error('❌ Error obteniendo estado de ventana:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al obtener estado de ventana'
+    });
+  }
+};
+
+/**
+ * Reactiva una conversación vencida (>24hs) enviando una plantilla
+ * POST /api/chats/:phone/reactivate
+ * Body opcional: { templateName, languageCode, components }
+ */
+const reactivate = async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const rawTemplateName = String(req.body?.templateName || '').trim();
+    const templateName = rawTemplateName || 'hello_world';
+
+    const rawLanguageCode = String(req.body?.languageCode || '').trim();
+    const languageCode = rawLanguageCode || (templateName === 'hello_world' ? 'en_US' : 'es');
+
+    const rawComponents = Array.isArray(req.body?.components) ? req.body.components : [];
+    const components = rawComponents
+      .filter((component) => component && typeof component === 'object' && String(component.type || '').trim())
+      .map((component) => {
+        if (!Array.isArray(component.parameters)) return component;
+        const parameters = component.parameters
+          .filter((param) => param && typeof param === 'object')
+          .map((param) => {
+            const normalized = { ...param };
+            if (typeof normalized.name === 'string') {
+              normalized.name = normalized.name.trim();
+            }
+            return normalized;
+          })
+          .filter((param) => !(param.name !== undefined && String(param.name || '').trim() === ''));
+        return { ...component, parameters };
+      });
+
+    // Enviar plantilla por WhatsApp
+    const sendResult = await whatsappService.sendTemplate(
+      phone,
+      templateName,
+      languageCode,
+      components
+    );
+
+    // Guardar en DB el envío como mensaje de tipo 'template' emitido por el 'bot'
+    await mensajeService.guardarMensaje({
+      telefono: phone,
+      tipo: 'template',
+      cuerpo: `Template: ${templateName} (${languageCode})`,
+      url_archivo: null,
+      emisor: 'bot'
+    });
+
+    // La reactivación se utiliza para continuidad con operador, no con bot automático.
+    await clienteService.cambiarEstadoBot(phone, false, 'OPERATOR_REACTIVATION_TEMPLATE');
+    await clienteService.actualizarEstadoConversacion(phone, 'HUMANO');
+
+    return res.status(201).json({
+      success: true,
+      message: 'Template enviado para reactivar conversación',
+      result: sendResult
+    });
+  } catch (error) {
+    console.error('❌ Error reactivando conversación:', error.response?.data || error.message);
+    console.error('Stack:', error.stack);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'No se pudo reactivar la conversación',
+      details: error.response?.data || error.message
+    });
+  }
+};
+
+module.exports = { reactivate, getWindowStatus };

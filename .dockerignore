@@ -1,0 +1,64 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CRÍTICO: Excluir carpeta Frontend del contenedor Backend
+# ═══════════════════════════════════════════════════════════════════════════════
+Frontend/
+Frontend
+
+# Dependencias
+node_modules
+node_modules/
+**/node_modules/
+npm-debug.log
+yarn-error.log
+yarn.lock
+
+# Archivos de desarrollo
+.git
+.git/
+.gitignore
+.gitattributes
+.env
+.env.*
+.env.local
+.env.*.local
+.env.production.example
+
+# Tests
+coverage
+*.test.js
+tests/
+jest.config.js
+
+# Documentación y archivos de desarrollo
+README.md
+OPTIMIZACIONES.md
+DEPLOY.md
+TESTING_SUMMARY.md
+*.md
+
+# Archivos temporales
+*.log
+logs/
+public/temp/*
+!public/temp/.gitkeep
+
+# PM2
+ecosystem.config.js
+.pm2
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+# Mantener Dockerfile y compose dentro del contexto de build/deploy
+
+# Scripts de desarrollo
+scripts/loadTest.js
+scripts/createAdmin.js

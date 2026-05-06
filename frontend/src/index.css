@@ -1,0 +1,200 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer utilities {
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-fadeIn {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  @keyframes chatEntry {
+    0% {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.985);
+      filter: saturate(0.85);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: saturate(1);
+    }
+  }
+
+  .animate-chat-entry {
+    animation: chatEntry 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  @keyframes messageSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(20px) scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  /* Custom range input styles */
+  input[type="range"] {
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    outline: none;
+    -webkit-appearance: none;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: white;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: white;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+
+  input[type="range"]::-moz-range-track {
+    background: transparent;
+    border: none;
+  }
+
+  /* Custom scrollbar */
+  div::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  div::-webkit-scrollbar-track {
+    background: #f9fafb;
+  }
+
+  div::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+
+  div::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+
+  /* Accessibility utilities */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Focus visible styles (only show focus ring for keyboard navigation) */
+  body:not(.keyboard-navigation) *:focus {
+    outline: none;
+  }
+
+  body.keyboard-navigation *:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* High contrast focus for critical interactive elements */
+  body.keyboard-navigation button:focus-visible,
+  body.keyboard-navigation a:focus-visible,
+  body.keyboard-navigation input:focus-visible,
+  body.keyboard-navigation textarea:focus-visible,
+  body.keyboard-navigation select:focus-visible {
+    outline: 3px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Skip link styles */
+  #skip-link {
+    transform: translateY(-100%);
+    transition: transform 0.2s;
+  }
+
+  #skip-link:focus {
+    transform: translateY(0);
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* High contrast mode support */
+  @media (prefers-contrast: high) {
+    * {
+      border-color: currentColor !important;
+    }
+
+    button,
+    a,
+    input,
+    select,
+    textarea {
+      border: 2px solid currentColor;
+    }
+  }
+
+  /* Dark mode adjustments for better contrast */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --focus-ring: hsl(210, 100%, 80%);
+    }
+  }
+}

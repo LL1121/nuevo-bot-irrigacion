@@ -1,0 +1,183 @@
+🔌 API - RESUMEN RÁPIDO PARA EL FRONTEND
+═══════════════════════════════════════════════════════════════
+
+📍 BASE URL
+───────────────────────────────────────────────────────────────
+Production:  https://chat.irrigacionmalargue.net/api
+Development: http://localhost:3000/api
+
+🔑 AUTENTICACIÓN
+───────────────────────────────────────────────────────────────
+Header: Authorization: Bearer <JWT_TOKEN>
+
+Login:
+  POST /api/auth/login
+  Body: { username, password }
+  Response: { success, token, user }
+
+🌐 ENDPOINTS PRINCIPALES
+───────────────────────────────────────────────────────────────
+
+📋 CHATS
+  GET  /chats                      - Obtener todas las conversaciones
+  POST /chats/{phone}/pause        - Pausar bot para cliente
+  POST /chats/{phone}/activate     - Activar bot para cliente
+
+💬 MENSAJES
+  GET  /messages/{telefono}        - Obtener historial
+  POST /send                       - Enviar mensaje
+  POST /mark-read/{telefono}       - Marcar como leído
+  POST /chats/{phone}/reactivate   - Reabrir (>24h)
+
+📊 DATOS
+  GET  /stats                      - Estadísticas del panel
+  GET  /chats/{phone}/window-status - Estado ventana 24h
+
+📁 ARCHIVOS
+  POST /upload                     - Subir archivo
+  GET  /media/{mediaId}            - Descargar archivo
+
+🏥 SALUD
+  GET  /health                     - Health check (sin auth)
+  GET  /api-docs                   - Swagger documentation
+
+⚡ WEBHOOK (WhatsApp)
+  GET  /webhook                    - Verificación
+  POST /webhook                    - Recibir mensajes
+
+═══════════════════════════════════════════════════════════════
+
+EJEMPLOS DE USO
+───────────────────────────────────────────────────────────────
+
+1. LOGIN
+┌─────────────────────────────────────────────────────────────┐
+│ POST https://chat.irrigacionmalargue.net/api/auth/login     │
+│                                                              │
+│ Body:                                                        │
+│ {                                                            │
+│   "username": "admin",                                       │
+│   "password": "MiPassword123!"                               │
+│ }                                                            │
+│                                                              │
+│ Response:                                                    │
+│ {                                                            │
+│   "success": true,                                           │
+│   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",     │
+│   "user": {...}                                              │
+│ }                                                            │
+└─────────────────────────────────────────────────────────────┘
+
+2. OBTENER CHATS
+┌─────────────────────────────────────────────────────────────┐
+│ GET https://chat.irrigacionmalargue.net/api/chats           │
+│                                                              │
+│ Headers:                                                     │
+│ Authorization: Bearer <token>                                │
+│                                                              │
+│ Response:                                                    │
+│ {                                                            │
+│   "success": true,                                           │
+│   "chats": [                                                 │
+│     {                                                        │
+│       "telefono": "5491234567890",                           │
+│       "nombre_whatsapp": "Juan García",                      │
+│       "estado_deuda": "Con deuda",                           │
+│       "ultima_consulta": "2026-02-11T15:30:00Z"             │
+│     }                                                        │
+│   ]                                                          │
+│ }                                                            │
+└─────────────────────────────────────────────────────────────┘
+
+3. ENVIAR MENSAJE
+┌─────────────────────────────────────────────────────────────┐
+│ POST https://chat.irrigacionmalargue.net/api/send           │
+│                                                              │
+│ Headers:                                                     │
+│ Authorization: Bearer <token>                                │
+│ Content-Type: application/json                               │
+│                                                              │
+│ Body:                                                        │
+│ {                                                            │
+│   "telefono": "5491234567890",                               │
+│   "texto": "Hola, ¿cómo estás?"                              │
+│ }                                                            │
+│                                                              │
+│ Response:                                                    │
+│ {                                                            │
+│   "success": true,                                           │
+│   "message": "Mensaje enviado correctamente",                │
+│   "messageId": "wamid.xxxxx"                                 │
+│ }                                                            │
+└─────────────────────────────────────────────────────────────┘
+
+4. OBTENER HISTORIAL
+┌─────────────────────────────────────────────────────────────┐
+│ GET https://chat.irrigacionmalargue.net/api/messages/549... │
+│                                                              │
+│ Headers:                                                     │
+│ Authorization: Bearer <token>                                │
+│                                                              │
+│ Response:                                                    │
+│ {                                                            │
+│   "success": true,                                           │
+│   "mensajes": [                                              │
+│     {                                                        │
+│       "id": 1,                                               │
+│       "tipo": "usuario",                                     │
+│       "contenido": "¿Cuál es mi deuda?",                     │
+│       "respuesta": "Tu deuda es...",                         │
+│       "created_at": "2026-02-11T15:30:00Z"                  │
+│     }                                                        │
+│   ]                                                          │
+│ }                                                            │
+└─────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════
+
+⚙️ VARIABLES DE ENTORNO FRONTEND (.env)
+───────────────────────────────────────────────────────────────
+
+VITE_API_URL=https://chat.irrigacionmalargue.net/api
+VITE_WEBHOOK_URL=https://chat.irrigacionmalargue.net/webhook
+VITE_BASE_URL=https://chat.irrigacionmalargue.net
+VITE_JWT_STORAGE_KEY=irrigacion_bot_token
+
+═══════════════════════════════════════════════════════════════
+
+🔗 SOCKET.IO (REAL-TIME)
+───────────────────────────────────────────────────────────────
+
+import io from 'socket.io-client';
+
+const socket = io('https://chat.irrigacionmalargue.net', {
+  auth: { token: JWT_TOKEN }
+});
+
+// Eventos disponibles
+socket.on('new-message', (data) => {});
+socket.on('chat-status-changed', (data) => {});
+socket.on('user-typing', (data) => {});
+socket.on('window-status-changed', (data) => {});
+
+═══════════════════════════════════════════════════════════════
+
+📖 DOCUMENTACIÓN COMPLETA
+───────────────────────────────────────────────────────────────
+
+Ver archivo: API_DOCUMENTATION.md
+Swagger Docs: https://chat.irrigacionmalargue.net/api-docs
+Health Check: https://chat.irrigacionmalargue.net/health
+
+═══════════════════════════════════════════════════════════════
+
+ARCHIVOS FUENTE
+───────────────────────────────────────────────────────────────
+
+Routes:      src/routes/apiRoutes.js
+Controllers: src/controllers/apiController.js
+Models:      src/config/db-postgresql.js
+Webhooks:    src/routes/webhookRoutes.js
+           src/controllers/webhookController.js
+
+═══════════════════════════════════════════════════════════════
